@@ -61,6 +61,7 @@ pub extern "C" fn undi() -> i32 {
 /// native): isinya diperbarui di tempat, posisi `Nilai` tetap nilai VM aslinya. Sisanya bingkai baru.
 pub(crate) fn pulihkan(vm: &mut Vm, catatan: Catatan) {
     JUMLAH.fetch_add(1, Ordering::Relaxed);
+    if std::env::var_os("JRG_JIT_SELIDIK").is_some() { for r in &catatan { let (f, rc) = super::modul::info(r.fid); eprintln!("[deopt] {} ip {} {:?} {:?} keluar={} sebelum={:?}", f.name, r.ip, f.chunk.code[r.ip as usize].op, rc.keadaan[r.ip as usize], rc.keluar[r.ip as usize], &f.chunk.code[r.ip as usize - 3..r.ip as usize].iter().map(|i| (i.op, i.arg)).collect::<Vec<_>>()); } }
     let mut rekaman = catatan.into_iter().rev();
     if let Some(r) = rekaman.next() {
         let (_, rencana) = super::modul::info(r.fid);

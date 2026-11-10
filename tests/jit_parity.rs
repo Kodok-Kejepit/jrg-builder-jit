@@ -317,5 +317,8 @@ fn jalur_lambat_umum() {
     assert!(!i.sukses && i.stderr.contains("jejak: `ambil` dipanggil"), "{}", i.stderr);
     assert!(i.stdout.starts_with("13 890\n") && i.stdout.ends_with("1200.5\n45150\n40 int array\n235794"), "{}", i.stdout);
     let h = jalankan(UMUM, &["--jit"], &[("JRG_JIT_LOG", "ringkas")]);
-    assert!(h.stderr.lines().any(|b| b.contains("dikompilasi:") && b.contains("gabung") && b.contains("ambil")), "{}", h.stderr);
+    assert!(h.stderr.lines().any(|b| b.contains("dikompilasi:") && b.contains("gabung")), "{}", h.stderr);
+    // `ambil` terlalu pendek untuk untung, tapi mode stres tetap menjalankannya native (galat dari langkah).
+    let h = jalankan(UMUM, &["--jit"], &[STRES, ("JRG_JIT_LOG", "ringkas")]);
+    assert!(h.stderr.lines().any(|b| b.contains("dikompilasi:") && b.contains("ambil")), "{}", h.stderr);
 }

@@ -45,6 +45,10 @@ pub enum Cara {
     Ambil,
     /// `StoreLocal`/`SimpanBuang` yang melibatkan nilai milik VM (`lambat::simpan`).
     Simpan,
+    /// `CekEnum` atas `Nilai` (`lambat::pola`), hasilnya bool asli.
+    Pola,
+    /// `AmbilPayload` atas `Nilai` (`lambat::payload`), di tempat.
+    Payload,
     /// Truthiness `Nilai` di puncak (`lambat::benar`), untuk lompat bersyarat dan `KeBool`.
     Benar,
     /// `Pop` atas `Nilai`: nilainya dilepas (`lambat::buang`).
@@ -102,9 +106,33 @@ pub fn bentuk_layak(f: &VmFunction) -> bool {
 }
 
 /// Rencana dari `masuk` dengan stack `jenis_masuk`, atau alasan tidak ada yang bisa dikompilasi.
+/// Posisi yang kembali ke titik masuk sebagai nilai milik VM (hasil `Call` ke VM yang ditulis ke lokal
+/// bulat) diulang sebagai `Nilai` sejak masuk: isinya memang sudah di stack VM.
 pub fn analisis(
     f: &VmFunction, cari: &dyn Fn(&str) -> Option<Arc<VmFunction>>,
-    masuk: usize, jenis_masuk: Vec<Jenis>, kembali: u8,
+    masuk: usize, mut jenis_masuk: Vec<Jenis>, kembali: u8,
+) -> Result<Rencana, String> {
+    for _ in 0..4 {
+        let mut lebar = None;
+        let r = analisis_sekali(f, cari, masuk, jenis_masuk.clone(), kembali, &mut lebar);
+        match lebar {
+            Some(j) if j != jenis_masuk => jenis_masuk = j,
+            _ => return r,
+        }
+    }
+    analisis_sekali(f, cari, masuk, jenis_masuk, kembali, &mut None)
+}
+
+/// Jenis masuk yang diperlebar supaya `datang` bertemu dengannya: posisi yang beda jadi `Nilai`.
+fn perlebar(masuk: &[Jenis], datang: &[Jenis]) -> Option<Vec<Jenis>> {
+    let ok = |j: &Jenis| matches!(j, Jenis::Bulat | Jenis::Bool | Jenis::Pecahan | Jenis::Kosong | Jenis::Nilai);
+    if masuk.len() != datang.len() || !masuk.iter().chain(datang).all(ok) { return None; }
+    Some(masuk.iter().zip(datang).map(|(a, b)| if a == b { *a } else { Jenis::Nilai }).collect())
+}
+
+fn analisis_sekali(
+    f: &VmFunction, cari: &dyn Fn(&str) -> Option<Arc<VmFunction>>,
+    masuk: usize, jenis_masuk: Vec<Jenis>, kembali: u8, lebar: &mut Option<Vec<Jenis>>,
 ) -> Result<Rencana, String> {
     let kode = &f.chunk.code;
     let n = kode.len();
@@ -120,7 +148,16 @@ pub fn analisis(
     while let Some(ip) = kerja.pop() {
         let s = r.keadaan[ip].clone().expect("diisi saat masuk antrean");
         // Penerus yang keadaannya bentrok dengan kedatangan sebelumnya: instruksi ini dijalankan VM.
-        let lanjut = langkah(f, cari, &mut r, ip, s)
+        let lanjut = langkah(f, cari, &mut r, ip, s);
+        // Pemanggil native mengisi posisi masuk fungsi bulat dari registernya, bukan stack VM.
+        if let (Some(ps), false) = (&lanjut, kembali == KEMBALI_BULAT) {
+            for (t, st) in ps {
+                if *t != masuk || r.keadaan[masuk].as_ref() == Some(st) { continue; }
+                let dasar = lebar.as_ref().unwrap_or(&r.jenis_masuk);
+                if let Some(j) = perlebar(dasar, st) { *lebar = Some(j); }
+            }
+        }
+        let lanjut = lanjut
             .filter(|ps| ps.iter().all(|(t, st)| *t < n && r.keadaan[*t].as_ref().is_none_or(|a| a == st)));
         let Some(ps) = lanjut else { r.keluar[ip] = true; continue };
         for (t, st) in ps {
@@ -148,9 +185,28 @@ pub fn analisis(
     // operand); kode yang kebanyakan langkah lebih lambat dari VM sendiri.
     let jalan = |ip: usize| r.keadaan[ip].is_some() && !r.keluar[ip];
     let asli = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Asli | Cara::Buka(_))).count();
-    let langkah_vm = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Langkah { .. })).count();
-    if langkah_vm * 4 > asli {
+    // `Call` ke fungsi VM juga membayar pintu masuk bingkai callee dari dalam langkah: dihitung tiga.
+    let langkah_vm: usize = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Langkah { .. }))
+        .map(|ip| match (kode[ip].op, r.keadaan[ip].as_ref()) {
+            (OpCode::Call, Some(st)) if st.len() > kode[ip].arg as usize
+                && st[st.len() - kode[ip].arg as usize - 1] == Jenis::Nilai => 3,
+            _ => 1,
+        }).sum();
+    // Mode stres memaksa jalur native sebanyak mungkin, untung atau tidak.
+    let stres = super::ambang() == 0;
+    if langkah_vm * 4 > asli && !stres {
         return Err(format!("{langkah_vm} instruksi dijalankan VM, cuma {asli} native"));
+    }
+    // Pintu masuk dari VM (±320 instruksi mesin) baru tertutup kalau badannya cukup panjang atau berulang.
+    let berulang = (0..n).any(|ip| jalan(ip) && matches!(kode[ip].op, OpCode::Jump | OpCode::JumpFalse | OpCode::JumpTrue
+        | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep) && (kode[ip].arg as usize) <= ip);
+    let dikerjakan = (0..n).filter(|&ip| jalan(ip)).count();
+    // Panggilan native langsung (rekursi `fib`) membawa kerja sebanyak apa pun; badan yang murni angka
+    // sudah untung walau pendek. Yang tersisa: badan pendek yang hidup dari pembantu nilai VM.
+    let memanggil = (0..n).any(|ip| jalan(ip) && kode[ip].op == OpCode::Call && matches!(r.cara[ip], Cara::Asli));
+    let pembantu = (0..n).any(|ip| jalan(ip) && !matches!(r.cara[ip], Cara::Asli | Cara::Buka(_)));
+    if kembali == KEMBALI_SKALAR && !berulang && !memanggil && pembantu && dikerjakan < 32 && !stres {
+        return Err(format!("cuma {dikerjakan} instruksi tanpa loop, lebih murah di VM"));
     }
     // Blok dasar: titik masuk, sasaran lompat, dan instruksi yang tidak didatangi dari pendahulunya.
     r.pemimpin[masuk] = true;
@@ -250,6 +306,15 @@ fn langkah_lambat(
             return Some((Cara::Benar, vec![(a, s.clone()), (lanjut, s)]));
         }
         OpCode::Return if r.kembali == KEMBALI_SKALAR && puncak.di_vm() => return Some((Cara::KembaliNilai, vec![])),
+        OpCode::CekEnum if puncak.di_vm() => {
+            s.pop();
+            s.push(Bool);
+            return Some((Cara::Pola, vec![(lanjut, s)]));
+        }
+        OpCode::AmbilPayload if puncak.di_vm() => {
+            *s.last_mut()? = Nilai;
+            return Some((Cara::Payload, vec![(lanjut, s)]));
+        }
         OpCode::Const | OpCode::Unit => {
             let bawaan = ins.op == OpCode::Const && matches!(f.chunk.constants.get(a)?, VmValue::NativeFn(_));
             s.push(if bawaan { Bawaan } else { Nilai });
@@ -279,7 +344,8 @@ fn langkah_lambat(
 }
 
 /// Instruksi yang aman dijalankan VM satu per satu dari dalam kode native: `(ambil, taruh, lokal
-/// yang ditulis)`. Tidak pernah mendorong bingkai, melompat, atau bergabung dengan instruksi sesudahnya.
+/// yang ditulis)`. Tidak melompat atau bergabung dengan instruksi sesudahnya; bingkai yang didorong `Call`
+/// dijalankan VM sampai kembali (`lambat::langkah`).
 fn efek_langkah(kode: &[crate::vm::opcode::Instruction], ip: usize, s: &[Jenis]) -> Option<(usize, usize, Option<usize>)> {
     let ins = kode[ip];
     let a = ins.arg as usize;
@@ -306,8 +372,18 @@ fn efek_langkah(kode: &[crate::vm::opcode::Instruction], ip: usize, s: &[Jenis])
         OpCode::Slice if ada_vm(3) => (3, 1, None),
         OpCode::GetField | OpCode::GetFieldPrivat if ada_vm(1) => (1, 1, None),
         OpCode::BuildArray | OpCode::BuildTuple => (a, 1, None),
+        // Pola dan literal tipe pemakai: tidak satu pun digabung VM dengan instruksi sesudahnya.
+        OpCode::CekEnum | OpCode::CekStruct | OpCode::AmbilPayload | OpCode::HasField | OpCode::BuildEnum => (1, 1, None),
+        OpCode::BuildStruct => (2 * a + 1, 1, None),
+        OpCode::SlideDown => (a + 1, 1, None),
+        OpCode::SetField | OpCode::SetFieldPrivat if ada_vm(2) => (2, 0, None),
+        OpCode::LoadGlobal => (0, 1, None),
+        OpCode::StoreGlobal => (1, 1, None),
         // Fungsi bawaan tidak pernah mendorong bingkai (`Vm::call_value`, cabang `NativeFn`).
-        OpCode::Call if a < t && s[t - a - 1] == Jenis::Bawaan => (a + 1, 1, None),
+        // Callee milik VM: bawaan dijalankan di tempat, fungsi/closure/method lewat bingkai VM sampai kembali.
+        OpCode::Call if a < t && s[t - a - 1].di_vm() => (a + 1, 1, None),
+        OpCode::GetMethod if ada_vm(1) => (1, 1, None),
+        OpCode::PeriksaArgMetode => { let n = (a >> 24) + 2; (n, n, None) }
         _ => return None,
     })
 }
@@ -388,6 +464,14 @@ fn langkah_asli(
             let t = s.len();
             if t < 2 || s[t - 1].di_vm() || s[t - 2].di_vm() { return None; }
             s.swap(t - 1, t - 2);
+        }
+        // Akhir scope blok: puncak tetap, `a` di bawahnya dibuang (yang milik VM lewat `Cara::Langkah`).
+        OpCode::SlideDown => {
+            let t = s.len();
+            if a >= t || s[t - a - 1..].iter().any(|j| j.di_vm()) { return None; }
+            let atas = s.pop()?;
+            s.truncate(t - a - 1);
+            s.push(atas);
         }
         OpCode::StoreLocal | OpCode::SimpanBuang => {
             let v = *s.last()?;

@@ -60,12 +60,23 @@ pub extern "C" fn langkah(ip: i64, jenis: *const Jenis, t: i64, ambil: i64, sesu
     }
     let d = vm.frames.len();
     vm.frames.last_mut().expect("bingkai terluar").ip = ip as usize;
-    if let Err(e) = vm.run_until_inner::<true, true>(d - 1) {
+    // `Call` atas fungsi VM mendorong bingkai: badannya dijalankan sampai kembali ke bingkai ini.
+    // `ReturnNil` yang kembali tepat ke kedalaman itu tidak mendorong apa pun: jawabannya `unit`
+    // (aturan `Vm::call_value_immediate`).
+    let hasil = vm.run_until_inner::<true, true>(d - 1).and_then(|_| {
+        if vm.frames.len() <= d { return Ok(()); }
+        vm.run_until_inner::<true, false>(d)?;
+        if vm.frames.len() == d && vm.stack.len() + 1 == basis + sesudah as usize { vm.stack.push(VmValue::Unit); }
+        Ok(())
+    });
+    if let Err(e) = hasil {
         GALAT.with(|g| *g.borrow_mut() = Some(e));
         return 2;
     }
     let ok = vm.frames.len() == d && vm.frames[d - 1].ip == ip as usize + 1 && vm.stack.len() == basis + sesudah as usize;
-    assert!(ok, "bug di jrgc: langkah JIT di ip {ip} meninggalkan VM dalam bentuk lain");
+    assert!(ok, "bug di jrgc: langkah JIT {:?} di ip {ip} meninggalkan VM dalam bentuk lain (bingkai {}/{d}, ip {}, stack {}/{})",
+        vm.frames.last().map(|f| f.func.chunk.code[ip as usize].op), vm.frames.len(), vm.frames.last().map_or(0, |f| f.ip),
+        vm.stack.len(), basis + sesudah as usize);
     0
 }
 
@@ -105,6 +116,64 @@ pub extern "C" fn simpan(ke: i64, dari: i64, nilai: i64, jenis: i32, pindah: i32
         }
     };
     vm.simpan_lokal(basis + ke as usize, v);
+}
+
+/// `CekEnum` atas posisi `p` milik VM dengan pola `desc` (konstanta chunk): 0/1 = hasilnya, posisinya
+/// dilepas; 2 = jumlah sub-polanya salah, belum ada yang berubah (VM yang melaporkannya).
+pub extern "C" fn pola(p: i64, desc: *const VmValue) -> i32 {
+    let (vm, basis) = konteks();
+    let v = sediakan(vm, basis, p as usize);
+    match crate::vm::cocok_enum(v, unsafe { &*desc }) {
+        Ok(b) => { *v = VmValue::Nil; b as i32 }
+        Err(_) => 2,
+    }
+}
+
+/// `AmbilPayload`: posisi `p` diganti payload enumnya; 1 = tidak berpayload (VM yang melaporkannya).
+pub extern "C" fn payload(p: i64) -> i32 {
+    let (vm, basis) = konteks();
+    let v = sediakan(vm, basis, p as usize);
+    let Some((_, _, Some(isi))) = v.bagian_enum() else { return 1 };
+    *v = isi.clone();
+    0
+}
+
+/// Isi lokal `slot` bingkai terluar dibaca di tempat (sel lewat kuncinya); `None` = di luar stack.
+fn lihat_lokal<T>(slot: i64, f: impl FnOnce(&VmValue) -> T) -> Option<T> {
+    let (vm, basis) = konteks();
+    Some(match vm.stack.get(basis + slot as usize)? {
+        VmValue::Cell(c) => f(&c.lock().unwrap_or_else(|p| p.into_inner())),
+        v => f(v),
+    })
+}
+
+/// `LoadLocal` + `CekEnum` tanpa menyalin lokalnya: 0/1 = hasil; 2 = VM yang menjalankan keduanya.
+pub extern "C" fn pola_lokal(slot: i64, desc: *const VmValue) -> i32 {
+    lihat_lokal(slot, |v| crate::vm::cocok_enum(v, unsafe { &*desc }).map_or(2, |b| b as i32)).unwrap_or(2)
+}
+
+/// `LoadLocal` + `AmbilPayload`: posisi `ke` = payload lokal `slot`; 1 = VM yang menjalankan keduanya.
+pub extern "C" fn payload_lokal(slot: i64, ke: i64) -> i32 {
+    let Some(Some(isi)) = lihat_lokal(slot, |v| match v.bagian_enum() {
+        Some((_, _, Some(isi))) => Some(isi.clone()),
+        _ => None,
+    }) else { return 1 };
+    let (vm, basis) = konteks();
+    *sediakan(vm, basis, ke as usize) = isi;
+    0
+}
+
+/// `LoadLocal` yang langsung dibuka (`buka`) tanpa menyalin lokalnya ke stack VM.
+pub extern "C" fn buka_lokal(slot: i64, jenis: i32, keluar: *mut i64) -> i32 {
+    let n = lihat_lokal(slot, |v| match (v, jenis) {
+        (VmValue::Int(n), 1) => i64::try_from(*n).ok(),
+        (VmValue::Float(x), 5) => Some(x.to_bits() as i64),
+        _ => None,
+    }).flatten();
+    match n {
+        Some(n) => { unsafe { *keluar = n }; 0 }
+        None => 1,
+    }
 }
 
 /// Posisi `p` dilepas (`Pop` atas nilai milik VM).

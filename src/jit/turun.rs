@@ -82,7 +82,8 @@ pub fn tanda_tangan_umum(cc: CallConv, param: &[Type], hasil: Option<Type>) -> S
 /// Fungsi `lambat` di luar `baca`/`tulis`.
 pub struct ImporLambat {
     pub langkah: FuncId, pub muat: FuncId, pub buang: FuncId, pub benar: FuncId, pub buka: FuncId,
-    pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId,
+    pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
+    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId,
 }
 
 /// Fungsi impor dan identitas bingkai untuk blok deopt.
@@ -170,8 +171,10 @@ pub fn turunkan(
     let (baca, tulis) = (m.declare_func_in_func(impor.baca, b.func), m.declare_func_in_func(impor.tulis, b.func));
     let wadah = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
     let il = impor.lambat;
-    let [f_langkah, f_muat, f_buang, f_benar, f_buka, f_taruh, f_ambil, f_simpan] =
-        [il.langkah, il.muat, il.buang, il.benar, il.buka, il.taruh, il.ambil, il.simpan]
+    let [f_langkah, f_muat, f_buang, f_benar, f_buka, f_taruh, f_ambil, f_simpan, f_pola, f_payload] =
+        [il.langkah, il.muat, il.buang, il.benar, il.buka, il.taruh, il.ambil, il.simpan, il.pola, il.payload]
+        .map(|id| m.declare_func_in_func(id, b.func));
+    let [f_pola_lokal, f_payload_lokal, f_buka_lokal] = [il.pola_lokal, il.payload_lokal, il.buka_lokal]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -192,6 +195,9 @@ pub fn turunkan(
     b.ins().jump(blok[r.masuk].expect("titik masuk selalu pemimpin"), &[]);
 
     let mut terbuka = false;
+    // `LoadLocal` milik VM yang digabung dengan instruksi sesudahnya: yang sudah dikerjakan / bukaan
+    // instruksi sesudahnya sudah dikerjakan.
+    let (mut lewati, mut dibuka) = (false, false);
     for ip in 0..kode.len() {
         let Some(s) = &r.keadaan[ip] else { terbuka = false; continue };
         if let Some(bl) = blok[ip] {
@@ -199,7 +205,9 @@ pub fn turunkan(
             b.switch_to_block(bl);
             terbuka = true;
         }
-        if let Some(u) = undi {
+        if std::mem::take(&mut lewati) { continue; }
+        // Sesudah bukaan gabungan, posisinya belum ada di stack VM: deopt acak cuma di instruksi pertamanya.
+        if let (Some(u), false) = (undi, dibuka) {
             let c = b.ins().call(u, &[]);
             let c = b.inst_results(c)[0];
             jaga(&mut b, &k, &var, c, ip, s);
@@ -221,6 +229,8 @@ pub fn turunkan(
                 // Nilai milik VM yang dipakai sebagai angka: jaga jenisnya, lalu instruksinya asli.
                 buka_s = s.clone();
                 for &(p, j) in daftar {
+                    buka_s[p] = j;
+                    if dibuka { continue; }
                     let pk = b.ins().stack_addr(ptr, wadah, 0);
                     let (pv, jv) = (i64c(&mut b, p as i64), b.ins().iconst(types::I32, if j == Jenis::Pecahan { 5 } else { 1 }));
                     let c = b.ins().call(f_buka, &[pv, jv, pk]);
@@ -228,8 +238,8 @@ pub fn turunkan(
                     jaga(&mut b, &k, &var, st, ip, s);
                     let v = b.ins().stack_load(ptr, types::I64, wadah, 0);
                     b.def_var(var[p], v);
-                    buka_s[p] = j;
                 }
+                dibuka = false;
                 &buka_s
             }
             Cara::Langkah { ambil, taruh } => {
@@ -255,7 +265,51 @@ pub fn turunkan(
                 continue;
             }
             Cara::Muat => {
-                let (d, ke) = (i64c(&mut b, a as i64), i64c(&mut b, t as i64));
+                // Dipakai langsung oleh instruksi sesudahnya (bukan sasaran lompat): lokalnya dibaca di
+                // tempat; gagal = deopt di sini, sebelum keduanya.
+                let gabung = !r.pemimpin.get(ip + 1).copied().unwrap_or(true)
+                    && r.keadaan.get(ip + 1).is_some_and(|k| k.is_some()) && !r.keluar[ip + 1];
+                let d = i64c(&mut b, a as i64);
+                match r.cara.get(ip + 1) {
+                    Some(Cara::Pola) if gabung => {
+                        let desc = i64c(&mut b, &f.chunk.constants[kode[ip + 1].arg as usize] as *const _ as i64);
+                        let c = b.ins().call(f_pola_lokal, &[d, desc]);
+                        let c = b.inst_results(c)[0];
+                        let salah = b.ins().icmp_imm_u(IntCC::Equal, c, 2);
+                        jaga(&mut b, &k, &var, salah, ip, s);
+                        let v = b.ins().uextend(types::I64, c);
+                        b.def_var(var[t], v);
+                        lewati = true;
+                        continue;
+                    }
+                    Some(Cara::Payload) if gabung => {
+                        let ke = i64c(&mut b, t as i64);
+                        let c = b.ins().call(f_payload_lokal, &[d, ke]);
+                        let c = b.inst_results(c)[0];
+                        jaga(&mut b, &k, &var, c, ip, s);
+                        lewati = true;
+                        continue;
+                    }
+                    // Semua bukaan instruksi sesudahnya dikerjakan di sini, jadi deopt-nya tetap di `ip`.
+                    Some(Cara::Buka(daftar)) if gabung && daftar.iter().any(|(p, _)| *p == t) => {
+                        for &(p, j) in daftar {
+                            let pk = b.ins().stack_addr(ptr, wadah, 0);
+                            let jv = b.ins().iconst(types::I32, if j == Jenis::Pecahan { 5 } else { 1 });
+                            let c = if p == t { b.ins().call(f_buka_lokal, &[d, jv, pk]) } else {
+                                let pv = i64c(&mut b, p as i64);
+                                b.ins().call(f_buka, &[pv, jv, pk])
+                            };
+                            let c = b.inst_results(c)[0];
+                            jaga(&mut b, &k, &var, c, ip, s);
+                            let v = b.ins().stack_load(ptr, types::I64, wadah, 0);
+                            b.def_var(var[p], v);
+                        }
+                        dibuka = true;
+                        continue;
+                    }
+                    _ => {}
+                }
+                let ke = i64c(&mut b, t as i64);
                 b.ins().call(f_muat, &[d, ke]);
                 continue;
             }
@@ -300,6 +354,24 @@ pub fn turunkan(
                 } else { (sasaran, sesudah) };
                 b.ins().brif(v, ya, &[], tidak, &[]);
                 terbuka = false;
+                continue;
+            }
+            Cara::Pola => {
+                // Gagal (2) = deopt di sini dengan stack sebelum instruksinya; VM yang melapor.
+                let (p, d) = (i64c(&mut b, t as i64 - 1), i64c(&mut b, &f.chunk.constants[a] as *const _ as i64));
+                let c = b.ins().call(f_pola, &[p, d]);
+                let c = b.inst_results(c)[0];
+                let salah = b.ins().icmp_imm_u(IntCC::Equal, c, 2);
+                jaga(&mut b, &k, &var, salah, ip, s);
+                let v = b.ins().uextend(types::I64, c);
+                b.def_var(var[t - 1], v);
+                continue;
+            }
+            Cara::Payload => {
+                let p = i64c(&mut b, t as i64 - 1);
+                let c = b.ins().call(f_payload, &[p]);
+                let c = b.inst_results(c)[0];
+                jaga(&mut b, &k, &var, c, ip, s);
                 continue;
             }
             Cara::KembaliNilai => {
@@ -437,6 +509,7 @@ pub fn turunkan(
                 b.def_var(var[t - 2], y);
                 b.def_var(var[t - 1], x);
             }
+            OpCode::SlideDown => { let v = atas(&mut b, 1); b.def_var(var[t - a - 1], v); }
             OpCode::Pop | OpCode::LoadGlobal => {}
             OpCode::StoreLocal | OpCode::SimpanBuang => { let v = atas(&mut b, 1); b.def_var(var[a], v); }
             OpCode::Jump => { b.ins().jump(blok[a].expect("sasaran lompat terjangkau"), &[]); terbuka = false; }

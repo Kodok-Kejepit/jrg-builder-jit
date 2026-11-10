@@ -59,6 +59,11 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
             jb.symbol("jrg_jit_taruh", lambat::taruh as *const u8);
             jb.symbol("jrg_jit_ambil", lambat::ambil as *const u8);
             jb.symbol("jrg_jit_simpan", lambat::simpan as *const u8);
+            jb.symbol("jrg_jit_pola", lambat::pola as *const u8);
+            jb.symbol("jrg_jit_payload", lambat::payload as *const u8);
+            jb.symbol("jrg_jit_pola_lokal", lambat::pola_lokal as *const u8);
+            jb.symbol("jrg_jit_payload_lokal", lambat::payload_lokal as *const u8);
+            jb.symbol("jrg_jit_buka_lokal", lambat::buka_lokal as *const u8);
             let mut m = JITModule::new(jb);
             let cc = m.isa().default_call_conv();
             let catat = m.declare_function("jrg_jit_catat", Linkage::Import, &turun::tanda_tangan_catat(&m, cc)).ok()?;
@@ -78,6 +83,11 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
                 taruh: impor("jrg_jit_taruh", &[I64, p], None)?,
                 ambil: impor("jrg_jit_ambil", &[I64, I64], None)?,
                 simpan: impor("jrg_jit_simpan", &[I64, I64, I64, I32, I32], None)?,
+                pola: impor("jrg_jit_pola", &[I64, p], Some(I32))?,
+                payload: impor("jrg_jit_payload", &[I64], Some(I32))?,
+                pola_lokal: impor("jrg_jit_pola_lokal", &[I64, p], Some(I32))?,
+                payload_lokal: impor("jrg_jit_payload_lokal", &[I64, I64], Some(I32))?,
+                buka_lokal: impor("jrg_jit_buka_lokal", &[I64, I32, p], Some(I32))?,
             };
             let undi = if deopt::acak_aktif() {
                 Some(m.declare_function("jrg_jit_undi", Linkage::Import, &turun::tanda_tangan_undi(cc)).ok()?)
