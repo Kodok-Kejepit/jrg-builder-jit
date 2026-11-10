@@ -640,7 +640,7 @@ pub fn turunkan(
                 b.switch_to_block(gagal);
                 kembali_status(&mut b, GAGAL);
                 b.switch_to_block(terus);
-                if !matches!(ins.op, OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::Pow) {
+                if matches!(ins.op, OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge) {
                     let v = b.ins().uextend(types::I64, st);
                     b.def_var(var[t - 2], v);
                 }

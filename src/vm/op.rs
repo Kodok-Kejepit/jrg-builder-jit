@@ -110,6 +110,10 @@ impl Vm {
             OpCode::Add => B::Add, OpCode::Sub => B::Sub, OpCode::Mul => B::Mul, OpCode::Div => B::Div,
             OpCode::Mod => B::Rem, OpCode::Pow => B::Pow, OpCode::Eq => B::Eq, OpCode::Ne => B::Ne,
             OpCode::Lt => B::Lt, OpCode::Le => B::Le, OpCode::Gt => B::Gt, OpCode::Ge => B::Ge,
+            OpCode::BitAnd => B::BitAnd, OpCode::BitOr => B::BitOr, OpCode::BitXor => B::BitXor,
+            OpCode::Shl => B::Shl, OpCode::Shr => B::Shr,
+            // `&^` tidak punya operator milik pemakai.
+            OpCode::AndNot => return a.and_not(&b).map_err(|e| VmError::at(e, sp)),
             _ => return Err(VmError::at(format!("bug di jrgc: op_biner atas {op:?}"), sp)),
         };
         match self.operator_biner_pengguna(&bop, &a, &b) {
@@ -135,7 +139,12 @@ impl Vm {
             OpCode::Lt => a.lt(&b).map(VmValue::Bool).map_err(galat),
             OpCode::Le => a.le(&b).map(VmValue::Bool).map_err(galat),
             OpCode::Gt => a.gt(&b).map(VmValue::Bool).map_err(galat),
-            _ => a.ge(&b).map(VmValue::Bool).map_err(galat),
+            OpCode::Ge => a.ge(&b).map(VmValue::Bool).map_err(galat),
+            OpCode::BitAnd => a.bit_and(&b).map_err(galat),
+            OpCode::BitOr => a.bit_or(&b).map_err(galat),
+            OpCode::BitXor => a.bit_xor(&b).map_err(galat),
+            OpCode::Shl => a.shl(&b).map_err(galat),
+            _ => a.shr(&b).map_err(galat),
         }
     }
 

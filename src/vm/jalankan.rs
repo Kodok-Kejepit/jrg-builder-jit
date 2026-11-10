@@ -101,39 +101,8 @@ impl Vm {
                 (op, arg, sp)
             };
 
-            // Operator yang didefinisikan pengguna didahulukan atas aturan
-
-            // bawaan di SETIAP situs di bawah. Ditulis sebagai makro dan
-
-            // bukan disalin 15 kali: aturan yang punya lima belas salinan
-
-            // akan melenceng, dan yang paling mungkin terlewat justru
-
-            // operator yang jarang dipakai — persis yang paling sulit
-
-            // ketahuan.
-
-            macro_rules! biner_pengguna {
-
-            ($op:expr, $a:expr, $b:expr) => {
-
-            match self.operator_biner_pengguna(&$op, &$a, &$b) {
-
-            Err(e) => return Err(if e.span.is_none() { VmError::at(e.msg, sp) } else { e }),
-
-            Ok(Some(h)) => { self.push(h); continue; }
-
-            Ok(None) => {}
-
-            }
-
-            };
-
-            }
-
-            // Dua bilangan bulat tidak pernah punya operator milik pemakai dan bukan jalur
-            // tampilan, jadi dijawab DI TEMPAT tanpa mengangkat keduanya dari stack. Luapan dan
-            // pembagi nol jatuh ke jalur biasa (kalimatnya di sana).
+            // Dua bulat tidak punya operator milik pemakai: dijawab di tempat. Sisanya (operator pemakai,
+            // luapan, pembagi nol) lewat `op_biner` (src/vm/op.rs), satu tempat juga untuk jalur lambat JIT.
             macro_rules! int_cepat {
             () => {
             if let [.., VmValue::Int(x), VmValue::Int(y)] = self.stack.as_slice() {
@@ -643,12 +612,22 @@ impl Vm {
                 OpCode::Sub | OpCode::Mul | OpCode::Mod => { int_cepat!(); let (a, b) = self.pop2(sp)?; let h = self.op_biner(op, a, b, sp)?; self.push(h); }
                 OpCode::Div | OpCode::Pow => { let (a, b) = self.pop2(sp)?; let h = self.op_biner(op, a, b, sp)?; self.push(h); }
                 OpCode::Neg  => { let a = self.pop(sp)?; unary_pengguna!(crate::parser::UnaryOp::Neg, a); self.push(a.neg().map_err(|e| VmError::at(e, sp))?); }
-                OpCode::BitAnd => { let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::BitAnd, a, b); self.push(a.bit_and(&b).map_err(|e| VmError::at(e, sp))?); }
-                OpCode::BitOr  => { let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::BitOr, a, b); self.push(a.bit_or(&b).map_err(|e| VmError::at(e, sp))?); }
-                OpCode::BitXor => { let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::BitXor, a, b); self.push(a.bit_xor(&b).map_err(|e| VmError::at(e, sp))?); }
-                OpCode::Shl    => { let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::Shl, a, b); self.push(a.shl(&b).map_err(|e| VmError::at(e, sp))?); }
-                OpCode::Shr    => { let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::Shr, a, b); self.push(a.shr(&b).map_err(|e| VmError::at(e, sp))?); }
-                OpCode::AndNot => { let (a,b) = self.pop2(sp)?; self.push(a.and_not(&b).map_err(|e| VmError::at(e, sp))?); }
+                OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::Shl | OpCode::Shr | OpCode::AndNot => {
+                    // Dua bulat (tanpa operator milik pemakai, tanpa galat): di tempat, seperti `int_cepat`.
+                    if let [.., VmValue::Int(x), VmValue::Int(y)] = self.stack.as_mut_slice() {
+                        let h = match op {
+                            OpCode::BitAnd => Some(*x & *y),
+                            OpCode::BitOr => Some(*x | *y),
+                            OpCode::BitXor => Some(*x ^ *y),
+                            OpCode::AndNot => Some(*x & !*y),
+                            _ => None,
+                        };
+                        if let Some(h) = h { *x = h; self.stack.pop(); continue; }
+                    }
+                    let (a, b) = self.pop2(sp)?;
+                    let h = self.op_biner(op, a, b, sp)?;
+                    self.push(h);
+                }
                 // `~` ikut operator milik pemakai (`bit_not`) seperti `-` dan `!` — dulu tidak, jadi
                 // `~p` jalan di interpreter dan ditolak di sini.
                 OpCode::BitNot => { let a = self.pop(sp)?; unary_pengguna!(crate::parser::UnaryOp::BitNot, a); self.push(a.bit_not().map_err(|e| VmError::at(e, sp))?); }

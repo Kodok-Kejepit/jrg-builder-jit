@@ -572,9 +572,10 @@ fn langkah_lambat(
     }
     // Operand yang bukan dua angka native (teks, operator pemakai, campur jenis): `Vm::op_biner` langsung.
     if matches!(ins.op, OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::Pow
-        | OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge)
+        | OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge | OpCode::BitAnd
+        | OpCode::BitOr | OpCode::BitXor | OpCode::Shl | OpCode::Shr | OpCode::AndNot)
         && t >= 2 && !s[t - 2..].iter().any(|j| matches!(j, Fungsi(_))) {
-        let banding = !matches!(ins.op, OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::Pow);
+        let banding = matches!(ins.op, OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge);
         s.truncate(t - 2);
         s.push(if banding { Bool } else { Nilai });
         return Some((Cara::Biner, vec![(lanjut, s)]));
