@@ -66,6 +66,10 @@ pub enum Cara {
     /// Aritmetika/banding yang bukan dua angka native (`lambat::biner`, `Vm::op_biner`): hasil aritmetika
     /// milik VM, hasil banding bool asli.
     Biner,
+    /// `LoadUpval` (`lambat::muat_upval`): isi sel tangkapan, jenisnya bisa dispekulasikan.
+    MuatUpval,
+    /// `StoreUpval` (`lambat::simpan_upval`); puncaknya tetap.
+    SimpanUpval,
     /// `Dup` atas nilai milik VM (`lambat::salin`).
     Salin,
     /// `Swap` dengan posisi milik VM (`lambat::tukar`/`pindah`).
@@ -346,8 +350,9 @@ fn langkah(
 fn operand_angka(op: OpCode, arg: usize) -> usize {
     match op {
         OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::Lt | OpCode::Le
-        | OpCode::Gt | OpCode::Ge | OpCode::Eq | OpCode::Ne | OpCode::MakeIterRentang => 2,
-        OpCode::Neg | OpCode::IndeksLokal => 1,
+        | OpCode::Gt | OpCode::Ge | OpCode::Eq | OpCode::Ne | OpCode::MakeIterRentang
+        | OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::AndNot | OpCode::Shl | OpCode::Shr => 2,
+        OpCode::Neg | OpCode::IndeksLokal | OpCode::BitNot => 1,
         // Cuma indeksnya; nilai yang ditulis boleh apa saja (`Cara::Langkah`).
         OpCode::TulisIndexLokal => 1,
         OpCode::Call => arg,
@@ -437,6 +442,12 @@ fn langkah_lambat(
             s.push(atas);
             return Some((Cara::Geser, vec![(lanjut, s)]));
         }
+        OpCode::LoadUpval => {
+            r.spek[ip] = spek_hasil(f, ip);
+            s.push(r.spek[ip].unwrap_or(Nilai));
+            return Some((Cara::MuatUpval, vec![(lanjut, s)]));
+        }
+        OpCode::StoreUpval if t >= 1 && !matches!(puncak, Fungsi(_)) => return Some((Cara::SimpanUpval, vec![(lanjut, s)])),
         OpCode::LoadGlobal => {
             r.spek[ip] = spek_hasil(f, ip);
             s.push(r.spek[ip].unwrap_or(Nilai));
@@ -724,6 +735,12 @@ fn langkah_asli(
         // `%` pecahan adalah `fmod`, yang tidak punya instruksi mesin: VM yang menghitungnya.
         OpCode::Mod => { bulat2(&mut s)?; s.push(Bulat) }
         OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => { angka2(&mut s)?; s.push(Bool) }
+        // Bit atas dua bulat 64 bit: hasil yang tidak muat (geser kiri) atau geseran di luar batas deopt.
+        OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::AndNot | OpCode::Shl | OpCode::Shr => {
+            bulat2(&mut s)?;
+            s.push(Bulat)
+        }
+        OpCode::BitNot => if *s.last()? != Bulat { return None },
         OpCode::Eq | OpCode::Ne => {
             let t = s.len();
             if t >= 2 && s[t - 1] == Bool && s[t - 2] == Bool { s.truncate(t - 2); } else { angka2(&mut s)?; }

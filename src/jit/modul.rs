@@ -80,6 +80,8 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
             jb.symbol("jrg_jit_cek_metode", lambat::cek_metode as *const u8);
             jb.symbol("jrg_jit_bawaan", lambat::bawaan as *const u8);
             jb.symbol("jrg_jit_biner", lambat::biner as *const u8);
+            jb.symbol("jrg_jit_muat_upval", lambat::muat_upval as *const u8);
+            jb.symbol("jrg_jit_simpan_upval", lambat::simpan_upval as *const u8);
             let mut m = JITModule::new(jb);
             let cc = m.isa().default_call_conv();
             let catat = m.declare_function("jrg_jit_catat", Linkage::Import, &turun::tanda_tangan_catat(&m, cc)).ok()?;
@@ -120,6 +122,8 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
                 cek_metode: impor("jrg_jit_cek_metode", &[I64, p], Some(I32))?,
                 bawaan: impor("jrg_jit_bawaan", &[I64, p, I64, I64, p], Some(I32))?,
                 biner: impor("jrg_jit_biner", &[I64, p, I64, p], Some(I32))?,
+                muat_upval: impor("jrg_jit_muat_upval", &[I64, I64], Some(I32))?,
+                simpan_upval: impor("jrg_jit_simpan_upval", &[I64, I64, I64, I32], Some(I32))?,
             };
             let undi = if deopt::acak_aktif() {
                 Some(m.declare_function("jrg_jit_undi", Linkage::Import, &turun::tanda_tangan_undi(cc)).ok()?)

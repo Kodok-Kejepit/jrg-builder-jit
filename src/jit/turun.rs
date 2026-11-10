@@ -87,7 +87,7 @@ pub struct ImporLambat {
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
-    pub bawaan: FuncId, pub biner: FuncId,
+    pub bawaan: FuncId, pub biner: FuncId, pub muat_upval: FuncId, pub simpan_upval: FuncId,
 }
 
 /// Fungsi impor dan identitas bingkai untuk blok deopt.
@@ -239,6 +239,8 @@ pub fn turunkan(
         .map(|id| m.declare_func_in_func(id, b.func));
     let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode, f_bawaan, f_biner] =
         [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode, il.bawaan, il.biner]
+        .map(|id| m.declare_func_in_func(id, b.func));
+    let [f_muat_upval, f_simpan_upval] = [il.muat_upval, il.simpan_upval]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -595,6 +597,24 @@ pub fn turunkan(
                 }
                 continue;
             }
+            Cara::MuatUpval => {
+                let (idx, ke) = (i64c(&mut b, a as i64), i64c(&mut b, t as i64));
+                let c = b.ins().call(f_muat_upval, &[idx, ke]);
+                let c = b.inst_results(c)[0];
+                jaga(&mut b, &k, &var, c, ip, s);
+                if let Some(j) = r.spek[ip] { buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t, j); }
+                continue;
+            }
+            Cara::SimpanUpval => {
+                let j = s[t - 1];
+                let kode = match j { Jenis::Bulat => 1, Jenis::Bool => 2, Jenis::Kosong => 3, Jenis::Pecahan => 5, _ => 4 };
+                let v = if matches!(kode, 1 | 2 | 5) { b.use_var(var[t - 1]) } else { i64c(&mut b, 0) };
+                let args = [i64c(&mut b, a as i64), i64c(&mut b, t as i64 - 1), v, b.ins().iconst(types::I32, kode)];
+                let c = b.ins().call(f_simpan_upval, &args);
+                let c = b.inst_results(c)[0];
+                jaga(&mut b, &k, &var, c, ip, s);
+                continue;
+            }
             Cara::Salin => {
                 let (dari, ke) = (i64c(&mut b, t as i64 - 1), i64c(&mut b, t as i64));
                 b.ins().call(f_salin, &[dari, ke]);
@@ -744,6 +764,39 @@ pub fn turunkan(
                 let c = b.ins().icmp(cc, x, y);
                 let v = b.ins().uextend(types::I64, c);
                 b.def_var(var[t - 2], v);
+            }
+            OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::AndNot => {
+                let (x, y) = (atas(&mut b, 2), atas(&mut b, 1));
+                let h = match ins.op {
+                    OpCode::BitAnd => b.ins().band(x, y),
+                    OpCode::BitOr => b.ins().bor(x, y),
+                    OpCode::BitXor => b.ins().bxor(x, y),
+                    _ => b.ins().band_not(x, y),
+                };
+                b.def_var(var[t - 2], h);
+            }
+            OpCode::BitNot => { let x = atas(&mut b, 1); let h = b.ins().bnot(x); b.def_var(var[t - 1], h); }
+            // Geser kiri cuma kalau hasil i128-nya muat di 64 bit (bisa digeser balik); sisanya VM.
+            OpCode::Shl => {
+                let (x, y) = (atas(&mut b, 2), atas(&mut b, 1));
+                let jauh = b.ins().icmp_imm_u(IntCC::UnsignedGreaterThan, y, 63);
+                jaga(&mut b, &k, &var, jauh, ip, s);
+                let h = b.ins().ishl(x, y);
+                let balik = b.ins().sshr(h, y);
+                let hilang = b.ins().icmp(IntCC::NotEqual, balik, x);
+                jaga(&mut b, &k, &var, hilang, ip, s);
+                b.def_var(var[t - 2], h);
+            }
+            // Geser kanan atas nilai 64 bit: di atas 63 cuma tinggal tandanya; negatif dan >= 128 ke VM.
+            OpCode::Shr => {
+                let (x, y) = (atas(&mut b, 2), atas(&mut b, 1));
+                let salah = b.ins().icmp_imm_u(IntCC::UnsignedGreaterThanOrEqual, y, 128);
+                jaga(&mut b, &k, &var, salah, ip, s);
+                let enam3 = b.ins().iconst(types::I64, 63);
+                let besar = b.ins().icmp_imm_u(IntCC::UnsignedGreaterThan, y, 63);
+                let kk = b.ins().select(besar, enam3, y);
+                let h = b.ins().sshr(x, kk);
+                b.def_var(var[t - 2], h);
             }
             OpCode::AmbilLokal => { let v = b.use_var(var[a]); b.def_var(var[t], v); }
             OpCode::IndeksLokal => {

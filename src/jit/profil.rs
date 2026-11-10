@@ -45,10 +45,16 @@ pub struct ProfilFungsi {
 }
 
 impl ProfilFungsi {
+    /// Hitungan kasar tanpa operasi atomik tulis-baca (`lock xadd` di tiap panggilan dan putaran membuat
+    /// `--jit` ±9% lebih lambat dari `--vm` di kode yang tetap di VM); balapan antar-thread cuma kehilangan hitungan.
     #[inline]
-    pub fn catat_panggilan(&self) { self.panggilan.fetch_add(1, Ordering::Relaxed); }
+    pub fn catat_panggilan(&self) { self.panggilan.store(self.panggilan.load(Ordering::Relaxed).wrapping_add(1), Ordering::Relaxed); }
     #[inline]
-    pub fn catat_putaran(&self) -> u32 { self.putaran.fetch_add(1, Ordering::Relaxed).wrapping_add(1) }
+    pub fn catat_putaran(&self) -> u32 {
+        let n = self.putaran.load(Ordering::Relaxed).wrapping_add(1);
+        self.putaran.store(n, Ordering::Relaxed);
+        n
+    }
     /// Bit baru saja yang ditulis: sesudah situsnya stabil cuma satu baca, tanpa operasi atomik tulis.
     #[inline]
     pub fn catat_tipe(&self, ip: usize, b: u8) {

@@ -386,6 +386,30 @@ pub extern "C" fn muat_global(nama: *const String, ke: i64) -> i32 {
     0
 }
 
+/// `LoadUpval`: posisi `ke` = isi sel tangkapan ke-`idx` closure bingkai terluar; 1 = tidak ada (VM yang melapor).
+pub extern "C" fn muat_upval(idx: i64, ke: i64) -> i32 {
+    let (vm, basis) = konteks();
+    let Ok(sel) = vm.upval_at(idx as u32, None) else { return 1 };
+    let v = sel.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    *sediakan(vm, basis, ke as usize) = v;
+    0
+}
+
+/// `StoreUpval`: sel tangkapan ke-`idx` = nilai posisi `dari` berjenis `jenis` (kode `simpan`); 1 = tidak ada.
+pub extern "C" fn simpan_upval(idx: i64, dari: i64, nilai: i64, jenis: i32) -> i32 {
+    let (vm, basis) = konteks();
+    let Ok(sel) = vm.upval_at(idx as u32, None) else { return 1 };
+    let v = match jenis {
+        1 => VmValue::Int(nilai as i128),
+        2 => VmValue::Bool(nilai != 0),
+        3 => VmValue::Nil,
+        5 => VmValue::Float(f64::from_bits(nilai as u64)),
+        _ => sediakan(vm, basis, dari as usize).clone(),
+    };
+    *sel.lock().unwrap_or_else(|p| p.into_inner()) = v;
+    0
+}
+
 /// `StoreGlobal`: sel `var` modul `nama` = nilai posisi `dari` berjenis `jenis` (kode `simpan`);
 /// 1 = bukan `var` yang sudah didefinisikan (VM yang melapor), belum ada yang berubah.
 pub extern "C" fn simpan_global(nama: *const String, dari: i64, nilai: i64, jenis: i32) -> i32 {

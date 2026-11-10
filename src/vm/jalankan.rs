@@ -580,6 +580,7 @@ impl Vm {
                 OpCode::LoadUpval => {
                     let cell = self.upval_at(arg, sp)?;
                     let v = cell.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                    if PROFIL { self.catat_hasil(&v); }
                     self.push(v);
                 }
                 OpCode::StoreUpval => {

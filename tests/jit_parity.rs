@@ -471,3 +471,39 @@ fn panggilan_langsung_dan_spekulasi_hasil() {
     let deopt: u64 = h.stderr.lines().find_map(|b| b.strip_prefix("[jit] deopt: ")).map_or(0, |n| n.trim().parse().unwrap());
     assert!(deopt < 10, "{}", h.stderr);
 }
+
+// ── J4 langkah 9: operasi bit native dan upvalue (`dokumentasi/jit/j4-rencana.md`) ─────────────────
+
+const BIT: &str = r#"fn hash(s) {
+    var h = 2166136261
+    for i in 0..len(s) {
+        h = (h ^ 7) * 16777619
+        h = h & 4294967295
+    }
+    h
+}
+fn geser(x, k) { return x << k }
+fn kanan(x, k) { return x >> k }
+pub fn main() {
+    var t = 0
+    for i in 0..2000 { t = t ^ (i << 3) | (i >> 1) & 255 }
+    wok(t, hash("abcdef"), ~5, 12 &^ 10)
+    var g = 0
+    for i in 0..100 { g = g + geser(i, 2) + kanan(-i, 70) + kanan(i * 1000, 63) }
+    wok(g)
+    wok(geser(1, 63), geser(3, 62), geser(-1, 63), geser(1, 100), kanan(-8, 127))
+    wok(geser(1, 128))
+}
+"#;
+
+#[test]
+fn operasi_bit_native() {
+    // `& | ^ &^ ~` atas bulat 64 bit, `<<` yang hasilnya tidak muat dan geseran di luar batas jatuh ke VM
+    // (128 bit, kalimat galatnya milik VM).
+    let i = jalankan(BIT, &[], &[]);
+    assert!(!i.sukses && i.stdout.contains("9223372036854775808 13835058055282163712") && i.stderr.contains("1 << 128"), "{} {}", i.stdout, i.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(BIT, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}
