@@ -6,7 +6,8 @@ use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use super::layak::Jenis;
+use super::layak::{Cara, Jenis};
+use super::turun::BUKA_SUDAH;
 use crate::vm::value::VmValue;
 use crate::vm::vm::{CallFrame, Vm};
 
@@ -61,13 +62,18 @@ pub extern "C" fn undi() -> i32 {
 /// native): isinya diperbarui di tempat, posisi `Nilai` tetap nilai VM aslinya. Sisanya bingkai baru.
 pub(crate) fn pulihkan(vm: &mut Vm, catatan: Catatan) {
     JUMLAH.fetch_add(1, Ordering::Relaxed);
-    if std::env::var_os("JRG_JIT_SELIDIK").is_some() { for r in &catatan { let (f, rc) = super::modul::info(r.fid); eprintln!("[deopt] {} ip {} {:?} {:?} keluar={} sebelum={:?}", f.name, r.ip, f.chunk.code[r.ip as usize].op, rc.keadaan[r.ip as usize], rc.keluar[r.ip as usize], &f.chunk.code[r.ip as usize - 3..r.ip as usize].iter().map(|i| (i.op, i.arg)).collect::<Vec<_>>()); } }
+    if super::laporan::diminta() { catat_sebab(&catatan); }
     let mut rekaman = catatan.into_iter().rev();
     if let Some(r) = rekaman.next() {
         let (_, rencana) = super::modul::info(r.fid);
-        let jenis = rencana.keadaan[r.ip as usize].as_ref().expect("ip lanjut selalu terjangkau");
+        let ip = (r.ip as i64 & !BUKA_SUDAH) as usize;
+        let mut jenis = rencana.keadaan[ip].clone().expect("ip lanjut selalu terjangkau");
+        // Bukaan yang sudah berhasil: angkanya di bingkai native (lokal gabungan tidak pernah di stack VM).
+        if let (true, Cara::Buka(daftar)) = (r.ip as i64 & BUKA_SUDAH != 0, &rencana.cara[ip]) {
+            for &(p, j) in daftar { jenis[p] = j; }
+        }
         let fr = vm.frames.last_mut().expect("bingkai yang menjalankan kode native");
-        fr.ip = r.ip as usize;
+        fr.ip = ip;
         let basis = fr.slot + 1;
         let mut lama = vm.stack.split_off(basis);
         for (i, v) in r.nilai.into_iter().enumerate() {
@@ -89,6 +95,29 @@ pub(crate) fn pulihkan(vm: &mut Vm, catatan: Catatan) {
         let argc = f.arity as u8;
         vm.dorong_bingkai(CallFrame { func: f, ip: r.ip as usize, slot, defers: Vec::new(), argc, closure: None });
     }
+}
+
+/// Deopt per opcode (`titik keluar` atau `jaga`) untuk `JRG_JIT_LOG`: penentu opcode mana yang diturunkan berikutnya.
+static SEBAB: std::sync::Mutex<Vec<(String, u64)>> = std::sync::Mutex::new(Vec::new());
+
+fn catat_sebab(catatan: &Catatan) {
+    let Some(r) = catatan.first() else { return };
+    let (f, rc) = super::modul::info(r.fid);
+    let ip = (r.ip as i64 & !BUKA_SUDAH) as usize;
+    let jenis = if rc.keluar[ip] { "keluar" } else { "jaga" };
+    let kunci = format!("{jenis} {:?}", f.chunk.code[ip].op);
+    let mut g = SEBAB.lock().unwrap_or_else(|p| p.into_inner());
+    match g.iter_mut().find(|(k, _)| *k == kunci) {
+        Some((_, n)) => *n += 1,
+        None => g.push((kunci, 1)),
+    }
+}
+
+/// Sebab deopt terbanyak lebih dulu.
+pub fn sebab() -> Vec<(String, u64)> {
+    let mut v = SEBAB.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    v.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    v
 }
 
 fn nilai_dari(j: Jenis, v: i64, callee: &[Arc<crate::vm::value::VmFunction>]) -> VmValue {

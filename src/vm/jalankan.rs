@@ -16,19 +16,18 @@ impl Vm {
     pub(crate) fn run_until(&mut self, exit_depth: usize) -> VmResult<()> {
         // Dua salinan loop: `--jit` merekam profil, `--vm` tanpa satu cabang pun untuk itu.
         let hasil = if self.profil_jit { self.run_until_inner::<true, false>(exit_depth) } else { self.run_until_inner::<false, false>(exit_depth) };
-        match hasil {
-            Ok(v) => Ok(v),
-            Err(mut e) => {
-                // `run_until` dipanggil ulang secara bersarang (lihat
-                // `call_value_immediate`), jadi yang terdalam mengisi duluan dan yang di …
-                if e.jejak.is_empty() {
-                    let (jejak, sisa) = self.jejak_sekarang();
-                    e.jejak = jejak;
-                    e.jejak_sisa = sisa;
-                }
-                Err(self.lepas_bingkai(exit_depth, e))
-            }
+        hasil.map_err(|e| self.galat_keluar(exit_depth, e))
+    }
+
+    /// Galat yang keluar sampai `exit_depth`: jejaknya diisi (yang terdalam duluan, `run_until`
+    /// bersarang lewat `call_value_immediate`), lalu bingkai di atasnya dilepas beserta `defer`-nya.
+    pub(crate) fn galat_keluar(&mut self, exit_depth: usize, mut e: VmError) -> VmError {
+        if e.jejak.is_empty() {
+            let (jejak, sisa) = self.jejak_sekarang();
+            e.jejak = jejak;
+            e.jejak_sisa = sisa;
         }
+        self.lepas_bingkai(exit_depth, e)
     }
 
     /// Galat keluar: tiap bingkai di atas `exit_depth` dilepas dari yang terdalam dan `defer`-nya
@@ -144,7 +143,8 @@ impl Vm {
             // Banding yang langsung diikuti `JumpFalse`: lompat tanpa menaruh `bool`-nya.
             if let VmValue::Bool(benar) = h {
             let fr = self.frames.last_mut().unwrap();
-            if let Some(lompat) = fr.func.chunk.code.get(fr.ip).filter(|i| matches!(i.op, OpCode::JumpFalse)) {
+            // Langkah tunggal JIT tidak menggabungkan: `JumpFalse`-nya dijalankan kode native.
+            if let Some(lompat) = fr.func.chunk.code.get(fr.ip).filter(|i| !SATU && matches!(i.op, OpCode::JumpFalse)) {
             fr.ip = if benar { fr.ip + 1 } else { lompat.arg as usize };
             self.stack.pop();
             continue;
@@ -1138,7 +1138,7 @@ impl Vm {
                     let ada = self.iter_ada(slot, sp)?;
                     // Selalu diikuti `JumpFalse` di kepala `for`: lompat tanpa menaruh `bool`-nya.
                     let fr = self.frames.last_mut().unwrap();
-                    if let Some(lompat) = fr.func.chunk.code.get(fr.ip).filter(|i| matches!(i.op, OpCode::JumpFalse)) {
+                    if let Some(lompat) = fr.func.chunk.code.get(fr.ip).filter(|i| !SATU && matches!(i.op, OpCode::JumpFalse)) {
                         fr.ip = if ada { fr.ip + 1 } else { lompat.arg as usize };
                         continue;
                     }
@@ -1597,7 +1597,7 @@ impl Vm {
     /// Apakah iterator di `slot` (`[items, penanda, idx]`) masih punya elemen; satu definisi
     /// untuk `IterAda` dan fusi `IterMaju`.
     #[inline]
-    fn iter_ada(&self, slot: usize, sp: Option<crate::lexer::Span>) -> VmResult<bool> {
+    pub(crate) fn iter_ada(&self, slot: usize, sp: Option<crate::lexer::Span>) -> VmResult<bool> {
         let idx = match self.stack.get(slot + 2) {
             Some(VmValue::Int(n)) => *n,
             _ => return Err(VmError::at("state iterator rusak", sp)),

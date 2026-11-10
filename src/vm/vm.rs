@@ -208,7 +208,8 @@ impl Vm {
         let hasil = self.call_value_at(argc, None, false)
             .and_then(|_| if self.frames.len() > dasar { self.run_until(dasar) } else { Ok(()) });
         if let Err(e) = hasil {
-            // Bingkainya sudah dilepas `run_until`; fungsi dan argumennya dibuang di sini.
+            // Bingkainya sudah dilepas `run_until`, kecuali galat dari kode JIT yang dimasuki `call_value_at`.
+            let e = if self.frames.len() > dasar { self.galat_keluar(dasar, e) } else { e };
             self.stack.truncate(tinggi);
             return Err(e);
         }

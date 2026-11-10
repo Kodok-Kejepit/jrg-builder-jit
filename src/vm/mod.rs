@@ -24,7 +24,7 @@ pub(crate) use jalankan::cocok_enum;
 mod panggil;
 pub(crate) mod info_native;
 mod akses;
-mod hof;
+pub(crate) mod hof;
 pub(crate) mod bawaan;
 
 pub use compiler::{compile, CompileError};

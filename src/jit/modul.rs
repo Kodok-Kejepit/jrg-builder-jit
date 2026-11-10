@@ -64,6 +64,10 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
             jb.symbol("jrg_jit_pola_lokal", lambat::pola_lokal as *const u8);
             jb.symbol("jrg_jit_payload_lokal", lambat::payload_lokal as *const u8);
             jb.symbol("jrg_jit_buka_lokal", lambat::buka_lokal as *const u8);
+            jb.symbol("jrg_jit_iter_ada", lambat::iter_ada as *const u8);
+            jb.symbol("jrg_jit_maju", lambat::maju as *const u8);
+            jb.symbol("jrg_jit_langkah_cabang", lambat::langkah_cabang as *const u8);
+            jb.symbol("jrg_jit_sebar", lambat::sebar as *const u8);
             let mut m = JITModule::new(jb);
             let cc = m.isa().default_call_conv();
             let catat = m.declare_function("jrg_jit_catat", Linkage::Import, &turun::tanda_tangan_catat(&m, cc)).ok()?;
@@ -88,6 +92,10 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
                 pola_lokal: impor("jrg_jit_pola_lokal", &[I64, p], Some(I32))?,
                 payload_lokal: impor("jrg_jit_payload_lokal", &[I64, I64], Some(I32))?,
                 buka_lokal: impor("jrg_jit_buka_lokal", &[I64, I32, p], Some(I32))?,
+                iter_ada: impor("jrg_jit_iter_ada", &[I64], Some(I32))?,
+                maju: impor("jrg_jit_maju", &[I64], Some(I32))?,
+                langkah_cabang: impor("jrg_jit_langkah_cabang", &[I64, p, I64, I64, p, I64], Some(I64))?,
+                sebar: impor("jrg_jit_sebar", &[I64], Some(I32))?,
             };
             let undi = if deopt::acak_aktif() {
                 Some(m.declare_function("jrg_jit_undi", Linkage::Import, &turun::tanda_tangan_undi(cc)).ok()?)

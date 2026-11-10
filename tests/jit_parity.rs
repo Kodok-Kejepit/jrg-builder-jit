@@ -322,3 +322,90 @@ fn jalur_lambat_umum() {
     let h = jalankan(UMUM, &["--jit"], &[STRES, ("JRG_JIT_LOG", "ringkas")]);
     assert!(h.stderr.lines().any(|b| b.contains("dikompilasi:") && b.contains("ambil")), "{}", h.stderr);
 }
+
+// ── J4 langkah 6: semua opcode punya jalur (`dokumentasi/jit/j4-rencana.md`) ───────────────────────
+
+const CAKUPAN: &str = r#"struct Kotak { pub xs: []int }
+fn bagi(a, b) -> Result<int, string> {
+    if b == 0 { return Err("nol") }
+    Ok(a / b)
+}
+fn jumlah_bagi(xs) -> Result<int, string> {
+    var t = 0
+    for _, x in xs { t = t + bagi(100, x)? }
+    Ok(t)
+}
+fn tunda(n) {
+    defer wok("tunda", n)
+    var s = 0
+    for i in 0..n { s = s + i }
+    s
+}
+fn tumbuh(n) {
+    var a = []
+    let berapa = || len(a)
+    for i in 0..n { a = a + [i] }
+    var b = [[1], [2]]
+    for i in 0..3 { b[0] = b[0] + [i] }
+    var k = Kotak { xs: [] }
+    for i in 0..3 { k.xs = k.xs + [i] }
+    wok(berapa(), b, k.xs)
+}
+fn pilih() {
+    let c = make_chan(int, 3)
+    let k = make_chan(int, 3)
+    c <- 1
+    var n = 0
+    for i in 0..3 {
+        select {
+            case v := <-c: { n = n + v }
+            case k <- i: { n = n + 10 }
+            default: { n = n + 100 }
+        }
+    }
+    n
+}
+fn koleksi() {
+    var t = 0
+    for i, x in [3, 4, 5] { t = t + i * x }
+    for k, v in {"a": 1, "b": 2} { wok_(k, v, "") }
+    for c in "abc" { t = t + c }
+    let tutup = |x| x + t
+    let m = [1, 2, 3].map(tutup).filter(|x| x % 2 == 0)
+    let r = arr::reduce(m, |a, b| a + b, 0)
+    p, q := (r, "dua")
+    wok(t, m, r, p, q)
+}
+fn gagal() {
+    defer wok("defer goroutine")
+    let a = [1]
+    wok(a[5])
+}
+pub fn main() {
+    wok(jumlah_bagi([1, 2, 5]), jumlah_bagi([1, 0, 5]))
+    wok(tunda(5))
+    tumbuh(4)
+    wok(pilih())
+    koleksi()
+    spawn { gagal() }
+    time::sleep(0.05)
+    wok("selesai")
+}
+"#;
+
+#[test]
+fn semua_opcode_punya_jalur() {
+    // `?`, `defer`, tumbuh di tempat (`CobaTumbuh*`, `TumbuhIndexLokal`, `SamaTempat`), `select`, iterator
+    // larik/dict/teks, closure yang menangkap lokal native, HOF, bongkar tuple, galat goroutine ber-`defer`.
+    let i = jalankan(CAKUPAN, &[], &[]);
+    assert!(i.sukses && i.stdout.contains("38 38 dua") && i.stderr.contains("goroutine error"), "{} {}", i.stdout, i.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(CAKUPAN, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    // Di mode stres tidak ada titik keluar selain `Return` fungsi ber-`defer` (VM yang menjalankan `defer`-nya).
+    let h = jalankan(CAKUPAN, &["--jit"], &[STRES, ("JRG_JIT_LOG", "ringkas")]);
+    let jadi = h.stderr.lines().find(|b| b.contains("dikompilasi:")).unwrap_or_default().to_string();
+    for f in ["jumlah_bagi", "tunda", "tumbuh", "pilih", "koleksi"] { assert!(jadi.contains(f), "{f}: {}", h.stderr); }
+    assert!(h.stderr.lines().filter(|b| b.starts_with("[jit]   keluar ")).all(|b| b.contains("keluar Return")), "{}", h.stderr);
+}

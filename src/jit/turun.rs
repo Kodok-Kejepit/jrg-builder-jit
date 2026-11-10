@@ -84,6 +84,7 @@ pub struct ImporLambat {
     pub langkah: FuncId, pub muat: FuncId, pub buang: FuncId, pub benar: FuncId, pub buka: FuncId,
     pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
     pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId,
+    pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
 }
 
 /// Fungsi impor dan identitas bingkai untuk blok deopt.
@@ -98,7 +99,11 @@ fn kembali_status(b: &mut FunctionBuilder, st: i64) {
     b.ins().return_(&[v]);
 }
 
-struct Keluar { catat: FuncRef, fid: i64, ptr: Type, slot: StackSlot }
+/// `bendera`: `BUKA_SUDAH` selama sisa instruksi `Cara::Buka` sesudah bukaannya berhasil.
+struct Keluar { catat: FuncRef, fid: i64, ptr: Type, slot: StackSlot, bendera: std::cell::Cell<i64> }
+
+/// Bit `ip` deopt: posisi yang dibuka instruksi itu sudah berisi angka native (`deopt::pulihkan`).
+pub const BUKA_SUDAH: i64 = 1 << 30;
 
 /// Blok saat ini menjadi keluar deopt: nilai stack `jenis` dicatat untuk dilanjutkan VM di `ip`.
 fn keluar_deopt(b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], ip: usize, jenis: &[Jenis]) {
@@ -111,7 +116,7 @@ fn keluar_deopt(b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], ip: usize
     }
     let pn = b.ins().stack_addr(k.ptr, slot, 0);
     let fid = b.ins().iconst(types::I32, k.fid);
-    let ipv = b.ins().iconst(types::I32, ip as i64);
+    let ipv = b.ins().iconst(types::I32, ip as i64 | k.bendera.get());
     let n = b.ins().iconst(types::I32, jenis.len() as i64);
     b.ins().call(k.catat, &[fid, ipv, pn, n]);
     let st = b.ins().iconst(types::I32, DEOPT);
@@ -137,6 +142,26 @@ fn ke_f64(b: &mut FunctionBuilder, v: Value, j: Jenis) -> Value {
 
 fn dari_f64(b: &mut FunctionBuilder, f: Value) -> Value {
     b.ins().bitcast(types::I64, MemFlagsData::new(), f)
+}
+
+/// Posisi `rentang` milik kode native ke slot rekaman (`lambat::langkah` menyalinnya ke stack VM);
+/// fungsi yang dimuat kode native (`LoadGlobal`) ditaruh langsung sebagai nilai VM-nya.
+#[allow(clippy::too_many_arguments)]
+fn tumpahkan(
+    b: &mut FunctionBuilder, var: &[Variable], s: &[Jenis], rentang: std::ops::Range<usize>,
+    slot: StackSlot, ptr: Type, taruh: FuncRef, callee: &[crate::vm::value::VmValue],
+) {
+    for i in rentang {
+        if let Jenis::Fungsi(c) = s[i] {
+            let ke = b.ins().iconst(types::I64, i as i64);
+            let kv = b.ins().iconst(types::I64, &callee[c] as *const _ as i64);
+            b.ins().call(taruh, &[ke, kv]);
+            continue;
+        }
+        if !matches!(s[i], Jenis::Bulat | Jenis::Bool | Jenis::Pecahan) { continue; }
+        let v = b.use_var(var[i]);
+        b.ins().stack_store(ptr, v, slot, (i * 8) as i32);
+    }
 }
 
 pub fn turunkan(
@@ -166,7 +191,7 @@ pub fn turunkan(
     };
     // Satu slot rekaman untuk semua titik deopt fungsi ini (cuma satu yang pernah dipakai per panggilan).
     let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (r.maks.max(1) * 8) as u32, 3));
-    let k = Keluar { catat: m.declare_func_in_func(impor.catat, b.func), fid: impor.fid as i64, ptr, slot };
+    let k = Keluar { catat: m.declare_func_in_func(impor.catat, b.func), fid: impor.fid as i64, ptr, slot, bendera: Default::default() };
     let undi = impor.undi.map(|u| m.declare_func_in_func(u, b.func));
     let (baca, tulis) = (m.declare_func_in_func(impor.baca, b.func), m.declare_func_in_func(impor.tulis, b.func));
     let wadah = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
@@ -174,7 +199,8 @@ pub fn turunkan(
     let [f_langkah, f_muat, f_buang, f_benar, f_buka, f_taruh, f_ambil, f_simpan, f_pola, f_payload] =
         [il.langkah, il.muat, il.buang, il.benar, il.buka, il.taruh, il.ambil, il.simpan, il.pola, il.payload]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_pola_lokal, f_payload_lokal, f_buka_lokal] = [il.pola_lokal, il.payload_lokal, il.buka_lokal]
+    let [f_pola_lokal, f_payload_lokal, f_buka_lokal, f_iter_ada, f_maju, f_cabang, f_sebar] =
+        [il.pola_lokal, il.payload_lokal, il.buka_lokal, il.iter_ada, il.maju, il.langkah_cabang, il.sebar]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -206,6 +232,7 @@ pub fn turunkan(
             terbuka = true;
         }
         if std::mem::take(&mut lewati) { continue; }
+        k.bendera.set(0);
         // Sesudah bukaan gabungan, posisinya belum ada di stack VM: deopt acak cuma di instruksi pertamanya.
         if let (Some(u), false) = (undi, dibuka) {
             let c = b.ins().call(u, &[]);
@@ -240,18 +267,15 @@ pub fn turunkan(
                     b.def_var(var[p], v);
                 }
                 dibuka = false;
+                k.bendera.set(BUKA_SUDAH);
                 &buka_s
             }
-            Cara::Langkah { ambil, taruh } => {
+            Cara::Langkah { ambil, taruh, tumpah } => {
                 // Operand milik kode native ke slot rekaman, lalu VM menjalankan instruksinya.
-                for i in t - ambil..t {
-                    if !matches!(s[i], Jenis::Bulat | Jenis::Bool | Jenis::Pecahan) { continue; }
-                    let v = b.use_var(var[i]);
-                    b.ins().stack_store(ptr, v, slot, (i * 8) as i32);
-                }
+                tumpahkan(&mut b, &var, s, t - tumpah..t, slot, ptr, f_taruh, &r.callee_nilai);
                 let args = [
                     i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
-                    i64c(&mut b, *ambil as i64), i64c(&mut b, (t - ambil + taruh) as i64),
+                    i64c(&mut b, *tumpah as i64), i64c(&mut b, (t - ambil + taruh) as i64),
                     b.ins().stack_addr(ptr, slot, 0),
                 ];
                 let c = b.ins().call(f_langkah, &args);
@@ -365,6 +389,62 @@ pub fn turunkan(
                 jaga(&mut b, &k, &var, salah, ip, s);
                 let v = b.ins().uextend(types::I64, c);
                 b.def_var(var[t - 1], v);
+                continue;
+            }
+            Cara::Cabang { tumpah, hasil_bool, tujuan } => {
+                tumpahkan(&mut b, &var, s, t - tumpah..t, slot, ptr, f_taruh, &r.callee_nilai);
+                let args = [
+                    i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
+                    i64c(&mut b, *tumpah as i64), b.ins().stack_addr(ptr, slot, 0), i64c(&mut b, *hasil_bool as i64),
+                ];
+                let c = b.ins().call(f_cabang, &args);
+                let h = b.inst_results(c)[0];
+                let (gagal, terus) = (b.create_block(), b.create_block());
+                b.set_cold_block(gagal);
+                let salah = b.ins().icmp_imm_s(IntCC::SignedLessThan, h, 0);
+                b.ins().brif(salah, gagal, &[], terus, &[]);
+                b.switch_to_block(gagal);
+                kembali_status(&mut b, GAGAL);
+                b.switch_to_block(terus);
+                let (ya, tidak) = (blok[tujuan[0]].expect("tujuan cabang"), blok[tujuan[1]].expect("tujuan cabang"));
+                let pilih = if *hasil_bool { h } else { b.ins().icmp_imm_s(IntCC::Equal, h, tujuan[0] as i64) };
+                b.ins().brif(pilih, ya, &[], tidak, &[]);
+                terbuka = false;
+                continue;
+            }
+            Cara::Sebar => {
+                // 1 = `Err`/`None`: fungsinya kembali dengan nilai itu (masuk dari VM), selain itu VM yang menjalankannya.
+                let p = i64c(&mut b, t as i64 - 1);
+                let c = b.ins().call(f_sebar, &[p]);
+                let c = b.inst_results(c)[0];
+                if r.kembali == super::layak::KEMBALI_SKALAR && !r.ada_defer {
+                    let (pulang, terus) = (b.create_block(), b.create_block());
+                    let satu = b.ins().icmp_imm_u(IntCC::Equal, c, 1);
+                    b.ins().brif(satu, pulang, &[], terus, &[]);
+                    b.switch_to_block(pulang);
+                    b.ins().store(fl, p, keluar, 0);
+                    kembali_status(&mut b, BERHASIL_NILAI);
+                    b.switch_to_block(terus);
+                }
+                jaga(&mut b, &k, &var, c, ip, s);
+                continue;
+            }
+            Cara::IterAda => {
+                // Gagal (2) = deopt di sini; VM yang melaporkan state iterator yang rusak.
+                let p = i64c(&mut b, a as i64);
+                let c = b.ins().call(f_iter_ada, &[p]);
+                let c = b.inst_results(c)[0];
+                let salah = b.ins().icmp_imm_u(IntCC::Equal, c, 2);
+                jaga(&mut b, &k, &var, salah, ip, s);
+                let v = b.ins().uextend(types::I64, c);
+                b.def_var(var[t], v);
+                continue;
+            }
+            Cara::Maju => {
+                let p = i64c(&mut b, a as i64);
+                let c = b.ins().call(f_maju, &[p]);
+                let c = b.inst_results(c)[0];
+                jaga(&mut b, &k, &var, c, ip, s);
                 continue;
             }
             Cara::Payload => {

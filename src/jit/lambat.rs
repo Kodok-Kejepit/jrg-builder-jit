@@ -44,12 +44,12 @@ fn nilai_skalar(j: Jenis, v: i64) -> Option<VmValue> {
     }
 }
 
-/// VM menjalankan instruksi `ip` bingkai terluar. Stack VM dipotong ke `t` posisi dan `ambil` operand
-/// teratas diisi dari `nilai` (posisi `Nilai` sudah di sana); sesudahnya tingginya harus `sesudah`.
-/// 0 = selesai; 2 = galat (disimpan untuk `ambil_galat`, bingkainya sudah dalam keadaan VM).
-pub extern "C" fn langkah(ip: i64, jenis: *const Jenis, t: i64, ambil: i64, sesudah: i64, nilai: *const i64) -> i32 {
+/// VM menjalankan instruksi `ip` bingkai terluar. Stack VM dipotong ke `t` posisi dan `tumpah` posisi
+/// teratas diisi dari `nilai` (posisi `Nilai` sudah di sana). `Some(sesudah)`: tinggi yang diharapkan,
+/// juga untuk melengkapi `ReturnNil` bersarang. Hasilnya kedalaman bingkai; galat disimpan (`ambil_galat`).
+fn satu(ip: i64, jenis: *const Jenis, t: i64, tumpah: i64, sesudah: Option<usize>, nilai: *const i64) -> Option<usize> {
     let (vm, basis) = konteks();
-    let (t, ambil) = (t as usize, ambil as usize);
+    let (t, ambil) = (t as usize, tumpah as usize);
     // Tabel jenis milik `Rencana` dan slot nilai bingkai native, masing-masing `t` posisi.
     let (jenis, nilai) = unsafe { (std::slice::from_raw_parts(jenis, t), std::slice::from_raw_parts(nilai, t)) };
     // Yang di atas `t` sudah dibuang kode native: dilepas di sini, sebelum ada yang menghitung pemegangnya.
@@ -66,18 +66,50 @@ pub extern "C" fn langkah(ip: i64, jenis: *const Jenis, t: i64, ambil: i64, sesu
     let hasil = vm.run_until_inner::<true, true>(d - 1).and_then(|_| {
         if vm.frames.len() <= d { return Ok(()); }
         vm.run_until_inner::<true, false>(d)?;
-        if vm.frames.len() == d && vm.stack.len() + 1 == basis + sesudah as usize { vm.stack.push(VmValue::Unit); }
+        if vm.frames.len() == d && sesudah.is_some_and(|n| vm.stack.len() + 1 == basis + n) { vm.stack.push(VmValue::Unit); }
         Ok(())
     });
     if let Err(e) = hasil {
         GALAT.with(|g| *g.borrow_mut() = Some(e));
-        return 2;
+        return None;
     }
-    let ok = vm.frames.len() == d && vm.frames[d - 1].ip == ip as usize + 1 && vm.stack.len() == basis + sesudah as usize;
-    assert!(ok, "bug di jrgc: langkah JIT {:?} di ip {ip} meninggalkan VM dalam bentuk lain (bingkai {}/{d}, ip {}, stack {}/{})",
+    let ok = vm.frames.len() == d && sesudah.is_none_or(|n| vm.frames[d - 1].ip == ip as usize + 1 && vm.stack.len() == basis + n);
+    assert!(ok, "bug di jrgc: langkah JIT {:?} di ip {ip} meninggalkan VM dalam bentuk lain (bingkai {}/{d}, ip {}, stack {}/{:?})",
         vm.frames.last().map(|f| f.func.chunk.code[ip as usize].op), vm.frames.len(), vm.frames.last().map_or(0, |f| f.ip),
-        vm.stack.len(), basis + sesudah as usize);
-    0
+        vm.stack.len(), sesudah.map(|n| basis + n));
+    Some(d)
+}
+
+/// Satu instruksi yang tidak melompat; sesudahnya tingginya harus `sesudah`. 0 = selesai, 2 = galat.
+pub extern "C" fn langkah(ip: i64, jenis: *const Jenis, t: i64, tumpah: i64, sesudah: i64, nilai: *const i64) -> i32 {
+    if satu(ip, jenis, t, tumpah, Some(sesudah as usize), nilai).is_some() { 0 } else { 2 }
+}
+
+/// Satu instruksi yang bercabang (`Cara::Cabang`): `ambil_bool` = `bool` di puncak diambil dan
+/// dikembalikan (0/1), selain itu `ip` berikutnya; -1 = galat.
+pub extern "C" fn langkah_cabang(ip: i64, jenis: *const Jenis, t: i64, tumpah: i64, nilai: *const i64, ambil_bool: i64) -> i64 {
+    let Some(d) = satu(ip, jenis, t, tumpah, None, nilai) else { return -1 };
+    let (vm, _) = konteks();
+    if ambil_bool == 0 { return vm.frames[d - 1].ip as i64; }
+    match vm.stack.pop() {
+        Some(VmValue::Bool(b)) => b as i64,
+        lain => panic!("bug di jrgc: langkah cabang JIT di ip {ip} menaruh {lain:?}, bukan bool"),
+    }
+}
+
+/// `Propagate` (`?`) atas posisi `p`: 0 = `Ok`/`Some`, posisinya jadi payload; 1 = `Err`/`None`, tidak
+/// disentuh (fungsinya kembali dengan nilai itu); 2 = bukan `Result`/`Option` (VM yang melapor).
+pub extern "C" fn sebar(p: i64) -> i32 {
+    let (vm, basis) = konteks();
+    let v = sediakan(vm, basis, p as usize);
+    match Vm::tagged_parts(v) {
+        Some((ty, var, isi)) if ty == "Result" || ty == "Option" => match var.as_str() {
+            "Ok" | "Some" => { *v = isi.unwrap_or(VmValue::Nil); 0 }
+            "Err" | "None" => 1,
+            _ => 2,
+        },
+        _ => 2,
+    }
 }
 
 /// `LoadLocal` atas lokal milik VM: posisi `ke` = isi lokal `dari` (sel dibaca isinya).
@@ -173,6 +205,21 @@ pub extern "C" fn buka_lokal(slot: i64, jenis: i32, keluar: *mut i64) -> i32 {
     match n {
         Some(n) => { unsafe { *keluar = n }; 0 }
         None => 1,
+    }
+}
+
+/// `IterAda` atas iterator di posisi `slot` (tiga posisi milik VM): 0/1 = masih ada; 2 = VM yang melapor.
+pub extern "C" fn iter_ada(slot: i64) -> i32 {
+    let (vm, basis) = konteks();
+    vm.iter_ada(basis + slot as usize, None).map_or(2, |b| b as i32)
+}
+
+/// `IterMaju`: indeks iterator di posisi `slot` (bulat milik VM) maju satu; 1 = bukan bulat (VM yang melapor).
+pub extern "C" fn maju(slot: i64) -> i32 {
+    let (vm, basis) = konteks();
+    match vm.stack.get_mut(basis + slot as usize) {
+        Some(VmValue::Int(n)) if *n < i128::MAX => { *n += 1; 0 }
+        _ => 1,
     }
 }
 

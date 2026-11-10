@@ -73,6 +73,10 @@ fn kode_untuk(vm: &Vm, func: &Arc<VmFunction>, ip: usize, kembali: u8, basis: us
 
 /// Status kode native (`ULANG` juga untuk "tidak dijalankan").
 fn jalankan(vm: &mut Vm, kembali: u8) -> Result<i64, VmError> {
+    // Tiap tingkat native → langkah VM → native memakai stack Rust; rekursi sedalam itu diteruskan VM,
+    // yang bingkainya di heap, sebelum batas `stack_menipis` tercapai.
+    let ukuran = crate::interpreter::Interpreter::INTERPRETER_STACK_SIZE;
+    if crate::interpreter::stack_terpakai().is_some_and(|t| t > ukuran / 2) { return Ok(ULANG); }
     let Some(fr) = vm.frames.last() else { return Ok(ULANG) };
     let (func, ip, basis) = (Arc::clone(&fr.func), fr.ip, fr.slot + 1);
     if vm.stack.len() < basis || vm.stack.len() - basis > MAKS_POSISI { return Ok(ULANG); }
