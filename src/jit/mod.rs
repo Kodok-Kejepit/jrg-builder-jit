@@ -47,6 +47,8 @@ pub fn ambang() -> u32 {
 pub struct Masuk {
     pub ip: u32,
     pub kembali: u8,
+    /// `PintuJit::versi` saat dikompilasi; entri versi lama tidak dipakai lagi.
+    pub versi: u32,
     /// Jenis tiap posisi stack bingkai di titik masuk (`layak::Jenis` sebagai kode).
     pub jenis: Box<[u8]>,
     pub kode: Option<KodeJit>,
@@ -55,7 +57,11 @@ pub struct Masuk {
 /// Titik masuk native per chunk (dibagi goroutine, jadi di balik kunci).
 #[derive(Default)]
 pub struct PintuJit {
-    pub masuk: std::sync::Mutex<Vec<Masuk>>,
+    /// Entri dibuat sekali dan tidak pernah dibebaskan (paling banyak `MAKS_MASUK` per versi), jadi
+    /// `cepat` boleh menunjuknya tanpa kunci.
+    pub masuk: std::sync::Mutex<Vec<&'static Masuk>>,
+    /// Entri yang terakhir cocok: dicocokkan tanpa kunci di tiap panggilan dari VM.
+    pub cepat: std::sync::atomic::AtomicPtr<Masuk>,
     /// Masuk lewat panggilan pernah gagal dikompilasi: panggilan berikutnya langsung VM, tanpa kunci.
     pub panggilan_mati: std::sync::atomic::AtomicBool,
     /// Naik tiap kali kodenya dibuang (spekulasi gagal); bagian kunci tembolok `modul`.
@@ -92,6 +98,7 @@ impl PintuJit {
         if g.len() > MAKS_SPEK_GAGAL { self.panggilan_mati.store(true, Ordering::Relaxed); }
         drop(g);
         self.versi.fetch_add(1, Ordering::Relaxed);
+        self.cepat.store(std::ptr::null_mut(), Ordering::Release);
         self.masuk.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
 }

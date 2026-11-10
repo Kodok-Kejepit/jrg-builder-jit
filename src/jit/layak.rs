@@ -60,6 +60,9 @@ pub enum Cara {
     /// `Call` ke fungsi native-layak dengan argumen bukan bulat: bingkai VM callee didorong
     /// (`lambat::masuk`), kode `Rencana::langsung[i]`-nya dipanggil langsung, lalu `lambat::keluar`.
     Langsung(usize),
+    /// `Call` atas fungsi bawaan yang diketahui (`Jenis::Bawaan`): `lambat::bawaan` memanggilnya
+    /// langsung dengan argumen dari kode native, tanpa langkah VM.
+    Bawaan,
     /// `Dup` atas nilai milik VM (`lambat::salin`).
     Salin,
     /// `Swap` dengan posisi milik VM (`lambat::tukar`/`pindah`).
@@ -524,6 +527,13 @@ fn langkah_lambat(
             return Some((Cara::Simpan, vec![(lanjut, s)]));
         }
         _ => {}
+    }
+    // Fungsi bawaan: tidak pernah mendorong bingkai, dipanggil langsung oleh pembantu.
+    if ins.op == OpCode::Call && a < t && s[t - a - 1] == Bawaan && !s[t - a..].iter().any(|j| matches!(j, Fungsi(_))) {
+        s.truncate(t - a - 1);
+        r.spek[ip] = spek_hasil(f, ip);
+        s.push(r.spek[ip].unwrap_or(Nilai));
+        return Some((Cara::Bawaan, vec![(lanjut, s)]));
     }
     // Fungsi native-layak dengan argumen milik VM: bingkai VM-nya didorong, kodenya dipanggil langsung.
     if let (OpCode::Call, true) = (ins.op, a < t) {

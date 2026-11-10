@@ -52,12 +52,32 @@ pub(crate) fn coba_osr(vm: &mut Vm) -> Result<(), VmError> {
     jalankan(vm, KEMBALI_TIDAK).map(|_| ())
 }
 
+/// Kode jenis `layak::Jenis` nilai VM (`kode_jenis(jenis_nilai(v))`) tanpa melewati `Jenis`.
+#[inline]
+fn kode_nilai(v: &VmValue) -> u8 {
+    match v {
+        VmValue::Int(n) if i64::try_from(*n).is_ok() => 1,
+        VmValue::Bool(_) => 2,
+        VmValue::Nil => 3,
+        VmValue::Float(_) => 5,
+        _ => 4,
+    }
+}
+
 fn kode_untuk(vm: &Vm, func: &Arc<VmFunction>, ip: usize, kembali: u8, basis: usize) -> Option<KodeJit> {
     let isi = &vm.stack[basis..];
-    let mut pintu = func.chunk.kode_jit.masuk.lock().unwrap_or_else(|p| p.into_inner());
-    let cocok = |m: &Masuk| m.ip as usize == ip && m.kembali == kembali && m.jenis.len() == isi.len()
-        && m.jenis.iter().zip(isi).all(|(k, v)| *k == kode_jenis(jenis_nilai(v)));
-    if let Some(m) = pintu.iter().find(|m| cocok(m)) { return m.kode; }
+    let pj = &func.chunk.kode_jit;
+    let versi = pj.versi.load(Ordering::Relaxed);
+    let cocok = |m: &Masuk| m.ip as usize == ip && m.kembali == kembali && m.versi == versi
+        && m.jenis.len() == isi.len() && m.jenis.iter().zip(isi).all(|(k, v)| *k == kode_nilai(v));
+    // Jalur cepat tanpa kunci: entri yang terakhir cocok (entri tidak pernah dibebaskan).
+    let c = pj.cepat.load(Ordering::Acquire);
+    if let Some(m) = unsafe { c.as_ref() } { if cocok(m) { return m.kode; } }
+    let mut pintu = pj.masuk.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(m) = pintu.iter().find(|m| cocok(m)) {
+        pj.cepat.store(*m as *const Masuk as *mut Masuk, Ordering::Release);
+        return m.kode;
+    }
     if pintu.len() >= MAKS_MASUK { return None; }
     let jenis: Vec<Jenis> = isi.iter().map(jenis_nilai).collect();
     let globals = &vm.globals;
@@ -68,9 +88,13 @@ fn kode_untuk(vm: &Vm, func: &Arc<VmFunction>, ip: usize, kembali: u8, basis: us
     let kode = super::modul::kompilasi(func, ip, &jenis, kembali, &cari);
     // Bentuk lain jarang menolong fungsi yang sudah gagal sekali (J6 memakai umpan tipe untuk itu).
     if kode.is_none() && kembali == KEMBALI_SKALAR {
-        func.chunk.kode_jit.panggilan_mati.store(true, Ordering::Relaxed);
+        pj.panggilan_mati.store(true, Ordering::Relaxed);
     }
-    pintu.push(Masuk { ip: ip as u32, kembali, jenis: jenis.iter().map(|j| kode_jenis(*j)).collect(), kode });
+    let m: &'static Masuk = Box::leak(Box::new(Masuk {
+        ip: ip as u32, kembali, versi, jenis: jenis.iter().map(|j| kode_jenis(*j)).collect(), kode,
+    }));
+    pintu.push(m);
+    pj.cepat.store(m as *const Masuk as *mut Masuk, Ordering::Release);
     kode
 }
 

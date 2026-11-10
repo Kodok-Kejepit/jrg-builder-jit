@@ -1149,7 +1149,10 @@ impl Vm {
                 // ── Call / Return ─────────────────────────────────────────
                 OpCode::Call => {
                     let argc = arg as usize;
+                    let d = self.frames.len();
                     self.call_value_at(argc, sp, true)?;
+                    // Panggilan yang selesai di tempat (bawaan): jenis hasilnya umpan spekulasi JIT.
+                    if PROFIL && self.frames.len() == d { if let Some(v) = self.stack.last() { self.catat_hasil(v); } }
                 }
                 // arr::map/filter/reduce/any/all/find — lihat komentar panjang di opcode.rs
                 // & compiler.rs (is_hof_name) buat alasan kenapa ini opcode terpisah, bukan …

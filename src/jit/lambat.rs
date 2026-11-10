@@ -186,6 +186,37 @@ pub extern "C" fn keluar(st: i64, hasil: i64) -> i32 {
     0
 }
 
+/// `Call` atas fungsi bawaan di posisi `t - argc - 1` (milik VM): argumennya dari nilai native atau
+/// posisi VM (diambil), hasilnya di posisi fungsinya (`Vm::panggil_native`). 0 = selesai, 2 = galat.
+pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai: *const i64) -> i32 {
+    let (vm, basis) = konteks();
+    let (t, argc) = (t as usize, argc as usize);
+    let jenis = unsafe { std::slice::from_raw_parts(jenis, t) };
+    let nilai = unsafe { std::slice::from_raw_parts(nilai, t) };
+    let mut args = Vec::with_capacity(argc);
+    for i in t - argc..t {
+        args.push(match nilai_skalar(jenis[i], nilai[i]) {
+            Some(v) => v,
+            None => std::mem::replace(sediakan(vm, basis, i), VmValue::Nil),
+        });
+    }
+    let VmValue::NativeFn(f) = *sediakan(vm, basis, t - argc - 1) else { panic!("bug di jrgc: panggilan bawaan JIT bukan atas fungsi bawaan") };
+    let fr = vm.frames.last_mut().expect("bingkai terluar");
+    let sp = fr.func.chunk.code.get(ip as usize).and_then(|i| (i.span != 0).then(|| fr.func.chunk.spans.get(i.span as usize).copied()).flatten());
+    fr.ip = ip as usize + 1;
+    match vm.panggil_native(f, args, sp, true) {
+        Ok(v) => {
+            vm.catat_hasil(&v);
+            *sediakan(vm, basis, t - argc - 1) = v;
+            0
+        }
+        Err(e) => {
+            GALAT.with(|g| *g.borrow_mut() = Some(e));
+            2
+        }
+    }
+}
+
 /// `Propagate` (`?`) atas posisi `p`: 0 = `Ok`/`Some`, posisinya jadi payload; 1 = `Err`/`None`, tidak
 /// disentuh (fungsinya kembali dengan nilai itu); 2 = bukan `Result`/`Option` (VM yang melapor).
 pub extern "C" fn sebar(p: i64) -> i32 {

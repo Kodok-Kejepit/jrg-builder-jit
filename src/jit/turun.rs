@@ -87,6 +87,7 @@ pub struct ImporLambat {
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
+    pub bawaan: FuncId,
 }
 
 /// Fungsi impor dan identitas bingkai untuk blok deopt.
@@ -236,8 +237,8 @@ pub fn turunkan(
     let [f_pola_lokal, f_payload_lokal, f_buka_lokal, f_iter_ada, f_maju, f_cabang, f_sebar] =
         [il.pola_lokal, il.payload_lokal, il.buka_lokal, il.iter_ada, il.maju, il.langkah_cabang, il.sebar]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode] =
-        [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode]
+    let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode, f_bawaan] =
+        [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode, il.bawaan]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -554,6 +555,23 @@ pub fn turunkan(
                 b.set_cold_block(gagal2);
                 b.ins().brif(r0, gagal2, &[], terus, &[]);
                 b.switch_to_block(gagal2);
+                kembali_status(&mut b, GAGAL);
+                b.switch_to_block(terus);
+                if let Some(j) = r.spek[ip] { buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t - a - 1, j); }
+                continue;
+            }
+            Cara::Bawaan => {
+                tumpahkan(&mut b, &var, s, t - a..t, slot, ptr, f_taruh, &r.callee_nilai);
+                let args = [
+                    i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
+                    i64c(&mut b, a as i64), b.ins().stack_addr(ptr, slot, 0),
+                ];
+                let c = b.ins().call(f_bawaan, &args);
+                let st = b.inst_results(c)[0];
+                let (gagal, terus) = (b.create_block(), b.create_block());
+                b.set_cold_block(gagal);
+                b.ins().brif(st, gagal, &[], terus, &[]);
+                b.switch_to_block(gagal);
                 kembali_status(&mut b, GAGAL);
                 b.switch_to_block(terus);
                 if let Some(j) = r.spek[ip] { buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t - a - 1, j); }

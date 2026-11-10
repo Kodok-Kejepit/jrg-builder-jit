@@ -110,6 +110,40 @@ impl Vm {
         Ok(())
     }
 
+    /// Fungsi bawaan dengan argumennya: batas jumlah argumen, layanan khusus, hook tampilan builtin cetak.
+    /// Satu definisi untuk `call_value` dan jalur lambat JIT (`jit::lambat::bawaan`).
+    pub(crate) fn panggil_native(
+        &mut self, f: super::value::VmNativeFn, mut args: Vec<VmValue>, sp: Option<crate::lexer::Span>, langsung: bool,
+    ) -> VmResult<VmValue> {
+        let argc = args.len();
+        // SATU pencarian per panggilan: batas argumen, layanan khusus, cetak.
+        let info = super::info_native::info(f);
+        if let Some(i) = info {
+            let (lebih, kurang) = (i.maks.filter(|m| argc > *m), i.min.filter(|m| argc < *m));
+            if lebih.is_some() || kurang.is_some() {
+                use crate::interpreter::arity as ar;
+                let nama = self.nama_ditulis(f, langsung).unwrap_or_else(|| i.kanonik.clone());
+                let pesan = match lebih {
+                    Some(m) => ar::pesan_kebanyakan(&nama, m, argc),
+                    None => ar::pesan_kurang(&nama, kurang.unwrap_or(0), i.maks, argc,
+                                             ar::tanda_tangan(&nama).or(i.tanda)),
+                };
+                return Err(VmError::at(pesan, sp));
+            }
+        }
+        // Builtin cetak menerima argumennya SESUDAH hook tampilan dijalankan — `def`
+        // memberi penunjuk fungsi biasa yang tidak bisa memanggil balik ke VM.
+        if let Some(hasil) = info.and_then(|i| i.khusus).and_then(|apa| self.coba_native_pemanggil(apa, &args)) {
+            return hasil.map_err(|e| if e.span.is_none() { VmError::at(e.msg, sp) } else { e });
+        }
+        if info.is_some_and(|i| i.cetak) {
+            // Error dari hook lahir tanpa span; span situs pemanggilanlah yang benar.
+            self.siapkan_argumen_cetak(&mut args)
+                .map_err(|e| if e.span.is_none() { VmError::at(e.msg, sp) } else { e })?;
+        }
+        f(&args).map_err(|e| VmError::at(crate::vm::value::perjelas_pesan_native(e, &args), sp))
+    }
+
     /// Bingkai VM paling banyak di thread ber-stack besar.
     pub(crate) const BINGKAI_MAKS: usize = 1_000_000;
 
@@ -144,41 +178,10 @@ impl Vm {
                 self.jit_masuk()
             }
             VmValue::NativeFn(f) => {
-                // SATU pencarian per panggilan: batas argumen, layanan khusus, cetak.
-                let info = super::info_native::info(f);
-                if let Some(i) = info {
-                    let (lebih, kurang) = (i.maks.filter(|m| argc > *m), i.min.filter(|m| argc < *m));
-                    if lebih.is_some() || kurang.is_some() {
-                        use crate::interpreter::arity as ar;
-                        let nama = self.nama_ditulis(f, langsung).unwrap_or_else(|| i.kanonik.clone());
-                        let pesan = match lebih {
-                            Some(m) => ar::pesan_kebanyakan(&nama, m, argc),
-                            None => ar::pesan_kurang(&nama, kurang.unwrap_or(0), i.maks, argc,
-                                                     ar::tanda_tangan(&nama).or(i.tanda)),
-                        };
-                        return Err(VmError::at(pesan, sp));
-                    }
-                }
-                let start = fn_idx + 1;
-                let mut args: Vec<VmValue> = self.stack[start..].to_vec();
+                let args: Vec<VmValue> = self.stack[fn_idx + 1..].to_vec();
                 self.stack.truncate(fn_idx);
-                // Builtin cetak menerima argumennya SESUDAH hook tampilan dijalankan — `def`
-                // memberi penunjuk fungsi biasa yang tidak bisa memanggil balik ke VM, jadi …
-                if let Some(hasil) = info.and_then(|i| i.khusus).and_then(|apa| self.coba_native_pemanggil(apa, &args)) {
-                    let v = hasil.map_err(|e| if e.span.is_none() { VmError::at(e.msg, sp) } else { e })?;
-                    self.push(v);
-                    return Ok(());
-                }
-                if info.is_some_and(|i| i.cetak) {
-                    self.siapkan_argumen_cetak(&mut args)
-                        // Error dari hook lahir tanpa span (ia tidak tahu di
-                        // mana ia dipanggil); span situs pemanggilanlah yang
-                        // benar, dan tanpa ini diagnostiknya kehilangan caret.
-                        .map_err(|e| if e.span.is_none() { VmError::at(e.msg, sp) } else { e })?;
-                }
-                let result = f(&args).map_err(|e| VmError::at(
-                    crate::vm::value::perjelas_pesan_native(e, &args), sp))?;
-                self.push(result);
+                let v = self.panggil_native(f, args, sp, langsung)?;
+                self.push(v);
                 Ok(())
             }
             // Fungsi `extern "C"`. Marshalling-nya dikerjakan lapisan yang
