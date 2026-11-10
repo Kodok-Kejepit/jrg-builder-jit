@@ -112,6 +112,7 @@ impl Vm {
 
     /// Fungsi bawaan dengan argumennya: batas jumlah argumen, layanan khusus, hook tampilan builtin cetak.
     /// Satu definisi untuk `call_value` dan jalur lambat JIT (`jit::lambat::bawaan`).
+    #[inline(always)]
     pub(crate) fn panggil_native(
         &mut self, f: super::value::VmNativeFn, mut args: Vec<VmValue>, sp: Option<crate::lexer::Span>, langsung: bool,
     ) -> VmResult<VmValue> {

@@ -353,8 +353,10 @@ fn tumbuh(n) {
 }
 fn pilih() {
     let c = make_chan(int, 3)
-    let k = make_chan(int, 3)
+    let k = make_chan(int, 1)
     c <- 1
+    // Satu lengan siap per putaran: interpreter memilih acak di antara yang siap, VM yang pertama.
+    k <- 0
     var n = 0
     for i in 0..3 {
         select {

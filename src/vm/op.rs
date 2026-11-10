@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::opcode::OpCode;
 use super::value::{Peta, VmValue};
 use super::vm::*;
 
@@ -98,5 +99,43 @@ impl Vm {
         }
         self.push(VmValue::Map(Arc::new(Peta::baru(label, isi))));
         Ok(())
+    }
+
+    /// Aritmetika dan banding atas operand yang bukan dua bulat: operator milik pemakai dulu, lalu
+    /// aturan bawaan (`+` dengan teks lewat hook tampilan dan menyambung di tempat bila milik tunggal).
+    #[inline(always)]
+    pub(crate) fn op_biner(&mut self, op: OpCode, a: VmValue, b: VmValue, sp: Option<crate::lexer::Span>) -> VmResult<VmValue> {
+        use crate::parser::BinaryOp as B;
+        let bop = match op {
+            OpCode::Add => B::Add, OpCode::Sub => B::Sub, OpCode::Mul => B::Mul, OpCode::Div => B::Div,
+            OpCode::Mod => B::Rem, OpCode::Pow => B::Pow, OpCode::Eq => B::Eq, OpCode::Ne => B::Ne,
+            OpCode::Lt => B::Lt, OpCode::Le => B::Le, OpCode::Gt => B::Gt, OpCode::Ge => B::Ge,
+            _ => return Err(VmError::at(format!("bug di jrgc: op_biner atas {op:?}"), sp)),
+        };
+        match self.operator_biner_pengguna(&bop, &a, &b) {
+            Err(e) => return Err(if e.span.is_none() { VmError::at(e.msg, sp) } else { e }),
+            Ok(Some(h)) => return Ok(h),
+            Ok(None) => {}
+        }
+        let galat = |e| VmError::at(e, sp);
+        match op {
+            OpCode::Add => {
+                // `"x" + nilai` adalah jalur TAMPILAN, jadi ia lewat hook seperti `wok`.
+                let (a, b) = self.siapkan_gabung_string(a, b)
+                    .map_err(|e| if e.span.is_none() { VmError::at(e.msg, sp) } else { e })?;
+                a.tambah_milik(&b).map_err(galat)
+            }
+            OpCode::Sub => a.sub(&b).map_err(galat),
+            OpCode::Mul => a.mul(&b).map_err(galat),
+            OpCode::Div => a.div(&b).map_err(galat),
+            OpCode::Mod => a.modulo(&b).map_err(galat),
+            OpCode::Pow => a.pow(&b).map_err(galat),
+            OpCode::Eq => a.vm_eq(&b).map(VmValue::Bool).map_err(galat),
+            OpCode::Ne => a.vm_eq(&b).map(|x| VmValue::Bool(!x)).map_err(galat),
+            OpCode::Lt => a.lt(&b).map(VmValue::Bool).map_err(galat),
+            OpCode::Le => a.le(&b).map(VmValue::Bool).map_err(galat),
+            OpCode::Gt => a.gt(&b).map(VmValue::Bool).map_err(galat),
+            _ => a.ge(&b).map(VmValue::Bool).map_err(galat),
+        }
     }
 }

@@ -640,20 +640,10 @@ impl Vm {
                 // ── Arithmetic ──────────────────────────────────────────── `tambah_milik`,
                 // bukan `add`: sisi kiri sudah kita miliki (baru saja di-pop), jadi kalau …
 
-                OpCode::Add  => {
-                    int_cepat!();
-                    let (a, b) = self.pop2(sp)?;
-                    biner_pengguna!(crate::parser::BinaryOp::Add, a, b);
-                    // `"x" + nilai` adalah jalur TAMPILAN, jadi ia lewat hook seperti `wok`.
-                    let (a, b) = self.siapkan_gabung_string(a, b)
-                        .map_err(|e| if e.span.is_none() { VmError::at(e.msg, sp) } else { e })?;
-                    self.push(a.tambah_milik(&b).map_err(|e| VmError::at(e, sp))?);
-                }
-                OpCode::Sub  => { int_cepat!(); let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::Sub, a, b); self.push(a.sub(&b).map_err(|e| VmError::at(e, sp))?); }
-                OpCode::Mul  => { int_cepat!(); let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::Mul, a, b); self.push(a.mul(&b).map_err(|e| VmError::at(e, sp))?); }
-                OpCode::Div  => { let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::Div, a, b); self.push(a.div(&b).map_err(|e| VmError::at(e, sp))?); }
-                OpCode::Mod  => { int_cepat!(); let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::Rem, a, b); self.push(a.modulo(&b).map_err(|e| VmError::at(e, sp))?); }
-                OpCode::Pow  => { let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::Pow, a, b); self.push(a.pow(&b).map_err(|e| VmError::at(e, sp))?); }
+                // Badan bukan-bulat satu definisi dengan jalur lambat JIT (`op_biner`).
+                OpCode::Add  => { int_cepat!(); let (a, b) = self.pop2(sp)?; let h = self.op_biner(op, a, b, sp)?; self.push(h); }
+                OpCode::Sub | OpCode::Mul | OpCode::Mod => { int_cepat!(); let (a, b) = self.pop2(sp)?; let h = self.op_biner(op, a, b, sp)?; self.push(h); }
+                OpCode::Div | OpCode::Pow => { let (a, b) = self.pop2(sp)?; let h = self.op_biner(op, a, b, sp)?; self.push(h); }
                 OpCode::Neg  => { let a = self.pop(sp)?; unary_pengguna!(crate::parser::UnaryOp::Neg, a); self.push(a.neg().map_err(|e| VmError::at(e, sp))?); }
                 OpCode::BitAnd => { let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::BitAnd, a, b); self.push(a.bit_and(&b).map_err(|e| VmError::at(e, sp))?); }
                 OpCode::BitOr  => { let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::BitOr, a, b); self.push(a.bit_or(&b).map_err(|e| VmError::at(e, sp))?); }
@@ -667,12 +657,12 @@ impl Vm {
                 OpCode::KeBool => { let a = self.pop(sp)?; self.push(VmValue::Bool(a.is_truthy())); }
 
                 // ── Comparison ────────────────────────────────────────────
-                OpCode::Eq   => { int_cepat!(); let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::Eq, a, b); self.push(VmValue::Bool(a.vm_eq(&b).map_err(|e| VmError::at(e, sp))?)); }
-                OpCode::Ne   => { int_cepat!(); let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::Ne, a, b); self.push(VmValue::Bool(!a.vm_eq(&b).map_err(|e| VmError::at(e, sp))?)); }
-                OpCode::Lt   => { int_cepat!(); let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::Lt, a, b); self.push(VmValue::Bool(a.lt(&b).map_err(|e| VmError::at(e, sp))?)); }
-                OpCode::Le   => { int_cepat!(); let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::Le, a, b); self.push(VmValue::Bool(a.le(&b).map_err(|e| VmError::at(e, sp))?)); }
-                OpCode::Gt   => { int_cepat!(); let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::Gt, a, b); self.push(VmValue::Bool(a.gt(&b).map_err(|e| VmError::at(e, sp))?)); }
-                OpCode::Ge   => { int_cepat!(); let (a,b) = self.pop2(sp)?; biner_pengguna!(crate::parser::BinaryOp::Ge, a, b); self.push(VmValue::Bool(a.ge(&b).map_err(|e| VmError::at(e, sp))?)); }
+                OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => {
+                    int_cepat!();
+                    let (a, b) = self.pop2(sp)?;
+                    let h = self.op_biner(op, a, b, sp)?;
+                    self.push(h);
+                }
                 // `!` cuma untuk bool — sama seperti interpreter.
                 OpCode::Not  => {
                     let a = self.pop(sp)?;

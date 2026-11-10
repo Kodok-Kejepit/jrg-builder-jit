@@ -79,6 +79,7 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
             jb.symbol("jrg_jit_tukar", lambat::tukar as *const u8);
             jb.symbol("jrg_jit_cek_metode", lambat::cek_metode as *const u8);
             jb.symbol("jrg_jit_bawaan", lambat::bawaan as *const u8);
+            jb.symbol("jrg_jit_biner", lambat::biner as *const u8);
             let mut m = JITModule::new(jb);
             let cc = m.isa().default_call_conv();
             let catat = m.declare_function("jrg_jit_catat", Linkage::Import, &turun::tanda_tangan_catat(&m, cc)).ok()?;
@@ -118,6 +119,7 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
                 tukar: impor("jrg_jit_tukar", &[I64, I64], None)?,
                 cek_metode: impor("jrg_jit_cek_metode", &[I64, p], Some(I32))?,
                 bawaan: impor("jrg_jit_bawaan", &[I64, p, I64, I64, p], Some(I32))?,
+                biner: impor("jrg_jit_biner", &[I64, p, I64, p], Some(I32))?,
             };
             let undi = if deopt::acak_aktif() {
                 Some(m.declare_function("jrg_jit_undi", Linkage::Import, &turun::tanda_tangan_undi(cc)).ok()?)

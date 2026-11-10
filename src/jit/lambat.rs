@@ -217,6 +217,30 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
     }
 }
 
+/// Aritmetika/banding instruksi `ip` atas posisi `t - 2`, `t - 1` (angka native atau milik VM, diambil),
+/// lewat `Vm::op_biner`. Aritmetika: hasilnya di posisi `t - 2`, 0 = selesai. Banding: 0/1. 2 = galat.
+pub extern "C" fn biner(ip: i64, jenis: *const Jenis, t: i64, nilai: *const i64) -> i32 {
+    let (vm, basis) = konteks();
+    let t = t as usize;
+    let jenis = unsafe { std::slice::from_raw_parts(jenis, t) };
+    let nilai = unsafe { std::slice::from_raw_parts(nilai, t) };
+    let mut ambil = |i: usize| nilai_skalar(jenis[i], nilai[i])
+        .unwrap_or_else(|| std::mem::replace(sediakan(vm, basis, i), VmValue::Nil));
+    let (a, b) = (ambil(t - 2), ambil(t - 1));
+    let fr = vm.frames.last_mut().expect("bingkai terluar");
+    let ins = fr.func.chunk.code[ip as usize];
+    let sp = if ins.span == 0 { None } else { fr.func.chunk.spans.get(ins.span as usize).copied() };
+    fr.ip = ip as usize + 1;
+    match vm.op_biner(ins.op, a, b, sp) {
+        Ok(v) if matches!(ins.op, OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge) => v.is_truthy() as i32,
+        Ok(v) => { *sediakan(vm, basis, t - 2) = v; 0 }
+        Err(e) => {
+            GALAT.with(|g| *g.borrow_mut() = Some(e));
+            2
+        }
+    }
+}
+
 /// `Propagate` (`?`) atas posisi `p`: 0 = `Ok`/`Some`, posisinya jadi payload; 1 = `Err`/`None`, tidak
 /// disentuh (fungsinya kembali dengan nilai itu); 2 = bukan `Result`/`Option` (VM yang melapor).
 pub extern "C" fn sebar(p: i64) -> i32 {

@@ -63,6 +63,9 @@ pub enum Cara {
     /// `Call` atas fungsi bawaan yang diketahui (`Jenis::Bawaan`): `lambat::bawaan` memanggilnya
     /// langsung dengan argumen dari kode native, tanpa langkah VM.
     Bawaan,
+    /// Aritmetika/banding yang bukan dua angka native (`lambat::biner`, `Vm::op_biner`): hasil aritmetika
+    /// milik VM, hasil banding bool asli.
+    Biner,
     /// `Dup` atas nilai milik VM (`lambat::salin`).
     Salin,
     /// `Swap` dengan posisi milik VM (`lambat::tukar`/`pindah`).
@@ -527,6 +530,15 @@ fn langkah_lambat(
             return Some((Cara::Simpan, vec![(lanjut, s)]));
         }
         _ => {}
+    }
+    // Operand yang bukan dua angka native (teks, operator pemakai, campur jenis): `Vm::op_biner` langsung.
+    if matches!(ins.op, OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::Pow
+        | OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge)
+        && t >= 2 && !s[t - 2..].iter().any(|j| matches!(j, Fungsi(_))) {
+        let banding = !matches!(ins.op, OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::Pow);
+        s.truncate(t - 2);
+        s.push(if banding { Bool } else { Nilai });
+        return Some((Cara::Biner, vec![(lanjut, s)]));
     }
     // Fungsi bawaan: tidak pernah mendorong bingkai, dipanggil langsung oleh pembantu.
     if ins.op == OpCode::Call && a < t && s[t - a - 1] == Bawaan && !s[t - a..].iter().any(|j| matches!(j, Fungsi(_))) {
