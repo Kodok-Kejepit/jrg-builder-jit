@@ -58,6 +58,30 @@ pub struct PintuJit {
     pub masuk: std::sync::Mutex<Vec<Masuk>>,
     /// Masuk lewat panggilan pernah gagal dikompilasi: panggilan berikutnya langsung VM, tanpa kunci.
     pub panggilan_mati: std::sync::atomic::AtomicBool,
+    /// Naik tiap kali kodenya dibuang (spekulasi gagal); bagian kunci tembolok `modul`.
+    pub versi: std::sync::atomic::AtomicU32,
+    /// Instruksi yang spekulasinya (nilai VM sebagai angka, larik berelemen angka) pernah gagal.
+    pub spek_gagal: std::sync::Mutex<Vec<u32>>,
+}
+
+/// Spekulasi yang gagal lebih dari ini membuat chunk-nya berhenti dikompilasi ulang.
+const MAKS_SPEK_GAGAL: usize = 16;
+
+impl PintuJit {
+    pub fn spek_gagal_di(&self, ip: usize) -> bool {
+        self.spek_gagal.lock().unwrap_or_else(|p| p.into_inner()).contains(&(ip as u32))
+    }
+
+    /// Spekulasi di `ip` gagal: kodenya dibuang, kompilasi berikutnya tidak berspekulasi di sana.
+    pub fn tandai_spek_gagal(&self, ip: usize) {
+        let mut g = self.spek_gagal.lock().unwrap_or_else(|p| p.into_inner());
+        if g.contains(&(ip as u32)) { return; }
+        g.push(ip as u32);
+        if g.len() > MAKS_SPEK_GAGAL { self.panggilan_mati.store(true, Ordering::Relaxed); }
+        drop(g);
+        self.versi.fetch_add(1, Ordering::Relaxed);
+        self.masuk.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    }
 }
 
 // Salinan chunk (goroutine, closure) mulai tanpa kode; kodenya dikompilasi ulang bila perlu.

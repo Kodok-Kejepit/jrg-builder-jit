@@ -47,6 +47,16 @@ pub enum Cara {
     Cabang { tumpah: usize, hasil_bool: bool, tujuan: [usize; 2] },
     /// `Propagate` atas `Nilai` (`lambat::sebar`).
     Sebar,
+    /// `SlideDown` dengan posisi milik VM: yang dibuang dilepas (`lambat::buang`), puncaknya dipindah.
+    Geser,
+    /// `LoadGlobal` atas global yang bukan fungsi native (`lambat::muat_global`).
+    MuatGlobal,
+    /// `StoreGlobal` (`lambat::simpan_global`); puncaknya tetap.
+    SimpanGlobal,
+    /// `GetIndex` atas wadah milik VM (`lambat::indeks`), hasilnya di tempat wadahnya.
+    Indeks,
+    /// `GetField`/`GetFieldPrivat` atas nilai milik VM (`lambat::field`), di tempat.
+    Field,
     /// `LoadLocal` atas lokal `Nilai` (`lambat::muat`).
     Muat,
     /// `Const` bukan angka dan `Unit` (`lambat::taruh`).
@@ -200,13 +210,8 @@ fn analisis_sekali(
     // operand); kode yang kebanyakan langkah lebih lambat dari VM sendiri.
     let jalan = |ip: usize| r.keadaan[ip].is_some() && !r.keluar[ip];
     let asli = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Asli | Cara::Buka(_))).count();
-    // `Call` ke fungsi VM juga membayar pintu masuk bingkai callee dari dalam langkah: dihitung tiga.
-    let langkah_vm: usize = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Langkah { .. } | Cara::Cabang { .. }))
-        .map(|ip| match (kode[ip].op, r.keadaan[ip].as_ref()) {
-            (OpCode::Call, Some(st)) if st.len() > kode[ip].arg as usize
-                && matches!(st[st.len() - kode[ip].arg as usize - 1], Jenis::Nilai | Jenis::Fungsi(_)) => 3,
-            _ => 1,
-        }).sum();
+    // Pintu masuk bingkai callee (`Call` ke fungsi VM) dibayar VM juga; yang ditambah cuma langkahnya.
+    let langkah_vm = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Langkah { .. } | Cara::Cabang { .. })).count();
     // Mode stres memaksa jalur native sebanyak mungkin, untung atau tidak.
     let stres = super::ambang() == 0;
     if langkah_vm * 4 > asli && !stres {
@@ -297,7 +302,9 @@ fn langkah_lambat(
     let k = operand_angka(ins.op, a).min(t);
     let atas = &s[t - k..];
     let indeks = matches!(ins.op, OpCode::IndeksLokal | OpCode::TulisIndexLokal);
-    if atas.contains(&Nilai) && (indeks || atas.iter().any(|j| matches!(j, Bulat | Pecahan))) {
+    // Spekulasi yang pernah gagal di sini (`PintuJit::tandai_spek_gagal`) tidak diulang.
+    let boleh = !f.chunk.kode_jit.spek_gagal_di(ip);
+    if boleh && atas.contains(&Nilai) && (indeks || atas.iter().any(|j| matches!(j, Bulat | Pecahan))) {
         let sasaran = if atas.contains(&Pecahan) && ins.op != OpCode::Call { Pecahan } else { Bulat };
         let buka: Vec<(usize, Jenis)> = (t - k..t).filter(|&i| s[i] == Nilai).map(|i| (i, sasaran)).collect();
         let mut s2 = s.clone();
@@ -328,6 +335,25 @@ fn langkah_lambat(
             return Some((Cara::Benar, vec![(a, s.clone()), (lanjut, s)]));
         }
         OpCode::Return if r.kembali == KEMBALI_SKALAR && puncak.di_vm() && !r.ada_defer => return Some((Cara::KembaliNilai, vec![])),
+        OpCode::SlideDown if a < t => {
+            let atas = s.pop()?;
+            s.truncate(t - a - 1);
+            s.push(atas);
+            return Some((Cara::Geser, vec![(lanjut, s)]));
+        }
+        OpCode::LoadGlobal => {
+            s.push(Nilai);
+            return Some((Cara::MuatGlobal, vec![(lanjut, s)]));
+        }
+        OpCode::StoreGlobal if !matches!(puncak, Fungsi(_)) => return Some((Cara::SimpanGlobal, vec![(lanjut, s)])),
+        OpCode::GetIndex if t >= 2 && s[t - 2].di_vm() && !matches!(puncak, Fungsi(_)) => {
+            s.pop();
+            return Some((Cara::Indeks, vec![(lanjut, s)]));
+        }
+        OpCode::GetField | OpCode::GetFieldPrivat if puncak.di_vm() => {
+            *s.last_mut()? = Nilai;
+            return Some((Cara::Field, vec![(lanjut, s)]));
+        }
         OpCode::Propagate if puncak.di_vm() => {
             *s.last_mut()? = Nilai;
             return Some((Cara::Sebar, vec![(lanjut, s)]));
@@ -465,9 +491,7 @@ fn efek_langkah(f: &VmFunction, ip: usize, s: &[Jenis]) -> Option<(usize, usize,
         // Pola dan literal tipe pemakai: tidak satu pun digabung VM dengan instruksi sesudahnya.
         OpCode::CekEnum | OpCode::CekStruct | OpCode::AmbilPayload | OpCode::HasField | OpCode::BuildEnum => (1, 1, None),
         OpCode::BuildStruct => (2 * a + 1, 1, None),
-        OpCode::SlideDown => (a + 1, 1, None),
         OpCode::SetField | OpCode::SetFieldPrivat if ada_vm(2) => (2, 0, None),
-        OpCode::LoadGlobal => (0, 1, None),
         OpCode::StoreGlobal => (1, 1, None),
         // Fungsi bawaan tidak pernah mendorong bingkai (`Vm::call_value`, cabang `NativeFn`).
         // Callee milik VM: bawaan dijalankan di tempat, fungsi/closure/method lewat bingkai VM sampai kembali.
@@ -541,6 +565,7 @@ fn langkah_asli(
             s.push(j);
         }
         // Larik milik VM di lokal `a`, lewat `lambat::baca`/`tulis` (bukan larik bulat = titik keluar saat jalan).
+        OpCode::IndeksLokal | OpCode::TulisIndexLokal if f.chunk.kode_jit.spek_gagal_di(ip) => return None,
         OpCode::IndeksLokal => {
             if s.pop()? != Bulat || *s.get(a)? != Nilai { return None; }
             s.push(Bulat);

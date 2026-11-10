@@ -85,6 +85,7 @@ pub struct ImporLambat {
     pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
     pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
+    pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
 }
 
 /// Fungsi impor dan identitas bingkai untuk blok deopt.
@@ -104,6 +105,8 @@ struct Keluar { catat: FuncRef, fid: i64, ptr: Type, slot: StackSlot, bendera: s
 
 /// Bit `ip` deopt: posisi yang dibuka instruksi itu sudah berisi angka native (`deopt::pulihkan`).
 pub const BUKA_SUDAH: i64 = 1 << 30;
+/// Bit `ip` deopt: jaga spekulasi yang gagal (`PintuJit::tandai_spek_gagal`).
+pub const GAGAL_SPEK: i64 = 1 << 29;
 
 /// Blok saat ini menjadi keluar deopt: nilai stack `jenis` dicatat untuk dilanjutkan VM di `ip`.
 fn keluar_deopt(b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], ip: usize, jenis: &[Jenis]) {
@@ -132,6 +135,14 @@ fn jaga(b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], cond: Value, ip: 
     b.switch_to_block(d);
     keluar_deopt(b, k, var, ip, jenis);
     b.switch_to_block(terus);
+}
+
+/// `jaga` atas spekulasi: kegagalannya dicatat supaya kompilasi berikutnya tidak berspekulasi lagi.
+fn jaga_spek(b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], cond: Value, ip: usize, jenis: &[Jenis]) {
+    let lama = k.bendera.get();
+    k.bendera.set(lama | GAGAL_SPEK);
+    jaga(b, k, var, cond, ip, jenis);
+    k.bendera.set(lama);
 }
 
 /// Nilai angka jadi `f64`: pecahan dibaca bitnya, bulat dikonversi seperti `i128 as f64` acuan.
@@ -202,6 +213,9 @@ pub fn turunkan(
     let [f_pola_lokal, f_payload_lokal, f_buka_lokal, f_iter_ada, f_maju, f_cabang, f_sebar] =
         [il.pola_lokal, il.payload_lokal, il.buka_lokal, il.iter_ada, il.maju, il.langkah_cabang, il.sebar]
         .map(|id| m.declare_func_in_func(id, b.func));
+    let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field] =
+        [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field]
+        .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
     // Kedalaman native dijaga di pintu masuk; parameter dimuat dari penyangga argumen.
@@ -262,7 +276,7 @@ pub fn turunkan(
                     let (pv, jv) = (i64c(&mut b, p as i64), b.ins().iconst(types::I32, if j == Jenis::Pecahan { 5 } else { 1 }));
                     let c = b.ins().call(f_buka, &[pv, jv, pk]);
                     let st = b.inst_results(c)[0];
-                    jaga(&mut b, &k, &var, st, ip, s);
+                    jaga_spek(&mut b, &k, &var, st, ip, s);
                     let v = b.ins().stack_load(ptr, types::I64, wadah, 0);
                     b.def_var(var[p], v);
                 }
@@ -324,7 +338,7 @@ pub fn turunkan(
                                 b.ins().call(f_buka, &[pv, jv, pk])
                             };
                             let c = b.inst_results(c)[0];
-                            jaga(&mut b, &k, &var, c, ip, s);
+                            jaga_spek(&mut b, &k, &var, c, ip, s);
                             let v = b.ins().stack_load(ptr, types::I64, wadah, 0);
                             b.def_var(var[p], v);
                         }
@@ -410,6 +424,65 @@ pub fn turunkan(
                 let pilih = if *hasil_bool { h } else { b.ins().icmp_imm_s(IntCC::Equal, h, tujuan[0] as i64) };
                 b.ins().brif(pilih, ya, &[], tidak, &[]);
                 terbuka = false;
+                continue;
+            }
+            Cara::Geser => {
+                // Yang dibuang dilepas dari stack VM; puncak milik VM dipindah, yang native cukup variabelnya.
+                let d0 = t - a - 1;
+                for p in d0..t - 1 {
+                    if !s[p].di_vm() { continue; }
+                    let pv = i64c(&mut b, p as i64);
+                    b.ins().call(f_buang, &[pv]);
+                }
+                if s[t - 1].di_vm() {
+                    let (dari, ke) = (i64c(&mut b, t as i64 - 1), i64c(&mut b, d0 as i64));
+                    b.ins().call(f_pindah, &[dari, ke]);
+                } else {
+                    let v = b.use_var(var[t - 1]);
+                    b.def_var(var[d0], v);
+                }
+                continue;
+            }
+            Cara::MuatGlobal => {
+                let nama = i64c(&mut b, &f.chunk.names[a] as *const String as i64);
+                let ke = i64c(&mut b, t as i64);
+                let c = b.ins().call(f_muat_global, &[nama, ke]);
+                let c = b.inst_results(c)[0];
+                jaga(&mut b, &k, &var, c, ip, s);
+                continue;
+            }
+            Cara::SimpanGlobal => {
+                let j = s[t - 1];
+                let kode = match j { Jenis::Bulat => 1, Jenis::Bool => 2, Jenis::Kosong => 3, Jenis::Pecahan => 5, _ => 4 };
+                let v = if matches!(kode, 1 | 2 | 5) { b.use_var(var[t - 1]) } else { i64c(&mut b, 0) };
+                let args = [
+                    i64c(&mut b, &f.chunk.names[a] as *const String as i64), i64c(&mut b, t as i64 - 1), v,
+                    b.ins().iconst(types::I32, kode),
+                ];
+                let c = b.ins().call(f_simpan_global, &args);
+                let c = b.inst_results(c)[0];
+                jaga(&mut b, &k, &var, c, ip, s);
+                continue;
+            }
+            Cara::Indeks => {
+                let j = s[t - 1];
+                let kode = match j { Jenis::Bulat => 1, Jenis::Bool => 2, Jenis::Kosong => 3, Jenis::Pecahan => 5, _ => 4 };
+                let v = if matches!(kode, 1 | 2 | 5) { b.use_var(var[t - 1]) } else { i64c(&mut b, 0) };
+                let (p, kv) = (i64c(&mut b, t as i64 - 2), b.ins().iconst(types::I32, kode));
+                let c = b.ins().call(f_indeks, &[p, v, kv]);
+                let c = b.inst_results(c)[0];
+                jaga(&mut b, &k, &var, c, ip, s);
+                // Indeks milik VM di atasnya sudah tidak dipakai.
+                if j.di_vm() { let q = i64c(&mut b, t as i64 - 1); b.ins().call(f_buang, &[q]); }
+                continue;
+            }
+            Cara::Field => {
+                let p = i64c(&mut b, t as i64 - 1);
+                let nama = i64c(&mut b, &f.chunk.names[a] as *const String as i64);
+                let privat = b.ins().iconst(types::I32, (ins.op == OpCode::GetFieldPrivat) as i64);
+                let c = b.ins().call(f_field, &[p, nama, privat]);
+                let c = b.inst_results(c)[0];
+                jaga(&mut b, &k, &var, c, ip, s);
                 continue;
             }
             Cara::Sebar => {
@@ -544,7 +617,7 @@ pub fn turunkan(
                 let pk = b.ins().stack_addr(ptr, wadah, 0);
                 let c = b.ins().call(baca, &[rel, i, pk]);
                 let st = b.inst_results(c)[0];
-                jaga(&mut b, &k, &var, st, ip, s);
+                jaga_spek(&mut b, &k, &var, st, ip, s);
                 let v = b.ins().stack_load(ptr, types::I64, wadah, 0);
                 b.def_var(var[t - 1], v);
             }
@@ -554,7 +627,7 @@ pub fn turunkan(
                 let jenis = b.ins().iconst(types::I32, match s[t - 2] { Jenis::Bool => 2, Jenis::Pecahan => 5, _ => 1 });
                 let c = b.ins().call(tulis, &[rel, i, v, jenis]);
                 let st = b.inst_results(c)[0];
-                jaga(&mut b, &k, &var, st, ip, s);
+                jaga_spek(&mut b, &k, &var, st, ip, s);
             }
             OpCode::True | OpCode::False => {
                 let v = b.ins().iconst(types::I64, (ins.op == OpCode::True) as i64);

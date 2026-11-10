@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use super::layak::{Cara, Jenis};
-use super::turun::BUKA_SUDAH;
+use super::turun::{BUKA_SUDAH, GAGAL_SPEK};
 use crate::vm::value::VmValue;
 use crate::vm::vm::{CallFrame, Vm};
 
@@ -65,8 +65,12 @@ pub(crate) fn pulihkan(vm: &mut Vm, catatan: Catatan) {
     if super::laporan::diminta() { catat_sebab(&catatan); }
     let mut rekaman = catatan.into_iter().rev();
     if let Some(r) = rekaman.next() {
-        let (_, rencana) = super::modul::info(r.fid);
-        let ip = (r.ip as i64 & !BUKA_SUDAH) as usize;
+        let (f, rencana) = super::modul::info(r.fid);
+        let ip = (r.ip as i64 & !(BUKA_SUDAH | GAGAL_SPEK)) as usize;
+        // Bukaan gabungan dijaga di `LoadLocal`-nya; spekulasinya milik instruksi sesudahnya.
+        if r.ip as i64 & GAGAL_SPEK != 0 {
+            f.chunk.kode_jit.tandai_spek_gagal(if rencana.cara[ip] == Cara::Muat { ip + 1 } else { ip });
+        }
         let mut jenis = rencana.keadaan[ip].clone().expect("ip lanjut selalu terjangkau");
         // Bukaan yang sudah berhasil: angkanya di bingkai native (lokal gabungan tidak pernah di stack VM).
         if let (true, Cara::Buka(daftar)) = (r.ip as i64 & BUKA_SUDAH != 0, &rencana.cara[ip]) {
@@ -103,8 +107,8 @@ static SEBAB: std::sync::Mutex<Vec<(String, u64)>> = std::sync::Mutex::new(Vec::
 fn catat_sebab(catatan: &Catatan) {
     let Some(r) = catatan.first() else { return };
     let (f, rc) = super::modul::info(r.fid);
-    let ip = (r.ip as i64 & !BUKA_SUDAH) as usize;
-    let jenis = if rc.keluar[ip] { "keluar" } else { "jaga" };
+    let ip = (r.ip as i64 & !(BUKA_SUDAH | GAGAL_SPEK)) as usize;
+    let jenis = if rc.keluar[ip] { "keluar" } else if r.ip as i64 & GAGAL_SPEK != 0 { "spekulasi" } else { "jaga" };
     let kunci = format!("{jenis} {:?}", f.chunk.code[ip].op);
     let mut g = SEBAB.lock().unwrap_or_else(|p| p.into_inner());
     match g.iter_mut().find(|(k, _)| *k == kunci) {

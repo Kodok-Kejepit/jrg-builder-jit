@@ -5,6 +5,7 @@
 use std::cell::{Cell, RefCell};
 
 use super::layak::Jenis;
+use crate::vm::opcode::OpCode;
 use crate::vm::value::VmValue;
 use crate::vm::vm::{Vm, VmError};
 
@@ -59,11 +60,27 @@ fn satu(ip: i64, jenis: *const Jenis, t: i64, tumpah: i64, sesudah: Option<usize
         if let Some(v) = nilai_skalar(jenis[i], nilai[i]) { vm.stack[basis + i] = v; }
     }
     let d = vm.frames.len();
-    vm.frames.last_mut().expect("bingkai terluar").ip = ip as usize;
+    // Opcode yang badannya fungsi `Vm` sendiri dijalankan langsung, tanpa masuk loop dispatch.
+    let fr = vm.frames.last_mut().expect("bingkai terluar");
+    let ins = fr.func.chunk.code[ip as usize];
+    let sp = if ins.span == 0 { None } else { fr.func.chunk.spans.get(ins.span as usize).copied() };
+    fr.ip = ip as usize + 1;
+    let pertama = match ins.op {
+        OpCode::Call => vm.call_value_at(ins.arg as usize, sp, true),
+        OpCode::GetMethod => vm.op_get_method(ins.arg, sp),
+        OpCode::PeriksaArgMetode => vm.op_periksa_arg_metode(ins.arg, sp),
+        OpCode::BuildStruct => vm.op_build_struct(ins.arg, sp),
+        OpCode::Dup => { let v = vm.stack[vm.stack.len() - 1].clone(); vm.stack.push(v); Ok(()) }
+        OpCode::Swap => { let n = vm.stack.len(); vm.stack.swap(n - 1, n - 2); Ok(()) }
+        _ => {
+            vm.frames[d - 1].ip = ip as usize;
+            vm.run_until_inner::<true, true>(d - 1)
+        }
+    };
     // `Call` atas fungsi VM mendorong bingkai: badannya dijalankan sampai kembali ke bingkai ini.
     // `ReturnNil` yang kembali tepat ke kedalaman itu tidak mendorong apa pun: jawabannya `unit`
     // (aturan `Vm::call_value_immediate`).
-    let hasil = vm.run_until_inner::<true, true>(d - 1).and_then(|_| {
+    let hasil = pertama.and_then(|_| {
         if vm.frames.len() <= d { return Ok(()); }
         vm.run_until_inner::<true, false>(d)?;
         if vm.frames.len() == d && sesudah.is_some_and(|n| vm.stack.len() + 1 == basis + n) { vm.stack.push(VmValue::Unit); }
@@ -223,6 +240,75 @@ pub extern "C" fn maju(slot: i64) -> i32 {
     }
 }
 
+/// `SlideDown`: posisi `dari` (milik VM) pindah ke `ke`; yang tertinggal di `dari` jadi `nil`.
+pub extern "C" fn pindah(dari: i64, ke: i64) {
+    let (vm, basis) = konteks();
+    let v = std::mem::replace(sediakan(vm, basis, dari as usize), VmValue::Nil);
+    *sediakan(vm, basis, ke as usize) = v;
+}
+
+/// `LoadGlobal`: posisi `ke` = global `nama` (isi sel `var` modul); 1 = tidak ada (VM yang melapor).
+pub extern "C" fn muat_global(nama: *const String, ke: i64) -> i32 {
+    let (vm, basis) = konteks();
+    let v = match vm.globals.get(unsafe { &*nama }) {
+        Some(VmValue::Cell(sel)) => sel.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+        Some(v) => v.clone(),
+        None => return 1,
+    };
+    *sediakan(vm, basis, ke as usize) = v;
+    0
+}
+
+/// `StoreGlobal`: sel `var` modul `nama` = nilai posisi `dari` berjenis `jenis` (kode `simpan`);
+/// 1 = bukan `var` yang sudah didefinisikan (VM yang melapor), belum ada yang berubah.
+pub extern "C" fn simpan_global(nama: *const String, dari: i64, nilai: i64, jenis: i32) -> i32 {
+    let (vm, basis) = konteks();
+    let v = match jenis {
+        1 => VmValue::Int(nilai as i128),
+        2 => VmValue::Bool(nilai != 0),
+        3 => VmValue::Nil,
+        5 => VmValue::Float(f64::from_bits(nilai as u64)),
+        _ => sediakan(vm, basis, dari as usize).clone(),
+    };
+    match vm.globals.get(unsafe { &*nama }) {
+        Some(VmValue::Cell(sel)) => { *sel.lock().unwrap_or_else(|p| p.into_inner()) = v; 0 }
+        _ => 1,
+    }
+}
+
+/// `GetIndex`: posisi `p` (wadah milik VM) diganti elemennya; indeksnya bulat/bool/pecahan (`jenis`,
+/// kode `simpan`) atau milik VM di `p + 1`. 1 = galat, belum ada yang berubah (VM yang melapor).
+pub extern "C" fn indeks(p: i64, nilai: i64, jenis: i32) -> i32 {
+    let (vm, basis) = konteks();
+    let i = basis + p as usize;
+    let idx = match jenis {
+        1 => VmValue::Int(nilai as i128),
+        2 => VmValue::Bool(nilai != 0),
+        3 => VmValue::Nil,
+        5 => VmValue::Float(f64::from_bits(nilai as u64)),
+        _ => match vm.stack.get(i + 1) { Some(v) => v.clone(), None => return 1 },
+    };
+    let Some(wadah) = vm.stack.get(i) else { return 1 };
+    match vm.get_index(wadah, &idx, None) {
+        Ok(v) => { vm.stack[i] = v; 0 }
+        Err(_) => 1,
+    }
+}
+
+/// `GetField`/`GetFieldPrivat` (`privat` 1): posisi `p` (milik VM) diganti field `nama`-nya. 1 = galat
+/// atau method `math::` yang ditulis tanpa `()` (VM yang menjalankannya), belum ada yang berubah.
+pub extern "C" fn field(p: i64, nama: *const String, privat: i32) -> i32 {
+    let (vm, basis) = konteks();
+    let (i, nama) = (basis + p as usize, unsafe { &*nama });
+    let Some(obj) = vm.stack.get(i) else { return 1 };
+    if privat != 0 && vm.periksa_visibilitas(obj, nama, None).is_err() { return 1; }
+    match vm.get_field(obj, nama, None) {
+        Ok(VmValue::NativeFn(_)) if matches!(obj, VmValue::Float(_) | VmValue::Int(_)) => 1,
+        Ok(v) => { vm.stack[i] = v; 0 }
+        Err(_) => 1,
+    }
+}
+
 /// Posisi `p` dilepas (`Pop` atas nilai milik VM).
 pub extern "C" fn buang(p: i64) {
     let (vm, basis) = konteks();
@@ -272,7 +358,7 @@ fn atas_larik<T>(rel: i64, f: impl FnOnce(&mut VmValue) -> Option<T>) -> Option<
 }
 
 /// Indeks dengan aturan `norm_idx` (negatif dari belakang); di luar batas = `None` (VM yang menolak).
-fn indeks(i: i64, n: usize) -> Option<usize> {
+fn norm_indeks(i: i64, n: usize) -> Option<usize> {
     let i = if i < 0 { n as i128 + i as i128 } else { i as i128 };
     (0..n as i128).contains(&i).then_some(i as usize)
 }
@@ -282,7 +368,7 @@ pub extern "C" fn baca(rel: i64, i: i64, keluar: *mut i64) -> i32 {
     let v = atas_larik(rel, |t| {
         let VmValue::Array(a) = t else { return None };
         let g = a.lock().unwrap_or_else(|p| p.into_inner());
-        match g.get(indeks(i, g.len())?)? {
+        match g.get(norm_indeks(i, g.len())?)? {
             VmValue::Int(n) => i64::try_from(*n).ok(),
             _ => None,
         }
@@ -306,7 +392,7 @@ pub extern "C" fn tulis(rel: i64, i: i64, nilai: i64, jenis: i32) -> i32 {
         t.pisahkan();
         let VmValue::Array(a) = t else { return None };
         let mut g = a.lock().unwrap_or_else(|p| p.into_inner());
-        let k = indeks(i, g.len())?;
+        let k = norm_indeks(i, g.len())?;
         g[k] = v;
         Some(())
     });

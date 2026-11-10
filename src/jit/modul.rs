@@ -68,6 +68,11 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
             jb.symbol("jrg_jit_maju", lambat::maju as *const u8);
             jb.symbol("jrg_jit_langkah_cabang", lambat::langkah_cabang as *const u8);
             jb.symbol("jrg_jit_sebar", lambat::sebar as *const u8);
+            jb.symbol("jrg_jit_pindah", lambat::pindah as *const u8);
+            jb.symbol("jrg_jit_muat_global", lambat::muat_global as *const u8);
+            jb.symbol("jrg_jit_simpan_global", lambat::simpan_global as *const u8);
+            jb.symbol("jrg_jit_indeks", lambat::indeks as *const u8);
+            jb.symbol("jrg_jit_field", lambat::field as *const u8);
             let mut m = JITModule::new(jb);
             let cc = m.isa().default_call_conv();
             let catat = m.declare_function("jrg_jit_catat", Linkage::Import, &turun::tanda_tangan_catat(&m, cc)).ok()?;
@@ -96,6 +101,11 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
                 maju: impor("jrg_jit_maju", &[I64], Some(I32))?,
                 langkah_cabang: impor("jrg_jit_langkah_cabang", &[I64, p, I64, I64, p, I64], Some(I64))?,
                 sebar: impor("jrg_jit_sebar", &[I64], Some(I32))?,
+                pindah: impor("jrg_jit_pindah", &[I64, I64], None)?,
+                muat_global: impor("jrg_jit_muat_global", &[p, I64], Some(I32))?,
+                simpan_global: impor("jrg_jit_simpan_global", &[p, I64, I64, I32], Some(I32))?,
+                indeks: impor("jrg_jit_indeks", &[I64, I64, I32], Some(I32))?,
+                field: impor("jrg_jit_field", &[p, p, I32], Some(I32))?,
             };
             let undi = if deopt::acak_aktif() {
                 Some(m.declare_function("jrg_jit_undi", Linkage::Import, &turun::tanda_tangan_undi(cc)).ok()?)
@@ -120,11 +130,12 @@ pub fn ditolak() -> Vec<(String, String)> {
     g.as_ref().map(|m| m.tolak.clone()).unwrap_or_default()
 }
 
-/// Fungsi, instruksi masuk, boleh `Return` native, jenis stack di titik masuk.
-type Kunci = (usize, usize, u8, Vec<Jenis>);
+/// Fungsi, instruksi masuk, boleh `Return` native, jenis stack di titik masuk, versi kode chunk-nya.
+type Kunci = (usize, usize, u8, Vec<Jenis>, u32);
 
 fn kunci(f: &Arc<VmFunction>, masuk: usize, kembali: u8, jenis: &[Jenis]) -> Kunci {
-    (Arc::as_ptr(f) as usize, masuk, kembali, jenis.to_vec())
+    let versi = f.chunk.kode_jit.versi.load(std::sync::atomic::Ordering::Relaxed);
+    (Arc::as_ptr(f) as usize, masuk, kembali, jenis.to_vec(), versi)
 }
 
 /// Titik masuk callee yang dipanggil kode native: awal fungsi, semua argumen bulat.
@@ -162,6 +173,7 @@ pub fn kompilasi(
             let utama = k == k0;
             match layak::analisis(&h, &cari_boleh, k.1, k.3.clone(), k.2) {
                 Ok(r) => {
+                    if std::env::var("JRG_JIT_LOG").is_ok_and(|v| v == "rencana") { cetak_rencana(&h, &r); }
                     antre.extend(r.callee.iter().map(|c| (kunci_callee(c), Arc::clone(c))));
                     baru.push((k, h, Arc::new(r)));
                 }
@@ -218,4 +230,14 @@ pub fn kompilasi(
     }
     let id = mj.jadi[&k0].0;
     Some(KodeJit { masuk: unsafe { std::mem::transmute(mj.m.get_finalized_function(id)) } })
+}
+
+/// `JRG_JIT_LOG=rencana`: tiap instruksi yang terjangkau dengan caranya dan stack abstrak sebelumnya.
+fn cetak_rencana(f: &VmFunction, r: &layak::Rencana) {
+    eprintln!("[jit] rencana {} (masuk {}, kembali {}):", f.name, r.masuk, r.kembali);
+    for (ip, ins) in f.chunk.code.iter().enumerate() {
+        let Some(st) = &r.keadaan[ip] else { continue };
+        let cara = if r.keluar[ip] { "KELUAR".to_string() } else { format!("{:?}", r.cara[ip]) };
+        eprintln!("[jit]   {ip:4} {:?} {} {cara} {st:?}", ins.op, ins.arg);
+    }
 }

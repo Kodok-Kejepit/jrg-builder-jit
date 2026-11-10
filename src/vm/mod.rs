@@ -25,6 +25,7 @@ mod panggil;
 pub(crate) mod info_native;
 mod akses;
 pub(crate) mod hof;
+mod op;
 pub(crate) mod bawaan;
 
 pub use compiler::{compile, CompileError};

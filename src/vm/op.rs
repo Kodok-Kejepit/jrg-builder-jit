@@ -1,0 +1,102 @@
+// src/vm/op.rs — badan handler opcode yang juga dijalankan langsung oleh jalur lambat JIT
+// (`jit::lambat::satu`), tanpa masuk loop dispatch: satu definisi untuk keduanya.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use super::value::{Peta, VmValue};
+use super::vm::*;
+
+impl Vm {
+    #[inline]
+    pub(crate) fn op_get_method(&mut self, arg: u32, sp: Option<crate::lexer::Span>) -> VmResult<()> {
+        let obj = self.pop(sp)?;
+        let argc = (arg >> 24) as usize;
+        let val = {
+            let fr = self.frames.last()
+                .ok_or_else(|| VmError::new("no active frame"))?;
+            let name = fr.func.chunk.names.get((arg & 0x00FF_FFFF) as usize)
+                .ok_or_else(|| VmError::new(format!("name idx {} OOB", arg)))?;
+            // Jumlah argumen yang DITULIS diperiksa di sini karena sesudah `Call` ia
+            // sudah bercampur dengan penerima — dan tanpa ini `(2.5).sqrt(1)` dijawab …
+            let nanti = argc == crate::vm::opcode::ARGC_NANTI as usize;
+            let v = match self.get_method(&obj, name, sp) {
+                Ok(v) => {
+                    if nanti {
+                        let slot = self.stack.len().saturating_sub(1);
+                        self.galat_metode.retain(|(i, _)| *i < slot);
+                    }
+                    v
+                }
+                // Acuan mengevaluasi argumennya dulu: galatnya menunggu `PeriksaArgMetode`
+                // di slot fungsi (sesudah `Swap`, satu di bawah slot ini).
+                Err(e) if nanti => {
+                    let slot = self.stack.len().saturating_sub(1);
+                    self.galat_metode.retain(|(i, _)| *i < slot);
+                    self.galat_metode.push((slot, e));
+                    VmValue::Nil
+                }
+                Err(e) => return Err(e),
+            };
+            if argc != crate::vm::opcode::ARGC_NANTI as usize && matches!(v, VmValue::NativeFn(_)) {
+                if let Some(p) = Self::pesan_jumlah_arg(&obj, name, argc) {
+                    return Err(VmError::at(p, sp));
+                }
+            }
+            v
+        };
+        self.push(val);
+        Ok(())
+    }
+
+    /// Stack: [fungsi, penerima, arg0..argN-1]; tidak ada yang diambil.
+    #[inline]
+    pub(crate) fn op_periksa_arg_metode(&mut self, arg: u32, sp: Option<crate::lexer::Span>) -> VmResult<()> {
+        use crate::vm::opcode::TANDA_TUNDA;
+        let argc = (arg >> 24) as usize;
+        let n = self.stack.len();
+        if n < argc + 2 { return Err(VmError::at("stack underflow PeriksaArgMetode", sp)); }
+        let slot = n - argc - 2;
+        self.galat_metode.retain(|(i, _)| *i <= slot);
+        if self.galat_metode.last().is_some_and(|(i, _)| *i == slot) {
+            let (_, e) = self.galat_metode.pop().unwrap();
+            if arg & TANDA_TUNDA == 0 { return Err(e); }
+            self.galat_tunda_metode = Some(e);
+            return Ok(());
+        }
+        let pesan = match &self.stack[n - argc - 2] {
+            VmValue::NativeFn(_) => {
+                let fr = self.frames.last()
+                    .ok_or_else(|| VmError::new("no active frame"))?;
+                let name = fr.func.chunk.names.get((arg & (TANDA_TUNDA - 1)) as usize)
+                    .ok_or_else(|| VmError::new(format!("name idx {} OOB", arg)))?;
+                Self::pesan_jumlah_arg(&self.stack[n - argc - 1], name, argc)
+            }
+            _ => None,
+        };
+        if let Some(p) = pesan {
+            if arg & TANDA_TUNDA == 0 { return Err(VmError::at(p, sp)); }
+            self.galat_tunda_metode = Some(VmError::at(p, sp));
+        }
+        Ok(())
+    }
+
+    #[inline]
+    pub(crate) fn op_build_struct(&mut self, arg: u32, sp: Option<crate::lexer::Span>) -> VmResult<()> {
+        let n = arg as usize;
+        let start = self.stack.len().saturating_sub(n * 2);
+        let kv: Vec<VmValue> = self.stack.drain(start..).collect();
+        let label = match self.pop(sp)? {
+            VmValue::Map(p) => p.label.clone(),
+            lain => return Err(VmError::at(format!(
+                "BuildStruct: prototipe harus struct, dapat `{}`", lain.type_name_penuh()), sp)),
+        };
+        let mut isi = HashMap::with_capacity(n);
+        let mut it = kv.into_iter();
+        while let (Some(k), Some(v)) = (it.next(), it.next()) {
+            isi.insert(k.to_string(), v);
+        }
+        self.push(VmValue::Map(Arc::new(Peta::baru(label, isi))));
+        Ok(())
+    }
+}
