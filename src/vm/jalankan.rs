@@ -781,7 +781,12 @@ impl Vm {
                     }
                     self.push(val);
                 }
-                OpCode::GetMethod => self.op_get_method(arg, sp)?,
+                OpCode::GetMethod => {
+                    // Umpan method sekali per situs (bahan tembolok method JIT): label penerima dan method-nya.
+                    let label = if PROFIL { self.label_metode_baru() } else { None };
+                    self.op_get_method(arg, sp)?;
+                    if let Some(label) = label { self.catat_metode(label); }
+                }
                 // Stack: [fungsi, penerima, arg0..argN-1]; tidak ada yang diambil.
                 OpCode::PeriksaArgMetode => self.op_periksa_arg_metode(arg, sp)?,
                 OpCode::SetField => {
@@ -1574,6 +1579,23 @@ impl Vm {
         #[cfg(all(feature = "jit", not(target_arch = "wasm32")))]
         if _n % crate::jit::osr_tiap() == 0 && !self.profiling { return crate::jit::panggil::coba_osr(self); }
         Ok(())
+    }
+
+    /// Label tipe penerima `GetMethod` yang situsnya belum pernah direkam (umpan `LAIN` menandainya).
+    #[inline]
+    fn label_metode_baru(&self) -> Option<String> {
+        let fr = self.frames.last()?;
+        let p = fr.func.chunk.profil.as_ref()?;
+        let ip = fr.ip.wrapping_sub(1);
+        if p.umpan.get(ip)?.load(std::sync::atomic::Ordering::Relaxed) != 0 { return None; }
+        p.catat_tipe(ip, crate::jit::profil::bit::LAIN);
+        Some(self.stack.last()?.nama_tipe()?.to_string())
+    }
+
+    /// Method pemakai hasil `GetMethod` (puncak stack) dicatat untuk label `label`.
+    fn catat_metode(&self, label: String) {
+        let (Some(fr), Some(VmValue::Function(f))) = (self.frames.last(), self.stack.last()) else { return };
+        fr.func.chunk.kode_jit.catat_metode(fr.ip.wrapping_sub(1), label, Arc::clone(f));
     }
 
     /// Jenis nilai yang dihasilkan instruksi yang baru jalan (`ip - 1` bingkai teratas), untuk spekulasi JIT.

@@ -75,6 +75,9 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
             jb.symbol("jrg_jit_field", lambat::field as *const u8);
             jb.symbol("jrg_jit_masuk", lambat::masuk as *const u8);
             jb.symbol("jrg_jit_keluar", lambat::keluar as *const u8);
+            jb.symbol("jrg_jit_salin", lambat::salin as *const u8);
+            jb.symbol("jrg_jit_tukar", lambat::tukar as *const u8);
+            jb.symbol("jrg_jit_cek_metode", lambat::cek_metode as *const u8);
             let mut m = JITModule::new(jb);
             let cc = m.isa().default_call_conv();
             let catat = m.declare_function("jrg_jit_catat", Linkage::Import, &turun::tanda_tangan_catat(&m, cc)).ok()?;
@@ -110,6 +113,9 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
                 field: impor("jrg_jit_field", &[p, p, I32], Some(I32))?,
                 masuk: impor("jrg_jit_masuk", &[I64, p, I64, I64, p], Some(I32))?,
                 keluar: impor("jrg_jit_keluar", &[I64, I64], Some(I32))?,
+                salin: impor("jrg_jit_salin", &[I64, I64], None)?,
+                tukar: impor("jrg_jit_tukar", &[I64, I64], None)?,
+                cek_metode: impor("jrg_jit_cek_metode", &[I64, p], Some(I32))?,
             };
             let undi = if deopt::acak_aktif() {
                 Some(m.declare_function("jrg_jit_undi", Linkage::Import, &turun::tanda_tangan_undi(cc)).ok()?)
@@ -176,9 +182,8 @@ pub fn kompilasi(
         while let Some((k, h, langsung)) = antre.pop() {
             if mj.jadi.contains_key(&k) || baru.iter().any(|(b, _, _)| *b == k) { continue; }
             let utama = k == k0;
-            match layak::analisis(&h, &cari_boleh, k.1, k.3.clone(), k.2, langsung, &larang_bulat) {
+            match layak::analisis(&h, &cari_boleh, k.1, k.3.clone(), k.2, langsung, &larang_bulat, &larang) {
                 Ok(r) => {
-                    if std::env::var("JRG_JIT_LOG").is_ok_and(|v| v == "rencana") { cetak_rencana(&h, &r); }
                     for i in r.callee_asli() { antre.push((kunci_callee(&r.callee[i]), Arc::clone(&r.callee[i]), false)); }
                     for (i, jenis) in &r.langsung {
                         let c = &r.callee[*i];
@@ -186,7 +191,8 @@ pub fn kompilasi(
                     }
                     baru.push((k, h, Arc::new(r)));
                 }
-                Err(_) if !utama => {
+                // Tiap ulangan menambah satu larangan baru; yang tidak (bug) berhenti di sini, bukan berputar.
+                Err(_) if !utama && larang.len() + larang_bulat.len() < 64 => {
                     let p = Arc::as_ptr(&h) as usize;
                     if k.2 == layak::KEMBALI_BULAT && !larang_bulat.contains(&p) { larang_bulat.push(p) } else { larang.push(p) }
                     continue 'ulang;
@@ -246,7 +252,7 @@ pub fn kompilasi(
 }
 
 /// `JRG_JIT_LOG=rencana`: tiap instruksi yang terjangkau dengan caranya dan stack abstrak sebelumnya.
-fn cetak_rencana(f: &VmFunction, r: &layak::Rencana) {
+pub(super) fn cetak_rencana(f: &VmFunction, r: &layak::Rencana) {
     eprintln!("[jit] rencana {} (masuk {}, kembali {}):", f.name, r.masuk, r.kembali);
     for (ip, ins) in f.chunk.code.iter().enumerate() {
         let Some(st) = &r.keadaan[ip] else { continue };

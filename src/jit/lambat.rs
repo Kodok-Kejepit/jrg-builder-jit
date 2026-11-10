@@ -381,6 +381,33 @@ pub extern "C" fn field(p: i64, nama: *const String, privat: i32) -> i32 {
     }
 }
 
+/// `Dup` atas posisi `dari` milik VM: posisi `ke` = salinannya.
+pub extern "C" fn salin(dari: i64, ke: i64) {
+    let (vm, basis) = konteks();
+    let v = sediakan(vm, basis, dari as usize).clone();
+    *sediakan(vm, basis, ke as usize) = v;
+}
+
+/// `Swap` atas dua posisi milik VM.
+pub extern "C" fn tukar(x: i64, y: i64) {
+    let (vm, basis) = konteks();
+    sediakan(vm, basis, x.max(y) as usize);
+    vm.stack.swap(basis + x as usize, basis + y as usize);
+}
+
+/// Jaga tembolok method: penerima di posisi `p` berlabel `label`; lolos = posisinya dilepas (dipakai
+/// `GetMethod`) dan galat method tertunda di atasnya dibuang, seperti `op_get_method` yang berhasil.
+/// 1 = label lain, belum ada yang berubah.
+pub extern "C" fn cek_metode(p: i64, label: *const String) -> i32 {
+    let (vm, basis) = konteks();
+    let v = sediakan(vm, basis, p as usize);
+    if v.nama_tipe() != Some(unsafe { (*label).as_str() }) { return 1; }
+    *v = VmValue::Nil;
+    let slot = (basis + p as usize).saturating_sub(1);
+    if !vm.galat_metode.is_empty() { vm.galat_metode.retain(|(i, _)| *i < slot); }
+    0
+}
+
 /// Posisi `p` dilepas (`Pop` atas nilai milik VM).
 pub extern "C" fn buang(p: i64) {
     let (vm, basis) = konteks();

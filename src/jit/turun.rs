@@ -86,7 +86,7 @@ pub struct ImporLambat {
     pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
-    pub masuk: FuncId, pub keluar: FuncId,
+    pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
 }
 
 /// Fungsi impor dan identitas bingkai untuk blok deopt.
@@ -236,8 +236,8 @@ pub fn turunkan(
     let [f_pola_lokal, f_payload_lokal, f_buka_lokal, f_iter_ada, f_maju, f_cabang, f_sebar] =
         [il.pola_lokal, il.payload_lokal, il.buka_lokal, il.iter_ada, il.maju, il.langkah_cabang, il.sebar]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar] =
-        [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar]
+    let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode] =
+        [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -559,6 +559,29 @@ pub fn turunkan(
                 if let Some(j) = r.spek[ip] { buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t - a - 1, j); }
                 continue;
             }
+            Cara::Salin => {
+                let (dari, ke) = (i64c(&mut b, t as i64 - 1), i64c(&mut b, t as i64));
+                b.ins().call(f_salin, &[dari, ke]);
+                continue;
+            }
+            Cara::Tukar => {
+                // Isi native ikut variabelnya; isi milik VM ikut posisinya di stack VM.
+                let (x, y) = (t - 2, t - 1);
+                let (px, py) = (i64c(&mut b, x as i64), i64c(&mut b, y as i64));
+                match (s[x].di_vm(), s[y].di_vm()) {
+                    (true, true) => { b.ins().call(f_tukar, &[px, py]); }
+                    (true, false) => { b.ins().call(f_pindah, &[px, py]); let v = b.use_var(var[y]); b.def_var(var[x], v); }
+                    _ => { b.ins().call(f_pindah, &[py, px]); let v = b.use_var(var[x]); b.def_var(var[y], v); }
+                }
+                continue;
+            }
+            Cara::Metode(n) => {
+                let (p, l) = (i64c(&mut b, t as i64 - 1), i64c(&mut b, &r.metode[*n] as *const String as i64));
+                let c = b.ins().call(f_cek_metode, &[p, l]);
+                let c = b.inst_results(c)[0];
+                jaga_spek(&mut b, &k, &var, c, ip, s);
+                continue;
+            }
             Cara::Sebar => {
                 // 1 = `Err`/`None`: fungsinya kembali dengan nilai itu (masuk dari VM), selain itu VM yang menjalankannya.
                 let p = i64c(&mut b, t as i64 - 1);
@@ -738,7 +761,7 @@ pub fn turunkan(
                 b.def_var(var[t - 1], x);
             }
             OpCode::SlideDown => { let v = atas(&mut b, 1); b.def_var(var[t - a - 1], v); }
-            OpCode::Pop | OpCode::LoadGlobal => {}
+            OpCode::Pop | OpCode::LoadGlobal | OpCode::PeriksaArgMetode => {}
             OpCode::StoreLocal | OpCode::SimpanBuang => { let v = atas(&mut b, 1); b.def_var(var[a], v); }
             OpCode::Jump => { b.ins().jump(blok[a].expect("sasaran lompat terjangkau"), &[]); terbuka = false; }
             OpCode::JumpFalse | OpCode::JumpTrue | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep => {

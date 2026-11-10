@@ -62,12 +62,24 @@ pub struct PintuJit {
     pub versi: std::sync::atomic::AtomicU32,
     /// Instruksi yang spekulasinya (nilai VM sebagai angka, larik berelemen angka) pernah gagal.
     pub spek_gagal: std::sync::Mutex<Vec<u32>>,
+    /// Umpan `GetMethod`: situs, label tipe penerima pertama yang teramati, dan method pemakai-nya.
+    pub metode: std::sync::Mutex<Vec<(u32, String, std::sync::Arc<crate::vm::value::VmFunction>)>>,
 }
 
 /// Spekulasi yang gagal lebih dari ini membuat chunk-nya berhenti dikompilasi ulang.
 const MAKS_SPEK_GAGAL: usize = 16;
 
 impl PintuJit {
+    pub fn catat_metode(&self, ip: usize, label: String, f: std::sync::Arc<crate::vm::value::VmFunction>) {
+        let mut g = self.metode.lock().unwrap_or_else(|p| p.into_inner());
+        if !g.iter().any(|(i, ..)| *i == ip as u32) { g.push((ip as u32, label, f)); }
+    }
+
+    pub fn metode_di(&self, ip: usize) -> Option<(String, std::sync::Arc<crate::vm::value::VmFunction>)> {
+        let g = self.metode.lock().unwrap_or_else(|p| p.into_inner());
+        g.iter().find(|(i, ..)| *i == ip as u32).map(|(_, l, f)| (l.clone(), std::sync::Arc::clone(f)))
+    }
+
     pub fn spek_gagal_di(&self, ip: usize) -> bool {
         self.spek_gagal.lock().unwrap_or_else(|p| p.into_inner()).contains(&(ip as u32))
     }
