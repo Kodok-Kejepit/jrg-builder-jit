@@ -487,6 +487,18 @@ pub extern "C" fn cek_metode(p: i64, label: *const String) -> i32 {
     0
 }
 
+/// Tepi ke titik temu yang dilebarkan: angka native di posisi `p` jadi nilai VM (kode jenis `simpan`).
+pub extern "C" fn tulis_vm(p: i64, nilai: i64, jenis: i32) {
+    let (vm, basis) = konteks();
+    let v = match jenis {
+        1 => VmValue::Int(nilai as i128),
+        2 => VmValue::Bool(nilai != 0),
+        5 => VmValue::Float(f64::from_bits(nilai as u64)),
+        _ => VmValue::Nil,
+    };
+    *sediakan(vm, basis, p as usize) = v;
+}
+
 /// Posisi `p` dilepas (`Pop` atas nilai milik VM).
 pub extern "C" fn buang(p: i64) {
     let (vm, basis) = konteks();

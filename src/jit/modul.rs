@@ -82,6 +82,7 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
             jb.symbol("jrg_jit_biner", lambat::biner as *const u8);
             jb.symbol("jrg_jit_muat_upval", lambat::muat_upval as *const u8);
             jb.symbol("jrg_jit_simpan_upval", lambat::simpan_upval as *const u8);
+            jb.symbol("jrg_jit_tulis_vm", lambat::tulis_vm as *const u8);
             let mut m = JITModule::new(jb);
             let cc = m.isa().default_call_conv();
             let catat = m.declare_function("jrg_jit_catat", Linkage::Import, &turun::tanda_tangan_catat(&m, cc)).ok()?;
@@ -124,6 +125,7 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
                 biner: impor("jrg_jit_biner", &[I64, p, I64, p], Some(I32))?,
                 muat_upval: impor("jrg_jit_muat_upval", &[I64, I64], Some(I32))?,
                 simpan_upval: impor("jrg_jit_simpan_upval", &[I64, I64, I64, I32], Some(I32))?,
+                tulis_vm: impor("jrg_jit_tulis_vm", &[I64, I64, I32], None)?,
             };
             let undi = if deopt::acak_aktif() {
                 Some(m.declare_function("jrg_jit_undi", Linkage::Import, &turun::tanda_tangan_undi(cc)).ok()?)
@@ -190,7 +192,12 @@ pub fn kompilasi(
         while let Some((k, h, langsung)) = antre.pop() {
             if mj.jadi.contains_key(&k) || baru.iter().any(|(b, _, _)| *b == k) { continue; }
             let utama = k == k0;
-            match layak::analisis(&h, &cari_boleh, k.1, k.3.clone(), k.2, langsung, &larang_bulat, &larang) {
+            let hasil = layak::analisis(&h, &cari_boleh, k.1, k.3.clone(), k.2, langsung, &larang_bulat, &larang)
+                .and_then(|r| if k.2 == layak::KEMBALI_BULAT && keluar_biasa(&h, &r) {
+                    // Callee bulat yang tiap jalannya bisa keluar ke VM (deopt per panggilan): panggilan langsung saja.
+                    Err("callee bulat dengan titik keluar".into())
+                } else { Ok(r) });
+            match hasil {
                 Ok(r) => {
                     for i in r.callee_asli() { antre.push((kunci_callee(&r.callee[i]), Arc::clone(&r.callee[i]), false)); }
                     for (i, jenis) in &r.langsung {
@@ -267,4 +274,11 @@ pub(super) fn cetak_rencana(f: &VmFunction, r: &layak::Rencana) {
         let cara = if r.keluar[ip] { "KELUAR".to_string() } else { format!("{:?}", r.cara[ip]) };
         eprintln!("[jit]   {ip:4} {:?} {} {cara} {st:?}", ins.op, ins.arg);
     }
+}
+
+/// Rencana punya titik keluar terjangkau selain cabang galat (`panik`, `match` tanpa lengan cocok).
+fn keluar_biasa(f: &VmFunction, r: &layak::Rencana) -> bool {
+    use crate::vm::opcode::OpCode;
+    (0..r.keluar.len()).any(|ip| r.keluar[ip] && r.keadaan[ip].is_some()
+        && !matches!(f.chunk.code[ip].op, OpCode::Panic | OpCode::GagalCocok | OpCode::Halt))
 }

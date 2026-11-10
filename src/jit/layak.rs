@@ -146,6 +146,9 @@ pub struct Rencana {
     pub argc_call: Vec<Option<usize>>,
     /// Label tipe yang dijaga tiap `Cara::Metode`.
     pub metode: Vec<String>,
+    /// Keadaan yang dibawa tiap tepi `(dari, ke)`; yang lebih sempit dari `keadaan[ke]` (titik temu yang
+    /// dilebarkan) diubah dulu di tepinya (`turun::tepi`).
+    pub tepi: std::collections::HashMap<(usize, usize), Vec<Jenis>>,
     /// Fungsi (alamat `Arc`) yang tidak bisa jadi callee bulat: dipanggil langsung atau lewat VM.
     pub larang_bulat: Vec<usize>,
     /// Fungsi yang tidak dikompilasi sama sekali (callee yang analisisnya gagal): lewat VM.
@@ -210,6 +213,12 @@ pub fn analisis(
     analisis_sekali(f, cari, masuk, jenis_masuk, kembali, langsung, larang_bulat, larang, &mut None)
 }
 
+/// Keadaan titik temu yang menampung `a` dan `b`: posisi yang beda jadi `Nilai` (isinya di stack VM).
+fn gabung(a: &[Jenis], b: &[Jenis]) -> Option<Vec<Jenis>> {
+    if a.len() != b.len() { return None; }
+    Some(a.iter().zip(b).map(|(x, y)| if x == y { *x } else { Jenis::Nilai }).collect())
+}
+
 /// Jenis masuk yang diperlebar supaya `datang` bertemu dengannya: posisi yang beda jadi `Nilai`.
 fn perlebar(masuk: &[Jenis], datang: &[Jenis]) -> Option<Vec<Jenis>> {
     let ok = |j: &Jenis| matches!(j, Jenis::Bulat | Jenis::Bool | Jenis::Pecahan | Jenis::Kosong | Jenis::Nilai);
@@ -238,6 +247,7 @@ fn analisis_sekali(
         larang: larang.to_vec(),
         spek: vec![None; n],
         metode: Vec::new(),
+        tepi: std::collections::HashMap::new(),
     };
     r.keadaan[masuk] = Some(jenis_masuk);
     let mut kerja = vec![masuk];
@@ -253,13 +263,31 @@ fn analisis_sekali(
                 if let Some(j) = perlebar(dasar, st) { *lebar = Some(j); }
             }
         }
-        let lanjut = lanjut
-            .filter(|ps| ps.iter().all(|(t, st)| *t < n && r.keadaan[*t].as_ref().is_none_or(|a| a == st)));
-        let Some(ps) = lanjut else { r.keluar[ip] = true; continue };
+        // Kedatangan yang bentrok di titik temu (bukan titik masuk) melebarkan posisinya jadi `Nilai` dan
+        // sasarannya dianalisis ulang; tepi yang membawa angka native ke sana menulisnya ke stack VM dulu.
+        r.keluar[ip] = false;
+        let mut lebarkan = Vec::new();
+        let cocok = lanjut.as_ref().is_some_and(|ps| ps.iter().all(|(t, st)| *t < n && match &r.keadaan[*t] {
+            None => true,
+            Some(a) if a == st => true,
+            Some(_) if *t == masuk || kembali == KEMBALI_BULAT => false,
+            Some(a) => match gabung(a, st) {
+                Some(w) => { lebarkan.push((*t, w)); true }
+                None => false,
+            },
+        }));
+        let (true, Some(ps)) = (cocok, lanjut) else { r.keluar[ip] = true; continue };
         for (t, st) in ps {
             r.maks = r.maks.max(st.len());
+            r.tepi.insert((ip, t), st.clone());
             if r.keadaan[t].is_none() {
                 r.keadaan[t] = Some(st);
+                kerja.push(t);
+            }
+        }
+        for (t, w) in lebarkan {
+            if r.keadaan[t].as_ref() != Some(&w) {
+                r.keadaan[t] = Some(w);
                 kerja.push(t);
             }
         }
@@ -612,7 +640,9 @@ fn efek_langkah(f: &VmFunction, ip: usize, s: &[Jenis]) -> Option<(usize, usize,
     let ins = kode[ip];
     let a = ins.arg as usize;
     let t = s.len();
-    let ada_vm = |k: usize| k <= t && s[t - k..].iter().any(|j| j.di_vm());
+    // Bentuk native dicoba lebih dulu (`langkah_asli`); yang sampai di sini (jenis campur, `typeof` atas angka,
+    // galat yang harus dilaporkan VM) dilangkahkan apa pun jenisnya: posisi native ditumpahkan dulu.
+    let ada_vm = |k: usize| k <= t;
     Some(match ins.op {
         OpCode::LoadFn => (0, 1, None),
         OpCode::PinjamLokal if s.get(a)?.di_vm() => (0, 1, Some(a)),

@@ -507,3 +507,35 @@ fn operasi_bit_native() {
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+// ── J4 langkah 10: titik temu dilebarkan (`dokumentasi/jit/j4-rencana.md`) ─────────────────────────
+
+const TITIK_TEMU: &str = r#"fn kelas(v: int) -> int {
+    if typeof(v) == "int" { return v % 7 }
+    return 0
+}
+pub fn main() {
+    var t = 0
+    var u = 0
+    for i in 0..3000 {
+        var x = i
+        if i % 3 == 0 { x = "tiga" }
+        if typeof(x) == "int" { t = t + kelas(x) } else { u = u + len(x) }
+    }
+    wok(t, u)
+}
+"#;
+
+#[test]
+fn titik_temu_dilebarkan() {
+    // Lokal yang bulat di satu cabang dan teks di cabang lain bertemu sebagai `Nilai` (tepinya menulis angkanya
+    // ke stack VM), dan callee yang punya `typeof` dipanggil langsung, bukan callee bulat yang deopt tiap kali.
+    let i = jalankan(TITIK_TEMU, &[], &[]);
+    assert!(i.sukses && i.stdout == "5995 4000", "{}", i.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(TITIK_TEMU, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let h = jalankan(TITIK_TEMU, &["--jit"], &[("JRG_JIT_LOG", "ringkas")]);
+    assert!(h.stderr.lines().filter(|b| b.starts_with("[jit]   keluar ")).all(|b| b.contains("keluar Return")), "{}", h.stderr);
+}

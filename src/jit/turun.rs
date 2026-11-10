@@ -88,6 +88,7 @@ pub struct ImporLambat {
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
     pub bawaan: FuncId, pub biner: FuncId, pub muat_upval: FuncId, pub simpan_upval: FuncId,
+    pub tulis_vm: FuncId,
 }
 
 /// Fungsi impor dan identitas bingkai untuk blok deopt.
@@ -168,6 +169,47 @@ fn buka_hasil(
     b.def_var(var[pos], v);
 }
 
+/// Blok sasaran tepi `dari → ke`. Kalau sasarannya titik temu yang dilebarkan (`Rencana::tepi`), tepinya
+/// lewat blok stub yang menulis angka/fungsi native ke stack VM dulu; stub diisi `isi_tepi` sesudah
+/// instruksi penutup blok sekarang (`FunctionBuilder` tidak boleh pindah dari blok yang belum ditutup).
+fn tepi(b: &mut FunctionBuilder, r: &Rencana, blok: &[Option<Block>], dari: usize, ke: usize, tunda: &mut Vec<(Block, usize, usize)>) -> Block {
+    let sasaran = blok[ke].expect("sasaran tepi terjangkau");
+    let (Some(asal), Some(tuju)) = (r.tepi.get(&(dari, ke)), r.keadaan[ke].as_ref()) else { return sasaran };
+    if !asal.iter().zip(tuju).any(|(a, t)| t.di_vm() && !a.di_vm()) { return sasaran; }
+    let stub = b.create_block();
+    tunda.push((stub, dari, ke));
+    stub
+}
+
+/// Isi blok stub `tepi` yang tertunda; builder berakhir di stub terakhir (sudah tertutup).
+#[allow(clippy::too_many_arguments)]
+fn isi_tepi(
+    b: &mut FunctionBuilder, r: &Rencana, blok: &[Option<Block>], var: &[Variable], tunda: &mut Vec<(Block, usize, usize)>,
+    tulis: FuncRef, taruh: FuncRef,
+) {
+    for (stub, dari, ke) in tunda.drain(..) {
+        b.switch_to_block(stub);
+        let (asal, tuju) = (&r.tepi[&(dari, ke)], r.keadaan[ke].as_ref().expect("sasaran tepi terjangkau"));
+        for (i, (a, t)) in asal.iter().zip(tuju).enumerate() {
+            if !t.di_vm() || a.di_vm() { continue; }
+            let p = b.ins().iconst(types::I64, i as i64);
+            match a {
+                Jenis::Fungsi(c) => {
+                    let kv = b.ins().iconst(types::I64, &r.callee_nilai[*c] as *const _ as i64);
+                    b.ins().call(taruh, &[p, kv]);
+                }
+                j => {
+                    let kode = match j { Jenis::Bulat => 1, Jenis::Bool => 2, Jenis::Pecahan => 5, _ => 3 };
+                    let v = if kode == 3 { b.ins().iconst(types::I64, 0) } else { b.use_var(var[i]) };
+                    let kv = b.ins().iconst(types::I32, kode);
+                    b.ins().call(tulis, &[p, v, kv]);
+                }
+            }
+        }
+        b.ins().jump(blok[ke].expect("sasaran tepi terjangkau"), &[]);
+    }
+}
+
 /// Nilai angka jadi `f64`: pecahan dibaca bitnya, bulat dikonversi seperti `i128 as f64` acuan.
 fn ke_f64(b: &mut FunctionBuilder, v: Value, j: Jenis) -> Value {
     if j == Jenis::Pecahan { b.ins().bitcast(types::F64, MemFlagsData::new(), v) }
@@ -240,7 +282,7 @@ pub fn turunkan(
     let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode, f_bawaan, f_biner] =
         [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode, il.bawaan, il.biner]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_muat_upval, f_simpan_upval] = [il.muat_upval, il.simpan_upval]
+    let [f_muat_upval, f_simpan_upval, f_tulis_vm] = [il.muat_upval, il.simpan_upval, il.tulis_vm]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -264,10 +306,15 @@ pub fn turunkan(
     // `LoadLocal` milik VM yang digabung dengan instruksi sesudahnya: yang sudah dikerjakan / bukaan
     // instruksi sesudahnya sudah dikerjakan.
     let (mut lewati, mut dibuka) = (false, false);
+    let mut tunda: Vec<(Block, usize, usize)> = Vec::new();
     for ip in 0..kode.len() {
         let Some(s) = &r.keadaan[ip] else { terbuka = false; continue };
         if let Some(bl) = blok[ip] {
-            if terbuka { b.ins().jump(bl, &[]); }
+            if terbuka {
+                let ke = tepi(&mut b, r, &blok, ip - 1, ip, &mut tunda);
+                b.ins().jump(ke, &[]);
+                isi_tepi(&mut b, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
+            }
             b.switch_to_block(bl);
             terbuka = true;
         }
@@ -413,11 +460,12 @@ pub fn turunkan(
                 let c = b.inst_results(c)[0];
                 let v = b.ins().uextend(types::I64, c);
                 if ins.op == OpCode::KeBool { b.def_var(var[t - 1], v); continue; }
-                let (sesudah, sasaran) = (blok[ip + 1].expect("sesudah cabang"), blok[a].expect("sasaran cabang"));
+                let (sesudah, sasaran) = (tepi(&mut b, r, &blok, ip, ip + 1, &mut tunda), tepi(&mut b, r, &blok, ip, a, &mut tunda));
                 let (ya, tidak) = if matches!(ins.op, OpCode::JumpFalse | OpCode::JumpFalseKeep) {
                     (sesudah, sasaran)
                 } else { (sasaran, sesudah) };
                 b.ins().brif(v, ya, &[], tidak, &[]);
+                isi_tepi(&mut b, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
                 terbuka = false;
                 continue;
             }
@@ -447,9 +495,10 @@ pub fn turunkan(
                 b.switch_to_block(gagal);
                 kembali_status(&mut b, GAGAL);
                 b.switch_to_block(terus);
-                let (ya, tidak) = (blok[tujuan[0]].expect("tujuan cabang"), blok[tujuan[1]].expect("tujuan cabang"));
+                let (ya, tidak) = (tepi(&mut b, r, &blok, ip, tujuan[0], &mut tunda), tepi(&mut b, r, &blok, ip, tujuan[1], &mut tunda));
                 let pilih = if *hasil_bool { h } else { b.ins().icmp_imm_s(IntCC::Equal, h, tujuan[0] as i64) };
                 b.ins().brif(pilih, ya, &[], tidak, &[]);
+                isi_tepi(&mut b, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
                 terbuka = false;
                 continue;
             }
@@ -852,14 +901,20 @@ pub fn turunkan(
             OpCode::SlideDown => { let v = atas(&mut b, 1); b.def_var(var[t - a - 1], v); }
             OpCode::Pop | OpCode::LoadGlobal | OpCode::PeriksaArgMetode => {}
             OpCode::StoreLocal | OpCode::SimpanBuang => { let v = atas(&mut b, 1); b.def_var(var[a], v); }
-            OpCode::Jump => { b.ins().jump(blok[a].expect("sasaran lompat terjangkau"), &[]); terbuka = false; }
+            OpCode::Jump => {
+                let ke = tepi(&mut b, r, &blok, ip, a, &mut tunda);
+                b.ins().jump(ke, &[]);
+                isi_tepi(&mut b, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
+                terbuka = false;
+            }
             OpCode::JumpFalse | OpCode::JumpTrue | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep => {
                 let c = atas(&mut b, 1);
-                let (sesudah, sasaran) = (blok[ip + 1].expect("sesudah cabang"), blok[a].expect("sasaran cabang"));
+                let (sesudah, sasaran) = (tepi(&mut b, r, &blok, ip, ip + 1, &mut tunda), tepi(&mut b, r, &blok, ip, a, &mut tunda));
                 let (ya, tidak) = if matches!(ins.op, OpCode::JumpFalse | OpCode::JumpFalseKeep) {
                     (sesudah, sasaran)
                 } else { (sasaran, sesudah) };
                 b.ins().brif(c, ya, &[], tidak, &[]);
+                isi_tepi(&mut b, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
                 terbuka = false;
             }
             OpCode::MakeIterRentang => {
