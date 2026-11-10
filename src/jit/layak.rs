@@ -170,10 +170,9 @@ pub fn bentuk_layak(f: &VmFunction) -> bool {
         && f.chunk.tipe_self.is_none()
 }
 
-/// Rencana dari `masuk` dengan stack `jenis_masuk`, atau alasan tidak ada yang bisa dikompilasi.
-/// Posisi yang kembali ke titik masuk sebagai nilai milik VM (hasil `Call` ke VM yang ditulis ke lokal
-/// bulat) diulang sebagai `Nilai` sejak masuk: isinya memang sudah di stack VM.
-/// `langsung`: callee panggilan langsung (`Cara::Langsung`), yang tidak membayar pintu masuk dari VM.
+/// Rencana dari `masuk` dengan stack `jenis_masuk`, atau alasan tidak ada yang bisa dikompilasi. Posisi yang
+/// kembali ke titik masuk sebagai nilai VM diulang sebagai `Nilai` sejak masuk. `langsung`: callee
+/// `Cara::Langsung`, yang tidak membayar pintu masuk dari VM.
 #[allow(clippy::too_many_arguments)]
 pub fn analisis(
     f: &VmFunction, cari: &dyn Fn(&str) -> Option<Arc<VmFunction>>,
