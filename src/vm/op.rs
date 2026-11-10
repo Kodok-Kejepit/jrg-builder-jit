@@ -138,4 +138,42 @@ impl Vm {
             _ => a.ge(&b).map(VmValue::Bool).map_err(galat),
         }
     }
+
+    #[inline(always)]
+    pub(crate) fn op_copy_val(&mut self, sp: Option<crate::lexer::Span>) -> VmResult<()> {
+        // Lihat catatan pada `OpCode::CopyVal` di opcode.rs.
+        let v = self.pop(sp)?;
+        self.push(if v.bisa_beralias() { v.deep_copy() } else { v });
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub(crate) fn op_set_index(&mut self, sp: Option<crate::lexer::Span>) -> VmResult<()> {
+        let val = self.pop(sp)?;
+        let (obj, idx) = self.pop2(sp)?;
+        self.set_index(&obj, &idx, val, sp)
+    }
+
+    #[inline(always)]
+    pub(crate) fn op_typeof(&mut self, sp: Option<crate::lexer::Span>) -> VmResult<()> {
+        let v = self.pop(sp)?;
+        self.push(VmValue::str(v.type_name()));
+        Ok(())
+    }
+
+    #[inline(always)]
+    pub(crate) fn op_len(&mut self, sp: Option<crate::lexer::Span>) -> VmResult<()> {
+        let v = self.pop(sp)?;
+        let n = self.vm_len(&v, sp)?;
+        self.push(VmValue::Int(n as i128));
+        Ok(())
+    }
+
+    /// `BuildArray` (`tuple` = `BuildTuple`): `n` nilai teratas jadi satu larik/tuple.
+    #[inline(always)]
+    pub(crate) fn op_build_larik(&mut self, n: u32, tuple: bool) {
+        let start = self.stack.len().saturating_sub(n as usize);
+        let items: Vec<VmValue> = self.stack.drain(start..).collect();
+        self.push(if tuple { VmValue::tuple(items) } else { VmValue::array(items) });
+    }
 }

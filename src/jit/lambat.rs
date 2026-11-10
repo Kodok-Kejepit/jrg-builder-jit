@@ -75,6 +75,11 @@ fn satu(ip: i64, jenis: *const Jenis, t: i64, tumpah: i64, sesudah: Option<usize
         OpCode::GetMethod => vm.op_get_method(ins.arg, sp),
         OpCode::PeriksaArgMetode => vm.op_periksa_arg_metode(ins.arg, sp),
         OpCode::BuildStruct => vm.op_build_struct(ins.arg, sp),
+        OpCode::BuildArray | OpCode::BuildTuple => { vm.op_build_larik(ins.arg, ins.op == OpCode::BuildTuple); Ok(()) }
+        OpCode::SetIndex => vm.op_set_index(sp),
+        OpCode::Typeof => vm.op_typeof(sp),
+        OpCode::Len => vm.op_len(sp),
+        OpCode::CopyVal => vm.op_copy_val(sp),
         OpCode::Dup => { let v = vm.stack[vm.stack.len() - 1].clone(); vm.stack.push(v); Ok(()) }
         OpCode::Swap => { let n = vm.stack.len(); vm.stack.swap(n - 1, n - 2); Ok(()) }
         _ => {

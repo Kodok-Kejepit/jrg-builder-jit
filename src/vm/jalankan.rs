@@ -213,10 +213,7 @@ impl Vm {
 
                 // ── Locals ────────────────────────────────────────────────
                 // Lihat catatan pada `OpCode::CopyVal` di opcode.rs.
-                OpCode::CopyVal => {
-                    let v = self.pop(sp)?;
-                    self.push(if v.bisa_beralias() { v.deep_copy() } else { v });
-                }
+                OpCode::CopyVal => self.op_copy_val(sp)?,
 
                 OpCode::LoadLocal | OpCode::LokalHitung => {
                     let slot = self.frame_slot() + arg as usize;
@@ -688,18 +685,8 @@ impl Vm {
                 }
 
                 // ── Collections ───────────────────────────────────────────
-                OpCode::BuildArray => {
-                    let n = arg as usize;
-                    let start = self.stack.len().saturating_sub(n);
-                    let items: Vec<VmValue> = self.stack.drain(start..).collect();
-                    self.push(VmValue::array(items));
-                }
-                OpCode::BuildTuple => {
-                    let n = arg as usize;
-                    let start = self.stack.len().saturating_sub(n);
-                    let items: Vec<VmValue> = self.stack.drain(start..).collect();
-                    self.push(VmValue::tuple(items));
-                }
+                OpCode::BuildArray => self.op_build_larik(arg, false),
+                OpCode::BuildTuple => self.op_build_larik(arg, true),
                 OpCode::BuildMap => {
                     let n = arg as usize;
                     let start = self.stack.len().saturating_sub(n * 2);
@@ -877,11 +864,7 @@ impl Vm {
                     if PROFIL { self.catat_hasil(&val); }
                     self.push(val);
                 }
-                OpCode::SetIndex => {
-                    let val = self.pop(sp)?;
-                    let (obj, idx) = self.pop2(sp)?;
-                    self.set_index(&obj, &idx, val, sp)?;
-                }
+                OpCode::SetIndex => self.op_set_index(sp)?,
                 OpCode::Slice => {
                     let hi = self.pop(sp)?;
                     let lo = self.pop(sp)?;
@@ -1413,15 +1396,8 @@ impl Vm {
                 }
 
                 // ── Misc ──────────────────────────────────────────────────
-                OpCode::Typeof => {
-                    let v = self.pop(sp)?;
-                    self.push(VmValue::str(v.type_name()));
-                }
-                OpCode::Len => {
-                    let v = self.pop(sp)?;
-                    let n = self.vm_len(&v, sp)?;
-                    self.push(VmValue::Int(n as i128));
-                }
+                OpCode::Typeof => self.op_typeof(sp)?,
+                OpCode::Len => self.op_len(sp)?,
                 OpCode::Print => {
                     let v = self.pop(sp)?;
                     crate::host::tulis_baris(&v.to_string());
