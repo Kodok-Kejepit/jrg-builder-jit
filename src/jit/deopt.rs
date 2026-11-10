@@ -7,7 +7,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use super::layak::{Cara, Jenis};
-use super::turun::{BUKA_SUDAH, GAGAL_SPEK};
+use super::turun::{BUKA_SUDAH, GAGAL_SPEK, PUNCAK_VM};
+
+/// Bit penanda di `ip` rekaman deopt (`turun.rs`).
+const BENDERA: i64 = BUKA_SUDAH | GAGAL_SPEK | PUNCAK_VM;
 use crate::vm::value::VmValue;
 use crate::vm::vm::{CallFrame, Vm};
 
@@ -66,16 +69,19 @@ pub(crate) fn pulihkan(vm: &mut Vm, catatan: Catatan) {
     let mut rekaman = catatan.into_iter().rev();
     if let Some(r) = rekaman.next() {
         let (f, rencana) = super::modul::info(r.fid);
-        let ip = (r.ip as i64 & !(BUKA_SUDAH | GAGAL_SPEK)) as usize;
-        // Bukaan gabungan dijaga di `LoadLocal`-nya; spekulasinya milik instruksi sesudahnya.
-        if r.ip as i64 & GAGAL_SPEK != 0 {
-            f.chunk.kode_jit.tandai_spek_gagal(if rencana.cara[ip] == Cara::Muat { ip + 1 } else { ip });
+        let (ip, bendera) = ((r.ip as i64 & !BENDERA) as usize, r.ip as i64 & BENDERA);
+        // Bukaan gabungan dijaga di `LoadLocal`-nya; spekulasinya milik instruksi sesudahnya. Hasil yang
+        // dispekulasikan dijaga di instruksi sesudahnya.
+        if bendera & GAGAL_SPEK != 0 {
+            let situs = if bendera & PUNCAK_VM != 0 { ip - 1 } else if rencana.cara[ip] == Cara::Muat { ip + 1 } else { ip };
+            f.chunk.kode_jit.tandai_spek_gagal(situs);
         }
         let mut jenis = rencana.keadaan[ip].clone().expect("ip lanjut selalu terjangkau");
         // Bukaan yang sudah berhasil: angkanya di bingkai native (lokal gabungan tidak pernah di stack VM).
-        if let (true, Cara::Buka(daftar)) = (r.ip as i64 & BUKA_SUDAH != 0, &rencana.cara[ip]) {
+        if let (true, Cara::Buka(daftar)) = (bendera & BUKA_SUDAH != 0, &rencana.cara[ip]) {
             for &(p, j) in daftar { jenis[p] = j; }
         }
+        if bendera & PUNCAK_VM != 0 { if let Some(p) = jenis.last_mut() { *p = Jenis::Nilai; } }
         let fr = vm.frames.last_mut().expect("bingkai yang menjalankan kode native");
         fr.ip = ip;
         let basis = fr.slot + 1;
@@ -107,8 +113,10 @@ static SEBAB: std::sync::Mutex<Vec<(String, u64)>> = std::sync::Mutex::new(Vec::
 fn catat_sebab(catatan: &Catatan) {
     let Some(r) = catatan.first() else { return };
     let (f, rc) = super::modul::info(r.fid);
-    let ip = (r.ip as i64 & !(BUKA_SUDAH | GAGAL_SPEK)) as usize;
+    let mut ip = (r.ip as i64 & !BENDERA) as usize;
     let jenis = if rc.keluar[ip] { "keluar" } else if r.ip as i64 & GAGAL_SPEK != 0 { "spekulasi" } else { "jaga" };
+    // Hasil yang dispekulasikan dijaga di instruksi sesudahnya; yang disebut instruksi penghasilnya.
+    if r.ip as i64 & PUNCAK_VM != 0 { ip -= 1; }
     let kunci = format!("{jenis} {:?}", f.chunk.code[ip].op);
     let mut g = SEBAB.lock().unwrap_or_else(|p| p.into_inner());
     match g.iter_mut().find(|(k, _)| *k == kunci) {

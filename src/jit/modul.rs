@@ -73,6 +73,8 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
             jb.symbol("jrg_jit_simpan_global", lambat::simpan_global as *const u8);
             jb.symbol("jrg_jit_indeks", lambat::indeks as *const u8);
             jb.symbol("jrg_jit_field", lambat::field as *const u8);
+            jb.symbol("jrg_jit_masuk", lambat::masuk as *const u8);
+            jb.symbol("jrg_jit_keluar", lambat::keluar as *const u8);
             let mut m = JITModule::new(jb);
             let cc = m.isa().default_call_conv();
             let catat = m.declare_function("jrg_jit_catat", Linkage::Import, &turun::tanda_tangan_catat(&m, cc)).ok()?;
@@ -106,6 +108,8 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
                 simpan_global: impor("jrg_jit_simpan_global", &[p, I64, I64, I32], Some(I32))?,
                 indeks: impor("jrg_jit_indeks", &[I64, I64, I32], Some(I32))?,
                 field: impor("jrg_jit_field", &[p, p, I32], Some(I32))?,
+                masuk: impor("jrg_jit_masuk", &[I64, p, I64, I64, p], Some(I32))?,
+                keluar: impor("jrg_jit_keluar", &[I64, I64], Some(I32))?,
             };
             let undi = if deopt::acak_aktif() {
                 Some(m.declare_function("jrg_jit_undi", Linkage::Import, &turun::tanda_tangan_undi(cc)).ok()?)
@@ -163,22 +167,28 @@ pub fn kompilasi(
     }
     // Kumpulkan titik masuk ini dan semua callee yang belum jadi. Callee yang tak layak dilarang dan
     // analisisnya diulang: panggilan ke sana jadi titik keluar.
-    let mut larang: Vec<usize> = Vec::new();
+    // `larang`: tidak dikompilasi sama sekali; `larang_bulat`: cuma tidak bisa jadi callee bulat.
+    let (mut larang, mut larang_bulat): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
     let baru = 'ulang: loop {
         let cari_boleh = |nama: &str| cari(nama).filter(|g| !larang.contains(&(Arc::as_ptr(g) as usize)));
         let mut baru: Vec<(Kunci, Arc<VmFunction>, Arc<layak::Rencana>)> = Vec::new();
-        let mut antre = vec![(k0.clone(), Arc::clone(f))];
-        while let Some((k, h)) = antre.pop() {
+        let mut antre = vec![(k0.clone(), Arc::clone(f), false)];
+        while let Some((k, h, langsung)) = antre.pop() {
             if mj.jadi.contains_key(&k) || baru.iter().any(|(b, _, _)| *b == k) { continue; }
             let utama = k == k0;
-            match layak::analisis(&h, &cari_boleh, k.1, k.3.clone(), k.2) {
+            match layak::analisis(&h, &cari_boleh, k.1, k.3.clone(), k.2, langsung, &larang_bulat) {
                 Ok(r) => {
                     if std::env::var("JRG_JIT_LOG").is_ok_and(|v| v == "rencana") { cetak_rencana(&h, &r); }
-                    antre.extend(r.callee.iter().map(|c| (kunci_callee(c), Arc::clone(c))));
+                    for i in r.callee_asli() { antre.push((kunci_callee(&r.callee[i]), Arc::clone(&r.callee[i]), false)); }
+                    for (i, jenis) in &r.langsung {
+                        let c = &r.callee[*i];
+                        antre.push((kunci(c, 0, layak::KEMBALI_SKALAR, jenis), Arc::clone(c), true));
+                    }
                     baru.push((k, h, Arc::new(r)));
                 }
                 Err(_) if !utama => {
-                    larang.push(Arc::as_ptr(&h) as usize);
+                    let p = Arc::as_ptr(&h) as usize;
+                    if k.2 == layak::KEMBALI_BULAT && !larang_bulat.contains(&p) { larang_bulat.push(p) } else { larang.push(p) }
                     continue 'ulang;
                 }
                 Err(alasan) => {
@@ -199,21 +209,24 @@ pub fn kompilasi(
         let id = mj.m.declare_function(&nama, Linkage::Local, &sig).ok()?;
         id_baru.push(id);
     }
-    let id_dari = |c: &Arc<VmFunction>, mj: &ModulJit| -> FuncId {
-        let k = kunci_callee(c);
-        match baru.iter().position(|(b, _, _)| *b == k) {
+    let id_kunci = |k: &Kunci, mj: &ModulJit| -> FuncId {
+        match baru.iter().position(|(b, _, _)| b == k) {
             Some(i) => id_baru[i],
-            None => mj.jadi[&k].0,
+            None => mj.jadi[k].0,
         }
     };
     let mut ctx = mj.m.make_context();
     let mut utuh = true;
     let fid0 = mj.info.len() as u32;
     for (i, (_, h, r)) in baru.iter().enumerate() {
-        let callee: Vec<FuncId> = r.callee.iter().map(|c| id_dari(c, mj)).collect();
+        let asli = r.callee_asli();
+        let callee: Vec<Option<FuncId>> = (0..r.callee.len())
+            .map(|i| asli.contains(&i).then(|| id_kunci(&kunci_callee(&r.callee[i]), mj))).collect();
+        let langsung: Vec<FuncId> = r.langsung.iter()
+            .map(|(i, jenis)| id_kunci(&kunci(&r.callee[*i], 0, layak::KEMBALI_SKALAR, jenis), mj)).collect();
         ctx.func.signature = sig.clone();
         let impor = turun::Impor { catat: mj.catat, undi: mj.undi, baca: mj.baca, tulis: mj.tulis, fid: fid0 + i as u32, lambat: &mj.lambat };
-        turun::turunkan(&mut mj.m, &mut ctx.func, &mut mj.fctx, h, r, &callee, &impor);
+        turun::turunkan(&mut mj.m, &mut ctx.func, &mut mj.fctx, h, r, &callee, &langsung, &impor);
         utuh = mj.m.define_function(id_baru[i], &mut ctx).is_ok();
         mj.m.clear_context(&mut ctx);
         if !utuh { break; }

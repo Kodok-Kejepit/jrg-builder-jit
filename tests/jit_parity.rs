@@ -409,3 +409,63 @@ fn semua_opcode_punya_jalur() {
     for f in ["jumlah_bagi", "tunda", "tumbuh", "pilih", "koleksi"] { assert!(jadi.contains(f), "{f}: {}", h.stderr); }
     assert!(h.stderr.lines().filter(|b| b.starts_with("[jit]   keluar ")).all(|b| b.contains("keluar Return")), "{}", h.stderr);
 }
+
+// ── J4 langkah 7: panggilan langsung dan spekulasi hasil (`dokumentasi/jit/j4-rencana.md`) ─────────
+
+const LANGSUNG: &str = r#"enum Op { Tambah(int), Kali(int), Nol }
+struct Kotak { pub isi: int }
+fn terap(op, v) {
+    return match op {
+        Op::Tambah(n) => v + n,
+        Op::Kali(n) => (v * n) % 1000003,
+        Op::Nol => 0,
+    }
+}
+fn kadang_teks(i) {
+    if i > 3000 { return "teks" }
+    return i * 2
+}
+fn ambil(k) { return k.isi }
+pub fn main() {
+    let ops = [Op::Tambah(3), Op::Kali(7), Op::Tambah(11), Op::Nol]
+    var v = 1
+    for i in 0..5000 {
+        v = terap(ops[i % 4], v)
+        if v == 0 { v = 1 }
+    }
+    wok(v)
+    var t = 0
+    var terakhir = ""
+    for i in 0..4000 {
+        let h = kadang_teks(i)
+        if typeof(h) == "int" { t = t + h } else { terakhir = h }
+    }
+    wok(t, terakhir)
+    let ks = [Kotak { isi: 4 }, Kotak { isi: 5 }]
+    var s = 0
+    for i in 0..3000 { s = s + ambil(ks[i % 2]) + ks[i % 2].isi }
+    wok(s)
+    var campur = [1, 2, 3, 4.5]
+    var c = 0.0
+    for i in 0..3000 { c = c + campur[i % 4] }
+    wok(c)
+}
+"#;
+
+#[test]
+fn panggilan_langsung_dan_spekulasi_hasil() {
+    // Argumen enum/struct ke fungsi native (`Cara::Langsung`), hasil bulat dari umpan profil, hasil yang
+    // berganti jenis sesudah pemanasan (spekulasinya gagal sekali lalu tidak diulang), larik campur.
+    let i = jalankan(LANGSUNG, &[], &[]);
+    assert!(i.sukses && i.stdout == "1\n9003000 teks\n27000\n7875.0", "{}", i.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(LANGSUNG, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let h = jalankan(LANGSUNG, &["--jit"], &[("JRG_JIT_LOG", "ringkas")]);
+    let jadi = h.stderr.lines().find(|b| b.contains("dikompilasi:")).unwrap_or_default().to_string();
+    for f in ["main", "terap", "ambil"] { assert!(jadi.contains(f), "{f}: {}", h.stderr); }
+    // Deopt cuma di titik yang memang belajar, bukan tiap putaran.
+    let deopt: u64 = h.stderr.lines().find_map(|b| b.strip_prefix("[jit] deopt: ")).map_or(0, |n| n.trim().parse().unwrap());
+    assert!(deopt < 10, "{}", h.stderr);
+}

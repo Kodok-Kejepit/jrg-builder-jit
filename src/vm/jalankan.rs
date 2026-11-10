@@ -606,7 +606,7 @@ impl Vm {
                         }
                     };
                     match found {
-                        Some(v) => self.push(v),
+                        Some(v) => { if PROFIL { self.catat_hasil(&v); } self.push(v) }
                         None => {
                             let name = self.name_at(arg)?;
                             return Err(VmError::at(self.jelaskan_global_hilang_kini(&name), sp));
@@ -770,6 +770,7 @@ impl Vm {
                             .ok_or_else(|| VmError::new(format!("name idx {} OOB", arg)))?;
                         self.get_field(&obj, name, sp)?
                     };
+                    if PROFIL { self.catat_hasil(&val); }
                     // Method `math::` atas bilangan yang ditulis tanpa `()` dibaca acuan (dan LLVM)
                     // sebagai nilainya: `f.floor` = `f.floor()`.
                     if matches!(obj, VmValue::Float(_) | VmValue::Int(_)) && matches!(val, VmValue::NativeFn(_)) {
@@ -871,11 +872,13 @@ impl Vm {
                         _ => return Err(VmError::at(format!(
                             "pola enum: `{}` tidak membawa payload", v.type_name_penuh()), sp)),
                     };
+                    if PROFIL { self.catat_hasil(&payload); }
                     self.push(payload);
                 }
                 OpCode::GetIndex => {
                     let (obj, idx) = self.pop2(sp)?;
                     let val = self.get_index(&obj, &idx, sp)?;
+                    if PROFIL { self.catat_hasil(&val); }
                     self.push(val);
                 }
                 OpCode::SetIndex => {
@@ -1169,6 +1172,8 @@ impl Vm {
                     let frame  = self.ambil_bingkai().ok_or_else(|| VmError::new("stack underflow Return"))?;
                     if self.profiling { crate::profiler::exit(); }
                     self.stack.truncate(frame.slot);
+                    // Jenis hasil per situs `Call` pemanggil, bahan spekulasi JIT.
+                    if PROFIL { self.catat_hasil(&result); }
                     if self.frames.len() <= exit_depth { self.push(result); return Ok(()); }
                     self.push(result);
                 }
@@ -1571,6 +1576,14 @@ impl Vm {
         Ok(())
     }
 
+    /// Jenis nilai yang dihasilkan instruksi yang baru jalan (`ip - 1` bingkai teratas), untuk spekulasi JIT.
+    #[inline]
+    pub(crate) fn catat_hasil(&self, v: &VmValue) {
+        if let Some(fr) = self.frames.last() {
+            if let Some(p) = fr.func.chunk.profil.as_ref() { p.catat_tipe(fr.ip.wrapping_sub(1), crate::jit::profil::bit_tipe(v)); }
+        }
+    }
+
     /// Umpan tipe T0 untuk situs operator: tipe operand yang SUDAH di stack saat opcode ini jalan.
     /// Opcode diperiksa lebih dulu: sebagian besar instruksi bukan situs, dan tidak boleh membayar
     /// pembacaan bingkai.
@@ -1579,7 +1592,7 @@ impl Vm {
         use crate::jit::profil::bit_tipe;
         if !matches!(op, OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod
             | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge | OpCode::Eq | OpCode::Ne
-            | OpCode::GetField | OpCode::LokalHitung) { return; }
+            | OpCode::LokalHitung) { return; }
         let Some(fr) = self.frames.last() else { return };
         let Some(p) = fr.func.chunk.profil.as_ref() else { return };
         let ip = fr.ip.wrapping_sub(1);
@@ -1588,7 +1601,6 @@ impl Vm {
             OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod
             | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge | OpCode::Eq | OpCode::Ne if n >= 2 =>
                 bit_tipe(&self.stack[n - 1]) | bit_tipe(&self.stack[n - 2]),
-            OpCode::GetField if n >= 1 => bit_tipe(&self.stack[n - 1]),
             OpCode::LokalHitung => match self.stack.get(self.basis + arg as usize) {
                 Some(v) => bit_tipe(v),
                 None => return,

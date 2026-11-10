@@ -86,6 +86,7 @@ pub struct ImporLambat {
     pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
+    pub masuk: FuncId, pub keluar: FuncId,
 }
 
 /// Fungsi impor dan identitas bingkai untuk blok deopt.
@@ -107,6 +108,8 @@ struct Keluar { catat: FuncRef, fid: i64, ptr: Type, slot: StackSlot, bendera: s
 pub const BUKA_SUDAH: i64 = 1 << 30;
 /// Bit `ip` deopt: jaga spekulasi yang gagal (`PintuJit::tandai_spek_gagal`).
 pub const GAGAL_SPEK: i64 = 1 << 29;
+/// Bit `ip` deopt: puncak stack masih milik VM (hasil instruksi sebelumnya yang spekulasinya gagal).
+pub const PUNCAK_VM: i64 = 1 << 28;
 
 /// Blok saat ini menjadi keluar deopt: nilai stack `jenis` dicatat untuk dilanjutkan VM di `ip`.
 fn keluar_deopt(b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], ip: usize, jenis: &[Jenis]) {
@@ -145,6 +148,25 @@ fn jaga_spek(b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], cond: Value,
     k.bendera.set(lama);
 }
 
+/// Hasil spekulatif (`Rencana::spek`) di posisi `pos` dibuka jadi `j`; gagal = deopt di `lanjut` dengan
+/// puncak milik VM, dan spekulasinya tidak diulang.
+#[allow(clippy::too_many_arguments)]
+fn buka_hasil(
+    b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], r: &Rencana, buka: FuncRef, wadah: StackSlot,
+    lanjut: usize, pos: usize, j: Jenis,
+) {
+    let pk = b.ins().stack_addr(k.ptr, wadah, 0);
+    let pv = b.ins().iconst(types::I64, pos as i64);
+    let jv = b.ins().iconst(types::I32, if j == Jenis::Pecahan { 5 } else { 1 });
+    let c = b.ins().call(buka, &[pv, jv, pk]);
+    let st = b.inst_results(c)[0];
+    let lama = k.bendera.replace(PUNCAK_VM | GAGAL_SPEK);
+    jaga(b, k, var, st, lanjut, r.keadaan[lanjut].as_ref().expect("penerus hasil terjangkau"));
+    k.bendera.set(lama);
+    let v = b.ins().stack_load(k.ptr, types::I64, wadah, 0);
+    b.def_var(var[pos], v);
+}
+
 /// Nilai angka jadi `f64`: pecahan dibaca bitnya, bulat dikonversi seperti `i128 as f64` acuan.
 fn ke_f64(b: &mut FunctionBuilder, v: Value, j: Jenis) -> Value {
     if j == Jenis::Pecahan { b.ins().bitcast(types::F64, MemFlagsData::new(), v) }
@@ -181,7 +203,8 @@ pub fn turunkan(
     fctx: &mut FunctionBuilderContext,
     f: &VmFunction,
     r: &Rencana,
-    id_callee: &[FuncId],
+    id_callee: &[Option<FuncId>],
+    id_langsung: &[FuncId],
     impor: &Impor,
 ) {
     let ptr = m.target_config().pointer_type();
@@ -213,8 +236,8 @@ pub fn turunkan(
     let [f_pola_lokal, f_payload_lokal, f_buka_lokal, f_iter_ada, f_maju, f_cabang, f_sebar] =
         [il.pola_lokal, il.payload_lokal, il.buka_lokal, il.iter_ada, il.maju, il.langkah_cabang, il.sebar]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field] =
-        [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field]
+    let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar] =
+        [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -325,6 +348,7 @@ pub fn turunkan(
                         let c = b.ins().call(f_payload_lokal, &[d, ke]);
                         let c = b.inst_results(c)[0];
                         jaga(&mut b, &k, &var, c, ip, s);
+                        if let Some(j) = r.spek[ip + 1] { buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 2, t, j); }
                         lewati = true;
                         continue;
                     }
@@ -449,6 +473,7 @@ pub fn turunkan(
                 let c = b.ins().call(f_muat_global, &[nama, ke]);
                 let c = b.inst_results(c)[0];
                 jaga(&mut b, &k, &var, c, ip, s);
+                if let Some(j) = r.spek[ip] { buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t, j); }
                 continue;
             }
             Cara::SimpanGlobal => {
@@ -474,6 +499,7 @@ pub fn turunkan(
                 jaga(&mut b, &k, &var, c, ip, s);
                 // Indeks milik VM di atasnya sudah tidak dipakai.
                 if j.di_vm() { let q = i64c(&mut b, t as i64 - 1); b.ins().call(f_buang, &[q]); }
+                if let Some(j) = r.spek[ip] { buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t - 2, j); }
                 continue;
             }
             Cara::Field => {
@@ -483,6 +509,54 @@ pub fn turunkan(
                 let c = b.ins().call(f_field, &[p, nama, privat]);
                 let c = b.inst_results(c)[0];
                 jaga(&mut b, &k, &var, c, ip, s);
+                if let Some(j) = r.spek[ip] { buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t - 1, j); }
+                continue;
+            }
+            Cara::Langsung(n) => {
+                // Bingkai VM callee didorong `masuk`; kode callee dipanggil langsung; `keluar` menaruh hasilnya.
+                let jenis = &r.langsung[*n].1;
+                tumpahkan(&mut b, &var, s, t - a - 1..t, slot, ptr, f_taruh, &r.callee_nilai);
+                let args = [
+                    i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
+                    i64c(&mut b, a as i64), b.ins().stack_addr(ptr, slot, 0),
+                ];
+                let c = b.ins().call(f_masuk, &args);
+                let m0 = b.inst_results(c)[0];
+                let (gagal, cek, asli, akhir) = (b.create_block(), b.create_block(), b.create_block(), b.create_block());
+                b.set_cold_block(gagal);
+                b.append_block_param(akhir, types::I32);
+                let galat = b.ins().icmp_imm_u(IntCC::Equal, m0, 2);
+                b.ins().brif(galat, gagal, &[], cek, &[]);
+                b.switch_to_block(cek);
+                let ulang = b.ins().iconst(types::I32, ULANG);
+                b.ins().brif(m0, akhir, &[ulang.into()], asli, &[]);
+                b.switch_to_block(asli);
+                let argv = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (a.max(1) * 8) as u32, 3));
+                for (k2, j) in jenis.iter().enumerate() {
+                    if !matches!(j, Jenis::Bulat | Jenis::Bool | Jenis::Pecahan) { continue; }
+                    let v = b.use_var(var[t - a + k2]);
+                    b.ins().stack_store(ptr, v, argv, (k2 * 8) as i32);
+                }
+                let fref = m.declare_func_in_func(id_langsung[*n], b.func);
+                let (pa, ph) = (b.ins().stack_addr(ptr, argv, 0), b.ins().stack_addr(ptr, wadah, 0));
+                let c = b.ins().call(fref, &[pa, kedalaman1, ph]);
+                let st = b.inst_results(c)[0];
+                b.ins().jump(akhir, &[st.into()]);
+                b.switch_to_block(gagal);
+                kembali_status(&mut b, GAGAL);
+                b.switch_to_block(akhir);
+                let st = b.block_params(akhir)[0];
+                let st = b.ins().sextend(types::I64, st);
+                let h = b.ins().stack_load(ptr, types::I64, wadah, 0);
+                let c = b.ins().call(f_keluar, &[st, h]);
+                let r0 = b.inst_results(c)[0];
+                let (gagal2, terus) = (b.create_block(), b.create_block());
+                b.set_cold_block(gagal2);
+                b.ins().brif(r0, gagal2, &[], terus, &[]);
+                b.switch_to_block(gagal2);
+                kembali_status(&mut b, GAGAL);
+                b.switch_to_block(terus);
+                if let Some(j) = r.spek[ip] { buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t - a - 1, j); }
                 continue;
             }
             Cara::Sebar => {
@@ -525,6 +599,7 @@ pub fn turunkan(
                 let c = b.ins().call(f_payload, &[p]);
                 let c = b.inst_results(c)[0];
                 jaga(&mut b, &k, &var, c, ip, s);
+                if let Some(j) = r.spek[ip] { buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t - 1, j); }
                 continue;
             }
             Cara::KembaliNilai => {
@@ -726,7 +801,7 @@ pub fn turunkan(
             }
             OpCode::Call => {
                 let Jenis::Fungsi(i) = s[t - a - 1] else { unreachable!("dijamin layak.rs") };
-                let fref = m.declare_func_in_func(id_callee[i], b.func);
+                let fref = m.declare_func_in_func(id_callee[i].expect("callee asli dikompilasi"), b.func);
                 let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (a.max(1) * 8) as u32, 3));
                 let hasil = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
                 for k in 0..a {

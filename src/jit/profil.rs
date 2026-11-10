@@ -49,9 +49,12 @@ impl ProfilFungsi {
     pub fn catat_panggilan(&self) { self.panggilan.fetch_add(1, Ordering::Relaxed); }
     #[inline]
     pub fn catat_putaran(&self) -> u32 { self.putaran.fetch_add(1, Ordering::Relaxed).wrapping_add(1) }
+    /// Bit baru saja yang ditulis: sesudah situsnya stabil cuma satu baca, tanpa operasi atomik tulis.
     #[inline]
     pub fn catat_tipe(&self, ip: usize, b: u8) {
-        if let Some(s) = self.umpan.get(ip) { s.fetch_or(b, Ordering::Relaxed); }
+        if let Some(s) = self.umpan.get(ip) {
+            if s.load(Ordering::Relaxed) & b != b { s.fetch_or(b, Ordering::Relaxed); }
+        }
     }
 }
 

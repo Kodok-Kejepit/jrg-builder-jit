@@ -57,6 +57,9 @@ pub enum Cara {
     Indeks,
     /// `GetField`/`GetFieldPrivat` atas nilai milik VM (`lambat::field`), di tempat.
     Field,
+    /// `Call` ke fungsi native-layak dengan argumen bukan bulat: bingkai VM callee didorong
+    /// (`lambat::masuk`), kode `Rencana::langsung[i]`-nya dipanggil langsung, lalu `lambat::keluar`.
+    Langsung(usize),
     /// `LoadLocal` atas lokal `Nilai` (`lambat::muat`).
     Muat,
     /// `Const` bukan angka dan `Unit` (`lambat::taruh`).
@@ -120,6 +123,44 @@ pub struct Rencana {
     pub callee_nilai: Vec<VmValue>,
     /// Fungsinya punya `defer`: kembali selalu lewat VM, yang menjalankan `defer`-nya.
     pub ada_defer: bool,
+    /// Callee panggilan langsung (`Cara::Langsung`): nomor `callee` dan jenis argumennya.
+    pub langsung: Vec<(usize, Vec<Jenis>)>,
+    /// Jumlah argumen tiap instruksi `Call` (yang lain `None`).
+    pub argc_call: Vec<Option<usize>>,
+    /// Fungsi (alamat `Arc`) yang tidak bisa jadi callee bulat: dipanggil langsung atau lewat VM.
+    pub larang_bulat: Vec<usize>,
+    /// Hasil instruksi yang dispekulasikan angka menurut umpan profilnya (`spek_hasil`): sesudah
+    /// pembantunya, puncak dibuka berjaga; gagal = deopt di instruksi berikutnya (`PUNCAK_VM`).
+    pub spek: Vec<Option<Jenis>>,
+}
+
+impl Rencana {
+    /// Nomor `callee` yang dipanggil native dengan argumen bulat (`Call` asli), urut.
+    pub fn callee_asli(&self) -> Vec<usize> {
+        let mut v: Vec<usize> = (0..self.cara.len())
+            .filter(|&ip| self.keadaan[ip].is_some() && !self.keluar[ip] && matches!(self.cara[ip], Cara::Asli | Cara::Buka(_)))
+            .filter_map(|ip| {
+                let st = self.keadaan[ip].as_ref()?;
+                let a = self.argc_call[ip]?;
+                match st.get(st.len().checked_sub(a + 1)?) { Some(Jenis::Fungsi(i)) => Some(*i), _ => None }
+            })
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+}
+
+/// Jenis hasil instruksi `ip` yang selalu sama menurut umpan VM (`Vm::catat_hasil`), kecuali spekulasinya
+/// pernah gagal di sana.
+fn spek_hasil(f: &VmFunction, ip: usize) -> Option<Jenis> {
+    use super::profil::bit;
+    if f.chunk.kode_jit.spek_gagal_di(ip) { return None; }
+    match f.chunk.profil.as_ref()?.umpan.get(ip)?.load(std::sync::atomic::Ordering::Relaxed) {
+        bit::BULAT => Some(Jenis::Bulat),
+        bit::PECAHAN => Some(Jenis::Pecahan),
+        _ => None,
+    }
 }
 
 /// Sifat fungsi yang membuatnya bisa dipanggil langsung dari kode native (bingkainya disusun ulang
@@ -132,19 +173,21 @@ pub fn bentuk_layak(f: &VmFunction) -> bool {
 /// Rencana dari `masuk` dengan stack `jenis_masuk`, atau alasan tidak ada yang bisa dikompilasi.
 /// Posisi yang kembali ke titik masuk sebagai nilai milik VM (hasil `Call` ke VM yang ditulis ke lokal
 /// bulat) diulang sebagai `Nilai` sejak masuk: isinya memang sudah di stack VM.
+/// `langsung`: callee panggilan langsung (`Cara::Langsung`), yang tidak membayar pintu masuk dari VM.
+#[allow(clippy::too_many_arguments)]
 pub fn analisis(
     f: &VmFunction, cari: &dyn Fn(&str) -> Option<Arc<VmFunction>>,
-    masuk: usize, mut jenis_masuk: Vec<Jenis>, kembali: u8,
+    masuk: usize, mut jenis_masuk: Vec<Jenis>, kembali: u8, langsung: bool, larang_bulat: &[usize],
 ) -> Result<Rencana, String> {
     for _ in 0..4 {
         let mut lebar = None;
-        let r = analisis_sekali(f, cari, masuk, jenis_masuk.clone(), kembali, &mut lebar);
+        let r = analisis_sekali(f, cari, masuk, jenis_masuk.clone(), kembali, langsung, larang_bulat, &mut lebar);
         match lebar {
             Some(j) if j != jenis_masuk => jenis_masuk = j,
             _ => return r,
         }
     }
-    analisis_sekali(f, cari, masuk, jenis_masuk, kembali, &mut None)
+    analisis_sekali(f, cari, masuk, jenis_masuk, kembali, langsung, larang_bulat, &mut None)
 }
 
 /// Jenis masuk yang diperlebar supaya `datang` bertemu dengannya: posisi yang beda jadi `Nilai`.
@@ -154,9 +197,11 @@ fn perlebar(masuk: &[Jenis], datang: &[Jenis]) -> Option<Vec<Jenis>> {
     Some(masuk.iter().zip(datang).map(|(a, b)| if a == b { *a } else { Jenis::Nilai }).collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn analisis_sekali(
     f: &VmFunction, cari: &dyn Fn(&str) -> Option<Arc<VmFunction>>,
-    masuk: usize, jenis_masuk: Vec<Jenis>, kembali: u8, lebar: &mut Option<Vec<Jenis>>,
+    masuk: usize, jenis_masuk: Vec<Jenis>, kembali: u8, langsung: bool, larang_bulat: &[usize],
+    lebar: &mut Option<Vec<Jenis>>,
 ) -> Result<Rencana, String> {
     let kode = &f.chunk.code;
     let n = kode.len();
@@ -167,6 +212,10 @@ fn analisis_sekali(
         pemimpin: vec![false; n], maks: jenis_masuk.len(), konstanta: vec![None; n],
         cara: vec![Cara::Asli; n], callee_nilai: Vec::new(),
         ada_defer: kode.iter().any(|i| i.op == OpCode::DeferPush),
+        langsung: Vec::new(),
+        argc_call: kode.iter().map(|i| (i.op == OpCode::Call).then_some(i.arg as usize)).collect(),
+        larang_bulat: larang_bulat.to_vec(),
+        spek: vec![None; n],
     };
     r.keadaan[masuk] = Some(jenis_masuk);
     let mut kerja = vec![masuk];
@@ -223,9 +272,9 @@ fn analisis_sekali(
     let dikerjakan = (0..n).filter(|&ip| jalan(ip)).count();
     // Panggilan native langsung (rekursi `fib`) membawa kerja sebanyak apa pun; badan yang murni angka
     // sudah untung walau pendek. Yang tersisa: badan pendek yang hidup dari pembantu nilai VM.
-    let memanggil = (0..n).any(|ip| jalan(ip) && kode[ip].op == OpCode::Call && matches!(r.cara[ip], Cara::Asli));
+    let memanggil = (0..n).any(|ip| jalan(ip) && kode[ip].op == OpCode::Call && matches!(r.cara[ip], Cara::Asli | Cara::Langsung(_)));
     let pembantu = (0..n).any(|ip| jalan(ip) && !matches!(r.cara[ip], Cara::Asli | Cara::Buka(_)));
-    if kembali == KEMBALI_SKALAR && !berulang && !memanggil && pembantu && dikerjakan < 32 && !stres {
+    if kembali == KEMBALI_SKALAR && !langsung && !berulang && !memanggil && pembantu && dikerjakan < 32 && !stres {
         return Err(format!("cuma {dikerjakan} instruksi tanpa loop, lebih murah di VM"));
     }
     // Blok dasar: titik masuk, sasaran lompat, dan instruksi yang tidak didatangi dari pendahulunya.
@@ -342,16 +391,20 @@ fn langkah_lambat(
             return Some((Cara::Geser, vec![(lanjut, s)]));
         }
         OpCode::LoadGlobal => {
-            s.push(Nilai);
+            r.spek[ip] = spek_hasil(f, ip);
+            s.push(r.spek[ip].unwrap_or(Nilai));
             return Some((Cara::MuatGlobal, vec![(lanjut, s)]));
         }
         OpCode::StoreGlobal if !matches!(puncak, Fungsi(_)) => return Some((Cara::SimpanGlobal, vec![(lanjut, s)])),
         OpCode::GetIndex if t >= 2 && s[t - 2].di_vm() && !matches!(puncak, Fungsi(_)) => {
             s.pop();
+            r.spek[ip] = spek_hasil(f, ip);
+            *s.last_mut()? = r.spek[ip].unwrap_or(Nilai);
             return Some((Cara::Indeks, vec![(lanjut, s)]));
         }
         OpCode::GetField | OpCode::GetFieldPrivat if puncak.di_vm() => {
-            *s.last_mut()? = Nilai;
+            r.spek[ip] = spek_hasil(f, ip);
+            *s.last_mut()? = r.spek[ip].unwrap_or(Nilai);
             return Some((Cara::Field, vec![(lanjut, s)]));
         }
         OpCode::Propagate if puncak.di_vm() => {
@@ -400,7 +453,8 @@ fn langkah_lambat(
             return Some((Cara::Pola, vec![(lanjut, s)]));
         }
         OpCode::AmbilPayload if puncak.di_vm() => {
-            *s.last_mut()? = Nilai;
+            r.spek[ip] = spek_hasil(f, ip);
+            *s.last_mut()? = r.spek[ip].unwrap_or(Nilai);
             return Some((Cara::Payload, vec![(lanjut, s)]));
         }
         // Iterator larik/teks/dict (`MakeIter` lewat langkah): ketiga posisinya milik VM.
@@ -429,6 +483,22 @@ fn langkah_lambat(
             return Some((Cara::Simpan, vec![(lanjut, s)]));
         }
         _ => {}
+    }
+    // Fungsi native-layak dengan argumen milik VM: bingkai VM-nya didorong, kodenya dipanggil langsung.
+    if let (OpCode::Call, true) = (ins.op, a < t) {
+        if let Fungsi(i) = s[t - a - 1] {
+            if r.callee[i].arity as usize == a && !s[t - a..].iter().any(|j| matches!(j, Fungsi(_))) {
+                let jenis: Vec<Jenis> = s[t - a..].iter().map(|j| if j.di_vm() { Nilai } else { *j }).collect();
+                let k = match r.langsung.iter().position(|(c, js)| *c == i && *js == jenis) {
+                    Some(k) => k,
+                    None => { r.langsung.push((i, jenis)); r.langsung.len() - 1 }
+                };
+                s.truncate(t - a - 1);
+                r.spek[ip] = spek_hasil(f, ip);
+                s.push(r.spek[ip].unwrap_or(Nilai));
+                return Some((Cara::Langsung(k), vec![(lanjut, s)]));
+            }
+        }
     }
     // Sisanya dijalankan VM. Operand fungsi milik kode native tidak punya padanan di stack VM.
     let (ambil, taruh, lokal) = efek_langkah(f, ip, &s)?;
@@ -659,7 +729,7 @@ fn langkah_asli(
         OpCode::Call => {
             if s.len() < a + 1 { return None; }
             let Fungsi(i) = s[s.len() - a - 1] else { return None };
-            if r.callee[i].arity as usize != a { return None; }
+            if r.callee[i].arity as usize != a || r.larang_bulat.contains(&(Arc::as_ptr(&r.callee[i]) as usize)) { return None; }
             for _ in 0..a { if s.pop()? != Bulat { return None; } }
             s.pop();
             s.push(Bulat);

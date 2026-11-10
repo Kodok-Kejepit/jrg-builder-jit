@@ -36,9 +36,12 @@ pub(crate) fn coba(vm: &mut Vm) -> Result<(), VmError> {
     // Kode yang lebih sering deopt daripada selesai cuma menambah ongkos masuk-keluar: VM saja.
     let (m, d) = (p.jit_masuk.load(Ordering::Relaxed), p.jit_deopt.load(Ordering::Relaxed));
     if d >= 64 && d * 2 > m { return Ok(()); }
-    let p = Arc::clone(p);
-    p.jit_masuk.fetch_add(1, Ordering::Relaxed);
-    if jalankan(vm, KEMBALI_SKALAR)? == DEOPT { p.jit_deopt.fetch_add(1, Ordering::Relaxed); }
+    // Hitungan kasar (tanpa operasi atomik tulis-baca): cuma bahan perbandingan di atas.
+    p.jit_masuk.store(m.wrapping_add(1), Ordering::Relaxed);
+    // Sesudah deopt bingkainya masih di puncak (`deopt::pulihkan`), jadi profilnya masih hidup.
+    if jalankan(vm, KEMBALI_SKALAR)? == DEOPT {
+        if let Some(p) = vm.frames.last().and_then(|f| f.func.chunk.profil.as_ref()) { p.jit_deopt.fetch_add(1, Ordering::Relaxed); }
+    }
     Ok(())
 }
 
@@ -76,11 +79,12 @@ fn jalankan(vm: &mut Vm, kembali: u8) -> Result<i64, VmError> {
     // Tiap tingkat native → langkah VM → native memakai stack Rust; rekursi sedalam itu diteruskan VM,
     // yang bingkainya di heap, sebelum batas `stack_menipis` tercapai.
     let ukuran = crate::interpreter::Interpreter::INTERPRETER_STACK_SIZE;
-    if crate::interpreter::stack_terpakai().is_some_and(|t| t > ukuran / 2) { return Ok(ULANG); }
+    let terpakai = crate::interpreter::stack_terpakai();
+    if terpakai.is_some_and(|t| t > ukuran / 2) { return Ok(ULANG); }
     let Some(fr) = vm.frames.last() else { return Ok(ULANG) };
-    let (func, ip, basis) = (Arc::clone(&fr.func), fr.ip, fr.slot + 1);
+    let basis = fr.slot + 1;
     if vm.stack.len() < basis || vm.stack.len() - basis > MAKS_POSISI { return Ok(ULANG); }
-    let Some(kode) = kode_untuk(vm, &func, ip, kembali, basis) else { return Ok(ULANG) };
+    let Some(kode) = kode_untuk(vm, &fr.func, fr.ip, kembali, basis) else { return Ok(ULANG) };
     // Bingkai kecil (hampir semua panggilan) tidak membayar alokasi.
     let isi = &vm.stack[basis..];
     let mut kecil = [0i64; 32];
@@ -99,7 +103,7 @@ fn jalankan(vm: &mut Vm, kembali: u8) -> Result<i64, VmError> {
     }
     // Panggilan native ke-k sama dengan bingkai VM ke-(F+k): yang akan ditolak `periksa_kedalaman`
     // tidak dijalankan native, tapi diserahkan ke VM lewat deopt di instruksi `Call`-nya.
-    let batas = match crate::interpreter::stack_menipis() {
+    let batas = match terpakai {
         Some(_) => Vm::BINGKAI_MAKS,
         None => crate::interpreter::Interpreter::MAX_CALL_DEPTH,
     };
@@ -123,6 +127,7 @@ fn jalankan(vm: &mut Vm, kembali: u8) -> Result<i64, VmError> {
             };
             // `Return` native: bingkainya tanpa `defer` (`DeferPush` selalu titik keluar).
             if let Some(fr) = vm.ambil_bingkai() { vm.stack.truncate(fr.slot); }
+            vm.catat_hasil(&hasil);
             vm.stack.push(hasil);
         }
         DEOPT => deopt::pulihkan(vm, deopt::ambil()),
