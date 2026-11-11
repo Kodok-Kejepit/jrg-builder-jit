@@ -344,6 +344,43 @@ pub extern "C" fn payload_lokal(slot: i64, ke: i64) -> i32 {
     0
 }
 
+/// `LoadLocal` + `GetField` tanpa menyalin lokalnya. 4 = angka berjenis `jenis` (1 bulat, 5 pecahan) di
+/// `keluar`; 0 = nilai di posisi `ke`; 1 = gagal sesudah lokalnya ditaruh di `ke` (VM yang melapor).
+pub extern "C" fn field_lokal(slot: i64, nama: *const String, privat: i32, jenis: i32, keluar: *mut i64, ke: i64) -> i32 {
+    let (vm, basis) = konteks();
+    let nama = unsafe { &*nama };
+    let cepat = {
+        let vm: &Vm = vm;
+        let lihat = |v: &VmValue| match v {
+            VmValue::Map(m) if privat == 0 || vm.periksa_visibilitas(v, nama, None).is_ok() =>
+                m.lock().unwrap_or_else(|p| p.into_inner()).get(nama.as_str()).cloned(),
+            _ => None,
+        };
+        match vm.stack.get(basis + slot as usize) {
+            Some(VmValue::Cell(c)) => lihat(&c.lock().unwrap_or_else(|p| p.into_inner())),
+            Some(v) => lihat(v),
+            None => None,
+        }
+    };
+    let v = match cepat {
+        Some(v) => v,
+        None => {
+            let obj = vm.baca_lokal(basis + slot as usize).unwrap_or(VmValue::Nil);
+            *sediakan(vm, basis, ke as usize) = obj;
+            if field(ke, nama, privat) != 0 { return 1; }
+            std::mem::replace(&mut vm.stack[basis + ke as usize], VmValue::Nil)
+        }
+    };
+    let n = match (&v, jenis) {
+        (VmValue::Int(n), 1) => i64::try_from(*n).ok(),
+        (VmValue::Float(x), 5) => Some(x.to_bits() as i64),
+        _ => None,
+    };
+    if let Some(n) = n { unsafe { *keluar = n }; return 4; }
+    *sediakan(vm, basis, ke as usize) = v;
+    0
+}
+
 /// `LoadLocal` yang langsung dibuka (`buka`) tanpa menyalin lokalnya ke stack VM.
 pub extern "C" fn buka_lokal(slot: i64, jenis: i32, keluar: *mut i64) -> i32 {
     let n = lihat_lokal(slot, |v| match (v, jenis) {

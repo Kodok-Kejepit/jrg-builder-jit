@@ -634,3 +634,60 @@ fn bulat_lebar_native() {
     let i = jalankan(LEBAR, &[], &[]);
     assert!(i.stdout.starts_with("7476383727222582879\n") && i.stderr.contains("<< 128"), "{} {}", i.stdout, i.stderr);
 }
+
+/// `LoadLocal` + `GetField` digabung (`lambat::field_lokal`): angka langsung ke register, jenis field
+/// yang berganti, lokal tertangkap closure, dict, penerima bukan struct, field privat.
+const FIELD_LOKAL: &str = r#"struct T { pub a: int, pub b: string, c: float }
+impl T {
+    fn jumlah(self) -> float { self.c + self.a as float }
+}
+fn baca(t) { t.a + 1 }
+fn campur(t) { t.b }
+fn kunci(d) { d.k * 2 }
+pub fn main() {
+    var s = 0
+    for i in 0..3000 { s = s + baca(T { a: i, b: i, c: 0.5 }) }
+    wok(s)
+    var u = []
+    for i in 0..3000 { u = arr::push(u, campur(T { a: 1, b: i % 7 == 0 $ "teks" : (i % 5 == 0 $ 2.5 : i), c: 1.0 })) }
+    wok(len(u), u[0], u[5], u[7], u[3])
+    var f = 0.0
+    for i in 0..3000 { f = f + T { a: i, b: 0, c: 0.25 }.jumlah() }
+    wok(f)
+    var k = 0
+    for i in 0..3000 { k = k + kunci({"k": i}) }
+    wok(k)
+    let t = T { a: 5, b: 6, c: 1.0 }
+    let g = || t.a + t.b
+    var z = 0
+    for i in 0..3000 { z = z + g() }
+    wok(z)
+    var n = 0
+    for i in 0..3000 { n = n + baca(T { a: i, b: 0, c: 0.0 }) + len("ab") }
+    wok(n)
+    for i in 0..3000 { if i == 2999 { wok(baca("bukan struct")) } else { baca(T { a: 1, b: 1, c: 1.0 }) } }
+}
+"#;
+
+const FIELD_PRIVAT: &str = r#"struct R { rahasia: int, pub x: int }
+fn intip(r) { r.rahasia }
+pub fn main() {
+    var s = 0
+    for i in 0..3000 { s = s + R { rahasia: 1, x: i }.x }
+    wok(s)
+    wok(intip(R { rahasia: 7, x: 1 }))
+}
+"#;
+
+#[test]
+fn field_lokal_digabung() {
+    for src in [FIELD_LOKAL, FIELD_PRIVAT] {
+        let i = jalankan(src, &[], &[]);
+        for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+            let j = jalankan(src, &["--jit"], env);
+            assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+        }
+    }
+    let i = jalankan(FIELD_LOKAL, &[], &[]);
+    assert!(i.stdout.starts_with("4501500\n3000 teks 2.5 teks 3\n") && i.stderr.contains("bernama `a`"), "{}", i.stdout);
+}
