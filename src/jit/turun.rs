@@ -300,6 +300,25 @@ fn turun_lebar(
             let v = b.ins().uextend(types::I64, c);
             b.def_var(var[t - 2], v);
         }
+        // `+ -` 128 bit dengan luapan diperiksa (VM yang melaporkannya); `*` dua bulat 64 bit selalu muat.
+        OpCode::Add | OpCode::Sub | OpCode::Mul
+            if r.tepi.get(&(ip, ip + 1)).and_then(|st| st.last()) == Some(&Lebar) => {
+            let (x, y) = (ke128(b, t - 2), ke128(b, t - 1));
+            let h = match op {
+                OpCode::Add => b.ins().iadd(x, y),
+                OpCode::Sub => b.ins().isub(x, y),
+                _ => b.ins().imul(x, y),
+            };
+            if op != OpCode::Mul {
+                // Luapan bertanda: tanda hasil beda dari kedua operand (`+`) / dari `x` sedang `x`, `y` beda tanda (`-`).
+                let (a1, a2) = if op == OpCode::Add { (b.ins().bxor(x, h), b.ins().bxor(y, h)) } else { (b.ins().bxor(x, y), b.ins().bxor(x, h)) };
+                let m = b.ins().band(a1, a2);
+                let z = nol(b);
+                let luap = b.ins().icmp(IntCC::SignedLessThan, m, z);
+                jaga(b, k, var, luap, ip, s);
+            }
+            b.def_var(v128[t - 2], h);
+        }
         OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::AndNot if dua => {
             let (x, y) = (ke128(b, t - 2), ke128(b, t - 1));
             let h = match op {
@@ -925,7 +944,9 @@ pub fn turunkan(
             }
         };
         // `Jenis::Lebar` (i128 di `v128`): bentuk yang `layak::langkah_asli` izinkan.
-        let ada_lebar = r.konstanta128[ip].is_some()
+        let hasil_lebar = matches!(ins.op, OpCode::Add | OpCode::Sub | OpCode::Mul)
+            && r.tepi.get(&(ip, ip + 1)).and_then(|st| st.last()) == Some(&Jenis::Lebar);
+        let ada_lebar = r.konstanta128[ip].is_some() || hasil_lebar
             || s[t.saturating_sub(3)..].iter().any(|j| matches!(j, Jenis::Lebar | Jenis::Bungkus(_)));
         if ada_lebar && turun_lebar(&mut b, &k, r, &var, &v128, &blok, &mut tunda, f_tulis_vm, f_taruh, ip, ins.op, a, s) {
             if matches!(ins.op, OpCode::JumpFalse | OpCode::JumpTrue | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep) { terbuka = false; }
@@ -956,7 +977,8 @@ pub fn turunkan(
                     OpCode::Sub => b.ins().ssub_overflow(x, y),
                     _ => b.ins().smul_overflow(x, y),
                 };
-                jaga(&mut b, &k, &var, luap, ip, s);
+                // Luapan 64 bit di bingkai ber-stack VM dicatat: kompilasi berikutnya menghitung di 128 bit.
+                if r.kembali == super::layak::KEMBALI_BULAT { jaga(&mut b, &k, &var, luap, ip, s) } else { jaga_spek(&mut b, &k, &var, luap, ip, s) }
                 b.def_var(var[t - 2], h);
             }
             OpCode::Mod | OpCode::Div => {

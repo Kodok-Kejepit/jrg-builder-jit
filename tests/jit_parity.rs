@@ -587,9 +587,44 @@ pub fn main() {
 }
 "#;
 
+/// Jumlah/selisih yang melewati 2^63 di loop (jaga luapan 64 bit belajar ke 128 bit), perkalian, dan luapan
+/// 128 bit yang harus berakhir dengan kalimat galat VM.
+const LEBAR_ARITMETIKA: &str = r#"fn jumlah(n) {
+    var t = 0
+    for i in 0..n { t = t + 4611686018427387904 }
+    t
+}
+fn kurang(n) {
+    var t = 0
+    for i in 0..n { t = t - 4611686018427387904 - i }
+    t
+}
+fn kali(n) {
+    var p = 1
+    for i in 1..n { p = p * 3 }
+    p
+}
+fn campur(n) {
+    var a = 9223372036854775807
+    var b = 0
+    for i in 0..n { a = a + i; b = b + a * 2 - 1; if b > 100000000000000000000 { b = b - 99999999999999999999 } }
+    wok(a, b)
+}
+fn meledak(n) {
+    var t = 85070591730234615865843651857942052864
+    for i in 0..n { t = t + t }
+    t
+}
+pub fn main() {
+    wok(jumlah(20), kurang(20), kali(60))
+    campur(3000)
+    wok(meledak(5))
+}
+"#;
+
 #[test]
 fn bulat_lebar_native() {
-    for src in [LEBAR, LEBAR_LOOP] {
+    for src in [LEBAR, LEBAR_LOOP, LEBAR_ARITMETIKA] {
         let i = jalankan(src, &[], &[]);
         for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
             let j = jalankan(src, &["--jit"], env);

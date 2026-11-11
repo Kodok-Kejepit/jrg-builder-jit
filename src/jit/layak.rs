@@ -817,6 +817,16 @@ fn langkah_asli(
             VmValue::Float(x) => { r.konstanta[ip] = Some(x.to_bits() as i64); s.push(Pecahan) }
             _ => return None,
         },
+        // 128 bit: operand `Lebar`, atau dua bulat yang di situs ini pernah meluap 64 bit (jaga luapannya
+        // spekulatif). `*` dua bulat 64 bit selalu muat 128 bit; `*` dengan `Lebar` lewat pembantu.
+        OpCode::Add | OpCode::Sub | OpCode::Mul if lebar && s.len() >= 2 && {
+            let (x, y) = (s[s.len() - 2], s[s.len() - 1]);
+            let meluap = x == Bulat && y == Bulat && f.chunk.kode_jit.spek_tingkat(ip) >= 1;
+            meluap || (ins.op != OpCode::Mul && lebar2(x, y))
+        } => {
+            s.truncate(s.len() - 2);
+            s.push(Lebar)
+        }
         OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div => { let j = angka2(&mut s)?; s.push(j) }
         // `%` pecahan adalah `fmod`, yang tidak punya instruksi mesin: VM yang menghitungnya.
         OpCode::Mod => { bulat2(&mut s)?; s.push(Bulat) }
