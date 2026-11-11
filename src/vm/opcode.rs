@@ -86,8 +86,7 @@ pub enum OpCode {
 
     // Collections
     BuildArray, BuildTuple, BuildMap, MergeMap,
-    /// Instance struct: nilai field di atas prototipe struct-nya; nama field-nya, berurutan, larik teks di
-    /// konstanta ke-`arg` (kunci tidak didorong satu per satu).
+    /// Instance struct dari nilai field di stack; prototipe (label + nama field berurutan) di konstanta ke-`arg`.
     BuildStruct,
     /// Varian enum ber-payload; `tipe::varian` dari prototipe di konstanta ke-`arg`.
     BuildEnum,

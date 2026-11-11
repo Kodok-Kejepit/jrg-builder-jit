@@ -713,7 +713,7 @@ fn efek_langkah(f: &VmFunction, ip: usize, s: &[Jenis]) -> Option<(usize, usize,
         // Pola dan literal tipe pemakai: tidak satu pun digabung VM dengan instruksi sesudahnya.
         OpCode::CekEnum | OpCode::CekStruct | OpCode::AmbilPayload | OpCode::HasField | OpCode::BuildEnum => (1, 1, None),
         OpCode::BuildStruct => match f.chunk.constants.get(a)? {
-            VmValue::Array(k) => (k.lock().ok()?.len() + 1, 1, None),
+            VmValue::Map(p) => (p.bentuk()?.nama.len(), 1, None),
             _ => return None,
         },
         OpCode::SetField | OpCode::SetFieldPrivat if ada_vm(2) => (2, 0, None),

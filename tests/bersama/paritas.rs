@@ -2729,4 +2729,6 @@ pub fn main() {
       let m = json::merge(d, P { x: 1, y: 2 })\nvar t = 0\nfor i in 0..200 { t = t + m[«k${i}»] }\n\
       wok(typeof(m), len(json::keys(m)), t, m.x, m.y)\nvar p = P { x: 3, y: 4 }\np.x = p.x + p.y\n\
       let q = P { y: 9, ...p }\nwok(p, q, q.x * q.y)\n"),
+    ("struct 20 field lewat batas bentuk rapat, sebar, == lintas jalur, dict literal (J7 bentuk)",
+     "struct B { pub f0: int = 0, pub f1: int = 1, pub f2: int = 2, pub f3: int = 3, pub f4: int = 4, pub f5: int = 5, pub f6: int = 6, pub f7: int = 7, pub f8: int = 8, pub f9: int = 9, pub f10: int = 10, pub f11: int = 11, pub f12: int = 12, pub f13: int = 13, pub f14: int = 14, pub f15: int = 15, pub f16: int = 16, pub f17: int = 17, pub f18: int = 18, pub f19: int = 19 }\nstruct P { pub x: int, pub y: int }\npub fn main() {\n    var b = B { f3: 30, f19: 190 }\n    b.f7 = b.f3 + b.f19\n    wok(b.f0, b.f3, b.f7, b.f19, len(json::keys(b)))\n    let c = B { f1: 11, ...b }\n    wok(c.f1, c.f7, c == b, B {} == B {})\n    let p = P { x: 1, y: 2 }\n    let q = json::merge(dict { y: 2 }, P { x: 1, y: 0 })\n    wok(p, q, p == P { y: 2, x: 1 }, q.y)\n    let d = dict { a: 1, b: 2 }\n    wok(d, typeof(d), d[\"a\"] + d.b)\n    var r = P { x: 5, y: 6 }\n    r.y = r.x * r.y\n    wok(r, r.y)\n}\n"),
 ];

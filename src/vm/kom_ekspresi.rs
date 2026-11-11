@@ -104,16 +104,9 @@ impl Compiler {
             self.chunk.emit_arg(OpCode::Const, di);
             self.chunk.emit_arg(OpCode::Call, 3);
         }
-        // Prototipe membawa label struct-nya; yang di atasnya cuma pasangan field.
+        // Prototipe (argumen `BuildStruct`) membawa label dan nama field berurutan; stack cuma nilainya.
         // `dict { a: 1 }` membangun dict sungguhan, bukan struct berlabel "dict".
-        let proto = self.chunk.add_constant(if type_name == "dict" && varian.is_none() {
-            VmValue::map(std::iter::empty::<(crate::vm::value::Kunci, VmValue)>())
-        } else {
-            VmValue::struktur(type_name, std::iter::empty::<(crate::vm::value::Kunci, VmValue)>())
-        });
-        self.chunk.emit_arg(OpCode::Const, proto);
-
-        let mut kunci: Vec<VmValue> = Vec::new();
+        let mut kunci: Vec<crate::vm::value::Kunci> = Vec::new();
         for (i, field) in fields.iter().enumerate() {
             // Field liar gagal saat JALAN, di gilirannya, seperti di interpreter.
             if !declared_fields.is_empty() && !declared_fields.iter().any(|d| d.name == field.name) {
@@ -125,10 +118,10 @@ impl Compiler {
                 self.chunk.emit_arg(OpCode::Const, pesan);
                 self.chunk.emit(OpCode::Panic);
             }
-            kunci.push(VmValue::str(&field.name));
+            kunci.push(field.name.as_str().into());
             // Nilai field juga penyerahan nilai: `P { isi: a }` tidak boleh membuat
             // struct yang field-nya beralias ke `a`.
-            let tumpuk = spread.is_some() as usize + 1 + i;
+            let tumpuk = spread.is_some() as usize + i;
             self.dgn_temp(tumpuk, |c| c.compile_value_expr(&field.value))?;
         }
         // Default sesudah field yang ditulis, sama dengan dua mesin lain.
@@ -139,16 +132,21 @@ impl Compiler {
                     continue;
                 }
                 if let Some(default) = &declared.default {
-                    kunci.push(VmValue::str(&declared.name));
-                    let tumpuk = 1 + fields.len() + default_count;
+                    kunci.push(declared.name.as_str().into());
+                    let tumpuk = fields.len() + default_count;
                     self.dgn_temp(tumpuk, |c| c.compile_expr(default))?;
                     default_count += 1;
                 }
             }
         }
 
-        let daftar = self.chunk.add_constant(VmValue::array(kunci));
-        self.chunk.emit_arg(OpCode::BuildStruct, daftar);
+        let label = if type_name == "dict" && varian.is_none() {
+            crate::vm::value::Label::Dict
+        } else {
+            crate::vm::value::Label::Struct(std::sync::Arc::from(type_name))
+        };
+        let proto = self.chunk.add_constant(VmValue::Map(std::sync::Arc::new(crate::vm::value::Peta::prototipe(label, kunci))));
+        self.chunk.emit_arg(OpCode::BuildStruct, proto);
         if spread.is_some() {
             self.chunk.emit(OpCode::MergeMap);
             // Default untuk field yang tidak dibawa basis maupun literalnya.

@@ -1,7 +1,6 @@
 // src/vm/value.rs — src/vm/value.rs  (Arc-based — thread-safe)
 
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
 use std::fmt;
 
 use super::chunk::Chunk;
@@ -184,7 +183,7 @@ pub enum Label {
 /// Fase AMAN-7); struct dan enum hash cepat, tapi cuma sampai `KUNCI_CEPAT` kunci (`json::merge` bisa
 /// memberi struct kunci dari dict) — tabrakan sebanyak itu tidak berarti apa-apa.
 #[derive(Clone, Debug)]
-pub struct HashPeta(Option<std::collections::hash_map::RandomState>);
+pub struct HashPeta(pub(crate) Option<std::collections::hash_map::RandomState>);
 
 pub enum PengacakPeta {
     Sip(std::collections::hash_map::DefaultHasher),
@@ -222,7 +221,6 @@ impl std::hash::BuildHasher for HashPeta {
     }
 }
 
-const KUNCI_CEPAT: usize = 64;
 
 /// Kunci `Peta`: teks bersama, jadi struct baru tidak menyalin nama field-nya (dibagi dengan konstanta chunk).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -247,7 +245,8 @@ impl PartialEq<str> for Kunci { fn eq(&self, o: &str) -> bool { self.0.as_str() 
 impl PartialEq<String> for Kunci { fn eq(&self, o: &String) -> bool { *self.0 == *o } }
 
 /// Isi sebuah `Peta`.
-pub type IsiPeta = HashMap<Kunci, VmValue, HashPeta>;
+pub use super::peta::IsiPeta;
+use super::peta::{Bentuk, RAPAT_MAKS};
 
 /// Isi sebuah `Map` plus labelnya. Isinya cuma field atau key milik program.
 #[derive(Debug)]
@@ -263,36 +262,57 @@ impl Peta {
         Self::baru_n(label, n, it)
     }
 
+    /// Dict: tabel SipHash. Struct/enum sampai `RAPAT_MAKS` field tanpa nama kembar: bentuk rapat; selebihnya
+    /// tabel ber-hash cepat yang pindah ke SipHash di atas `KUNCI_CEPAT` (`IsiPeta::insert`).
     pub fn baru_n<K: Into<Kunci>>(label: Label, n: usize, isi: impl IntoIterator<Item = (K, VmValue)>) -> Self {
-        let mut peta = Self::isi_untuk(&label, n);
-        peta.extend(isi.into_iter().map(|(k, v)| (k.into(), v)));
-        if peta.hasher().0.is_none() && peta.len() > KUNCI_CEPAT { return Self::dari_isi(label, peta); }
+        let dict = matches!(label, Label::Dict);
+        let isi = isi.into_iter().map(|(k, v)| (k.into(), v));
+        if dict {
+            let mut peta = IsiPeta::tabel(n, true);
+            peta.extend(isi);
+            return Peta { label, isi: Mutex::new(peta) };
+        }
+        let (nama, nilai): (Vec<Kunci>, Vec<VmValue>) = isi.unzip();
+        // Isi kosong (varian enum, `S {}` tanpa field): tabel kosong tidak mengalokasi apa pun.
+        let peta = if !nama.is_empty() && nama.len() <= RAPAT_MAKS && Bentuk::unik(&nama) {
+            IsiPeta::rapat(Bentuk::baru(nama), nilai)
+        } else {
+            let mut t = IsiPeta::tabel(nama.len(), false);
+            t.extend(nama.into_iter().zip(nilai));
+            t
+        };
         Peta { label, isi: Mutex::new(peta) }
     }
 
-    fn pakai_sip(label: &Label, n: usize) -> bool { matches!(label, Label::Dict) || n > KUNCI_CEPAT }
+    /// Isi kosong sesuai label (dict: SipHash).
+    pub fn isi_untuk(label: &Label, n: usize) -> IsiPeta { IsiPeta::tabel(n, matches!(label, Label::Dict)) }
 
-    /// Isi kosong ber-hasher sesuai label.
-    pub fn isi_untuk(label: &Label, n: usize) -> IsiPeta {
-        IsiPeta::with_capacity_and_hasher(n, HashPeta(Self::pakai_sip(label, n).then(std::collections::hash_map::RandomState::new)))
-    }
-
-    /// Dari isi yang sudah jadi (salinan peta lain) tanpa meng-hash ulang bila hasher-nya cocok.
+    /// Dari isi yang sudah jadi (salinan peta lain); dict selalu ber-SipHash.
     pub fn dari_isi(label: Label, isi: IsiPeta) -> Self {
-        if isi.hasher().0.is_some() == Self::pakai_sip(&label, isi.len()) { return Peta { label, isi: Mutex::new(isi) }; }
-        let mut baru = Self::isi_untuk(&label, isi.len());
-        baru.extend(isi);
-        Peta { label, isi: Mutex::new(baru) }
+        if matches!(label, Label::Dict) && !isi.pakai_sip() {
+            let mut baru = IsiPeta::tabel(isi.len(), true);
+            baru.extend(isi);
+            return Peta { label, isi: Mutex::new(baru) };
+        }
+        Peta { label, isi: Mutex::new(isi) }
     }
 
-    /// Sisip satu kunci; peta ber-hash cepat yang melewati `KUNCI_CEPAT` pindah ke SipHash.
-    pub fn sisip(&self, k: impl Into<Kunci>, v: VmValue) {
-        let mut g = self.isi.lock().unwrap_or_else(|p| p.into_inner());
-        g.insert(k.into(), v);
-        if g.hasher().0.is_none() && g.len() > KUNCI_CEPAT {
-            let lama = std::mem::replace(&mut *g, Self::isi_untuk(&Label::Dict, 0));
-            g.extend(lama);
+    /// Prototipe literal: nama field berurutan (juga untuk dict — cuma pembawa urutan, tidak pernah dibaca).
+    pub fn prototipe(label: Label, nama: Vec<Kunci>) -> Self {
+        let n = nama.len();
+        Peta { label, isi: Mutex::new(IsiPeta::rapat(Bentuk::baru(nama), vec![VmValue::Nil; n])) }
+    }
+
+    /// Bentuk rapat isi ini, kalau rapat.
+    pub fn bentuk(&self) -> Option<Arc<Bentuk>> {
+        match &*self.isi.lock().unwrap_or_else(|p| p.into_inner()) {
+            IsiPeta::Rapat { bentuk, .. } => Some(bentuk.clone()),
+            IsiPeta::Hash(_) => None,
         }
+    }
+
+    pub fn sisip(&self, k: impl Into<Kunci>, v: VmValue) {
+        self.isi.lock().unwrap_or_else(|p| p.into_inner()).insert(k.into(), v);
     }
 
     pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, IsiPeta>> {

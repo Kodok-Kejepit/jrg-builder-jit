@@ -83,26 +83,21 @@ impl Vm {
 
     #[inline]
     pub(crate) fn op_build_struct(&mut self, arg: u32, sp: Option<crate::lexer::Span>) -> VmResult<()> {
-        let peta = {
-            let f = self.frames.last().ok_or_else(|| VmError::new("no active frame"))?;
-            let Some(VmValue::Array(ks)) = f.chunk().constants.get(arg as usize) else {
-                return Err(VmError::at("BuildStruct: daftar field bukan larik", sp));
-            };
-            let ks = ks.lock().unwrap_or_else(|p| p.into_inner());
-            let n = ks.len();
-            let start = self.stack.len().checked_sub(n + 1).ok_or_else(|| VmError::at("BuildStruct: stack kurang", sp))?;
-            let label = match &self.stack[start] {
-                VmValue::Map(p) => p.label.clone(),
-                lain => return Err(VmError::at(format!(
-                    "BuildStruct: prototipe harus struct, dapat `{}`", lain.type_name_penuh()), sp)),
-            };
-            let pasangan = ks.iter().zip(self.stack.drain(start + 1..)).map(|(k, v)| (match k {
-                VmValue::Str(s) => super::value::Kunci(s.clone()),
-                k => k.to_string().into(),
-            }, v));
-            Peta::baru_n(label, n, pasangan)
+        let f = self.frames.last().ok_or_else(|| VmError::new("no active frame"))?;
+        let Some(VmValue::Map(proto)) = f.chunk().constants.get(arg as usize) else {
+            return Err(VmError::at("BuildStruct: prototipe bukan struct", sp));
         };
-        *self.stack.last_mut().expect("prototipe") = VmValue::Map(Arc::new(peta));
+        let bentuk = proto.bentuk().ok_or_else(|| VmError::at("BuildStruct: prototipe tanpa bentuk", sp))?;
+        let n = bentuk.nama.len();
+        let start = self.stack.len().checked_sub(n).ok_or_else(|| VmError::at("BuildStruct: stack kurang", sp))?;
+        let label = proto.label.clone();
+        // Struct dari literal berbagi bentuk prototipenya; dict dan nama kembar lewat jalur tabel.
+        let peta = if bentuk.unik && !matches!(label, super::value::Label::Dict) {
+            Peta::dari_isi(label, super::peta::IsiPeta::rapat(bentuk, self.stack.drain(start..).collect()))
+        } else {
+            Peta::baru_n(label, n, bentuk.nama.iter().cloned().zip(self.stack.drain(start..)))
+        };
+        self.stack.push(VmValue::Map(Arc::new(peta)));
         Ok(())
     }
 

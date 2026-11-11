@@ -7,6 +7,7 @@ pub mod chunk;
 pub mod ffi_jembatan;
 pub mod ffi_asing;
 pub mod value;
+pub mod peta;
 pub mod channel;
 pub mod visibilitas;
 pub mod compiler;
