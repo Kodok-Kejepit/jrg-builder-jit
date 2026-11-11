@@ -236,17 +236,26 @@ pub fn analisis(
     analisis_sekali(f, cari, masuk, jenis_masuk, kembali, langsung, larang_bulat, larang, &mut None)
 }
 
-/// Keadaan titik temu yang menampung `a` dan `b`: posisi yang beda jadi `Nilai` (isinya di stack VM).
-fn gabung(a: &[Jenis], b: &[Jenis]) -> Option<Vec<Jenis>> {
+/// Keadaan titik temu yang menampung `a` dan `b`: `Bulat` bertemu `Lebar` jadi `Lebar` (tepi cuma
+/// memperluas register), posisi lain yang beda jadi `Nilai` (isinya di stack VM).
+fn gabung(a: &[Jenis], b: &[Jenis], boleh_lebar: bool) -> Option<Vec<Jenis>> {
     if a.len() != b.len() { return None; }
-    Some(a.iter().zip(b).map(|(x, y)| if x == y { *x } else { Jenis::Nilai }).collect())
+    Some(a.iter().zip(b).map(|(x, y)| match (x, y) {
+        _ if x == y => *x,
+        (Jenis::Bulat | Jenis::Lebar, Jenis::Bulat | Jenis::Lebar) if boleh_lebar => Jenis::Lebar,
+        _ => Jenis::Nilai,
+    }).collect())
 }
 
 /// Jenis masuk yang diperlebar supaya `datang` bertemu dengannya: posisi yang beda jadi `Nilai`.
 fn perlebar(masuk: &[Jenis], datang: &[Jenis]) -> Option<Vec<Jenis>> {
     let ok = |j: &Jenis| matches!(j, Jenis::Bulat | Jenis::Bool | Jenis::Pecahan | Jenis::Kosong | Jenis::Nilai | Jenis::Lebar);
     if masuk.len() != datang.len() || !masuk.iter().chain(datang).all(ok) { return None; }
-    Some(masuk.iter().zip(datang).map(|(a, b)| if a == b { *a } else { Jenis::Nilai }).collect())
+    Some(masuk.iter().zip(datang).map(|(a, b)| match (a, b) {
+        _ if a == b => *a,
+        (Jenis::Bulat | Jenis::Lebar, Jenis::Bulat | Jenis::Lebar) => Jenis::Lebar,
+        _ => Jenis::Nilai,
+    }).collect())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -296,7 +305,7 @@ fn analisis_sekali(
             None => true,
             Some(a) if a == st => true,
             Some(_) if *t == masuk || kembali == KEMBALI_BULAT => false,
-            Some(a) => match gabung(a, st) {
+            Some(a) => match gabung(a, st, kembali != KEMBALI_BULAT) {
                 Some(w) => { lebarkan.push((*t, w)); true }
                 None => false,
             },

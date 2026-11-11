@@ -220,7 +220,8 @@ fn buka_hasil(
 fn tepi(b: &mut FunctionBuilder, r: &Rencana, blok: &[Option<Block>], dari: usize, ke: usize, tunda: &mut Vec<(Block, usize, usize)>) -> Block {
     let sasaran = blok[ke].expect("sasaran tepi terjangkau");
     let (Some(asal), Some(tuju)) = (r.tepi.get(&(dari, ke)), r.keadaan[ke].as_ref()) else { return sasaran };
-    if !asal.iter().zip(tuju).any(|(a, t)| t.di_vm() && !a.di_vm()) { return sasaran; }
+    let perlu = |a: &Jenis, t: &Jenis| (t.di_vm() && !a.di_vm()) || (*t == Jenis::Lebar && *a == Jenis::Bulat);
+    if !asal.iter().zip(tuju).any(|(a, t)| perlu(a, t)) { return sasaran; }
     let stub = b.create_block();
     tunda.push((stub, dari, ke));
     stub
@@ -236,6 +237,13 @@ fn isi_tepi(
         b.switch_to_block(stub);
         let (asal, tuju) = (&r.tepi[&(dari, ke)], r.keadaan[ke].as_ref().expect("sasaran tepi terjangkau"));
         for (i, (a, t)) in asal.iter().zip(tuju).enumerate() {
+            // Bulat ke titik temu `Lebar`: cukup diperluas di register.
+            if *t == Jenis::Lebar && *a == Jenis::Bulat {
+                let v = b.use_var(var[i]);
+                let w = b.ins().sextend(types::I128, v);
+                b.def_var(k.v128[i], w);
+                continue;
+            }
             if !t.di_vm() || a.di_vm() { continue; }
             if *a == Jenis::Lebar { tulis_lebar(b, k, i); continue; }
             let p = b.ins().iconst(types::I64, i as i64);
