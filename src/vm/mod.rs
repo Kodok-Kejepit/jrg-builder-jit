@@ -21,7 +21,7 @@ pub mod vm;
 // impl inheren dipecah lintas modul dalam satu crate, dan itu yang
 // membuat `vm.rs` bisa tinggal jadi rangkanya saja.
 mod jalankan;
-pub(crate) use jalankan::cocok_enum;
+pub(crate) use jalankan::{cocok_enum, larik_milik_tunggal};
 mod panggil;
 pub(crate) mod info_native;
 mod akses;

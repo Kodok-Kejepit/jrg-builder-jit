@@ -763,13 +763,16 @@ fn norm_indeks(i: i64, n: usize) -> Option<usize> {
 
 /// `IndeksLokal` atas larik berelemen bulat 64 bit: 0 = `*keluar` terisi.
 pub extern "C" fn baca(rel: i64, i: i64, keluar: *mut i64) -> i32 {
+    let bulat = |g: &[VmValue]| match g.get(norm_indeks(i, g.len())?)? {
+        VmValue::Int(n) => i64::try_from(*n).ok(),
+        _ => None,
+    };
     let v = atas_larik(rel, |t| {
+        // Milik tunggal: tanpa kunci (aturan `IndeksLokal` VM).
+        if let Some(g) = crate::vm::larik_milik_tunggal(t) { return bulat(g); }
         let VmValue::Array(a) = t else { return None };
         let g = a.lock().unwrap_or_else(|p| p.into_inner());
-        match g.get(norm_indeks(i, g.len())?)? {
-            VmValue::Int(n) => i64::try_from(*n).ok(),
-            _ => None,
-        }
+        bulat(&g)
     });
     match v {
         Some(n) => { unsafe { *keluar = n }; 0 }
@@ -781,6 +784,11 @@ pub extern "C" fn baca(rel: i64, i: i64, keluar: *mut i64) -> i32 {
 pub extern "C" fn tulis(rel: i64, i: i64, nilai: i64, jenis: i32) -> i32 {
     let Some(v) = skalar_kode(jenis, nilai) else { return 1 };
     let ok = atas_larik(rel, |t| {
+        if let Some(g) = crate::vm::larik_milik_tunggal(t) {
+            let k = norm_indeks(i, g.len())?;
+            g[k] = v.clone();
+            return Some(());
+        }
         // Aturan `PinjamLokal`: isi dipisahkan dari pemegang lain sebelum ditulis (tidak terlihat bila gagal).
         t.pisahkan();
         let VmValue::Array(a) = t else { return None };
