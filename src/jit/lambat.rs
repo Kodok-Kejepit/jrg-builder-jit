@@ -174,7 +174,7 @@ pub extern "C" fn keluar(st: i64, hasil: i64) -> i32 {
         GAGAL => return 2,
         _ => {
             // Deopt di callee: bingkainya disusun ulang lalu VM menyelesaikannya; `ULANG` = belum mulai.
-            if st == DEOPT { super::deopt::pulihkan(vm, super::deopt::ambil()); }
+            if st == DEOPT { super::deopt::ambil_spek_baru(); super::deopt::pulihkan(vm, super::deopt::ambil()); }
             if let Err(e) = vm.run_until_inner::<true, false>(d) {
                 GALAT.with(|g| *g.borrow_mut() = Some(e));
                 return 2;
@@ -183,7 +183,8 @@ pub extern "C" fn keluar(st: i64, hasil: i64) -> i32 {
             let v = if vm.stack.len() > slot { vm.stack.pop().unwrap_or(VmValue::Unit) } else { VmValue::Unit };
             vm.stack.truncate(slot);
             vm.stack.push(v);
-            return 0;
+            // Spekulasi callee gagal: salinan kodenya di pemanggil basi, jadi pemanggil keluar ke VM juga.
+            return if st == DEOPT && super::deopt::ambil_spek_baru() { 3 } else { 0 };
         }
     };
     if let Some(fr) = vm.ambil_bingkai() { vm.stack.truncate(fr.slot); }
@@ -199,6 +200,15 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
     let (t, argc) = (t as usize, argc as usize);
     let jenis = unsafe { std::slice::from_raw_parts(jenis, t) };
     let nilai = unsafe { std::slice::from_raw_parts(nilai, t) };
+    // Posisi milik VM saja yang sah dibaca dari stack VM (posisi native bisa berisi nilai basi).
+    if argc == 2 && jenis[t - 1] == Jenis::Bulat && nilai[t - 1] >= 0 && jenis[t - 2].di_vm() && jenis[t - 3].di_vm() {
+        if let Some(c) = char_at_cepat(vm, basis + t - 3, basis + t - 2, nilai[t - 1] as usize) {
+            let v = VmValue::Rune(c);
+            vm.catat_hasil(&v);
+            *sediakan(vm, basis, t - 3) = v;
+            return 0;
+        }
+    }
     let mut args = Vec::with_capacity(argc);
     for i in t - argc..t {
         args.push(match nilai_skalar(jenis[i], nilai[i]) {
@@ -221,6 +231,21 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
             2
         }
     }
+}
+
+/// `str::char_at(s, i)` dengan `i` tak negatif yang ada: dibaca di tempat, tanpa jembatan nilai. Prefiks ASCII
+/// (diperiksa per kata mesin) langsung lewat indeks byte; `None` = jalur umum (yang juga melapor galatnya).
+fn char_at_cepat(vm: &Vm, callee: usize, teks: usize, i: usize) -> Option<char> {
+    static CHAR_AT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let f = *CHAR_AT.get_or_init(|| match crate::vm::bawaan::bawaan("str::char_at") {
+        Some(VmValue::NativeFn(f)) => f as usize,
+        _ => 0,
+    });
+    let (Some(VmValue::NativeFn(g)), Some(VmValue::Str(s))) = (vm.stack.get(callee), vm.stack.get(teks)) else { return None };
+    if *g as usize != f { return None; }
+    let b = s.as_bytes();
+    if i < b.len() && b[..=i].is_ascii() { return Some(b[i] as char); }
+    s.chars().nth(i)
 }
 
 /// Aritmetika/banding instruksi `ip` atas posisi `t - 2`, `t - 1` (angka native atau milik VM, diambil),

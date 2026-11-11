@@ -31,7 +31,12 @@ pub fn aktif() -> bool { AKTIF.load(Ordering::Relaxed) }
 #[derive(Clone, Copy)]
 pub struct KodeJit {
     pub masuk: unsafe extern "C" fn(*const i64, i32, *mut i64) -> i32,
+    /// Memuat panggilan langsung (salinan kode callee): basi begitu spekulasi mana pun gagal (`EPOCH_SPEK`).
+    pub langsung: bool,
 }
+
+/// Naik tiap spekulasi gagal; kode berpanggilan langsung dari epoch lama tidak dipakai lagi.
+pub static EPOCH_SPEK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 impl std::fmt::Debug for KodeJit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("<kode jit>") }
@@ -51,6 +56,8 @@ pub struct Masuk {
     pub versi: u32,
     /// Jenis tiap posisi stack bingkai di titik masuk (`layak::Jenis` sebagai kode).
     pub jenis: Box<[u8]>,
+    /// `EPOCH_SPEK` saat dikompilasi (dipakai cuma untuk kode berpanggilan langsung).
+    pub epoch: u32,
     pub kode: Option<KodeJit>,
 }
 
@@ -107,6 +114,7 @@ impl PintuJit {
         if g.len() > MAKS_SPEK_GAGAL { self.panggilan_mati.store(true, Ordering::Relaxed); }
         drop(g);
         self.versi.fetch_add(1, Ordering::Relaxed);
+        EPOCH_SPEK.fetch_add(1, Ordering::Relaxed);
         self.cepat.store(std::ptr::null_mut(), Ordering::Release);
         self.masuk.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }

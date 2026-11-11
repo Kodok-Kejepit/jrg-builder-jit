@@ -16,7 +16,7 @@ use crate::vm::value::VmFunction;
 struct ModulJit {
     m: JITModule,
     /// Titik masuk → fungsi yang sudah didefinisikan (Arc dipegang supaya alamatnya tak dipakai ulang).
-    jadi: HashMap<Kunci, (FuncId, Arc<VmFunction>)>,
+    jadi: HashMap<Kunci, (FuncId, Arc<VmFunction>, bool)>,
     /// Per nomor bingkai (`fid`): fungsi dan rencananya, dibaca `deopt::pulihkan`.
     info: Vec<(Arc<VmFunction>, Arc<layak::Rencana>)>,
     catat: FuncId,
@@ -144,7 +144,7 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
 /// Nama fungsi yang berhasil dikompilasi, untuk `JRG_JIT_LOG`.
 pub fn terkompilasi() -> Vec<String> {
     let g = modul().lock().unwrap_or_else(|p| p.into_inner());
-    let mut v: Vec<String> = g.as_ref().map(|m| m.jadi.values().map(|(_, f)| f.name.clone()).collect()).unwrap_or_default();
+    let mut v: Vec<String> = g.as_ref().map(|m| m.jadi.values().map(|(_, f, _)| f.name.clone()).collect()).unwrap_or_default();
     v.sort();
     v.dedup();
     v
@@ -184,8 +184,8 @@ pub fn kompilasi(
     let mut g = modul().lock().unwrap_or_else(|p| p.into_inner());
     let mj = g.as_mut()?;
     let k0 = kunci(f, masuk, kembali, jenis);
-    if let Some((id, _)) = mj.jadi.get(&k0) {
-        return Some(KodeJit { masuk: unsafe { std::mem::transmute(mj.m.get_finalized_function(*id)) } });
+    if let Some((id, _, langsung)) = mj.jadi.get(&k0) {
+        return Some(KodeJit { masuk: unsafe { std::mem::transmute(mj.m.get_finalized_function(*id)) }, langsung: *langsung });
     }
     // Kumpulkan titik masuk ini dan semua callee yang belum jadi. Callee yang tak layak dilarang dan
     // analisisnya diulang: panggilan ke sana jadi titik keluar.
@@ -265,11 +265,12 @@ pub fn kompilasi(
         return None;
     }
     for (i, (k, h, r)) in baru.into_iter().enumerate() {
+        let langsung = !r.langsung.is_empty();
         mj.info.push((Arc::clone(&h), r));
-        mj.jadi.insert(k, (id_baru[i], h));
+        mj.jadi.insert(k, (id_baru[i], h, langsung));
     }
-    let id = mj.jadi[&k0].0;
-    Some(KodeJit { masuk: unsafe { std::mem::transmute(mj.m.get_finalized_function(id)) } })
+    let (id, langsung) = (mj.jadi[&k0].0, mj.jadi[&k0].2);
+    Some(KodeJit { masuk: unsafe { std::mem::transmute(mj.m.get_finalized_function(id)) }, langsung })
 }
 
 /// `JRG_JIT_LOG=rencana`: tiap instruksi yang terjangkau dengan caranya dan stack abstrak sebelumnya.

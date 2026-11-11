@@ -69,7 +69,9 @@ fn kode_untuk(vm: &Vm, func: &Arc<VmFunction>, ip: usize, kembali: u8, basis: us
     let isi = &vm.stack[basis..];
     let pj = &func.chunk.kode_jit;
     let versi = pj.versi.load(Ordering::Relaxed);
+    let epoch = super::EPOCH_SPEK.load(Ordering::Relaxed);
     let cocok = |m: &Masuk| m.ip as usize == ip && m.kembali == kembali && m.versi == versi
+        && (m.epoch == epoch || !m.kode.is_some_and(|k| k.langsung))
         && m.jenis.len() == isi.len() && m.jenis.iter().zip(isi).all(|(k, v)| *k == kode_nilai(v));
     // Jalur cepat tanpa kunci: entri yang terakhir cocok (entri tidak pernah dibebaskan).
     let c = pj.cepat.load(Ordering::Acquire);
@@ -79,6 +81,8 @@ fn kode_untuk(vm: &Vm, func: &Arc<VmFunction>, ip: usize, kembali: u8, basis: us
         pj.cepat.store(*m as *const Masuk as *mut Masuk, Ordering::Release);
         return m.kode;
     }
+    // Kode berpanggilan langsung dari epoch spekulasi lama tidak akan cocok lagi.
+    pintu.retain(|m| m.epoch == epoch || !m.kode.is_some_and(|k| k.langsung));
     if pintu.len() >= MAKS_MASUK { return None; }
     let jenis: Vec<Jenis> = isi.iter().map(jenis_nilai).collect();
     let globals = &vm.globals;
@@ -92,7 +96,7 @@ fn kode_untuk(vm: &Vm, func: &Arc<VmFunction>, ip: usize, kembali: u8, basis: us
         pj.panggilan_mati.store(true, Ordering::Relaxed);
     }
     let m: &'static Masuk = Box::leak(Box::new(Masuk {
-        ip: ip as u32, kembali, versi, jenis: jenis.iter().map(|j| kode_jenis(*j)).collect(), kode,
+        ip: ip as u32, kembali, versi, jenis: jenis.iter().map(|j| kode_jenis(*j)).collect(), kode, epoch,
     }));
     pintu.push(m);
     pj.cepat.store(m as *const Masuk as *mut Masuk, Ordering::Release);

@@ -754,3 +754,56 @@ fn tipe_pola_dilipat() {
     }
     assert!(i.stdout.contains("5  7  11  13  7  11  19  13  23  13  7"), "{}", i.stdout);
 }
+
+/// Spekulasi yang gagal di callee yang dipanggil langsung: pemanggil (loop di `main`, tidak pernah masuk
+/// ulang) dulu terus memakai salinan callee yang basi — 2 946 deopt, satu per panggilan (`string_scan` kecil).
+const CALLEE_BASI: &str = r#"
+package main
+
+// Microbenchmark for the by-index string scan path (`str::char_at` in a `for
+// i in 0..len(s)` loop) — the only way to visit characters by position …
+
+fn fnv(h: uint, s: str) -> uint {
+    var acc: uint = h
+    for i in 0..len(s) {
+        acc = math::wrap_mul(acc ^ (str::char_at(s, i) as uint), 1099511628211)
+    }
+    return acc
+}
+
+pub fn main() {
+    // Three lengths, ~4M characters scanned each. A quadratic char_at makes
+    // the long-string pass dominate; a linear one keeps all three close.
+    let short: str = "abcdefghijklmnopqrst"
+    let medium: str = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzab"
+    // Multi-byte on purpose: guards against anyone "optimizing" this into
+    // byte indexing, which would silently corrupt non-ASCII text.
+    let uni: str = "héllo wörld ☃ 𝔘 çà mixed widths here ☃☃ 𝔘𝔘 ééé"
+
+    var hash: uint = 1469598103934665603
+
+    for r in 0..4000 {
+        hash = fnv(hash, short)
+    }
+    for r in 0..1000 {
+        hash = fnv(hash, medium)
+    }
+    for r in 0..1800 {
+        hash = fnv(hash, uni)
+    }
+
+    wok(hash)
+}
+"#;
+
+#[test]
+fn callee_basi_tidak_dipakai_lagi() {
+    let i = jalankan(CALLEE_BASI, &[], &[]);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(CALLEE_BASI, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(CALLEE_BASI, &["--jit"], &[("JRG_JIT_LOG", "1")]);
+    let deopt: usize = j.stderr.lines().find_map(|l| l.strip_prefix("[jit] deopt: ")).and_then(|n| n.trim().parse().ok()).unwrap_or(0);
+    assert!(deopt < 20, "deopt {deopt} kali (dulu satu per panggilan):\n{}", j.stderr);
+}

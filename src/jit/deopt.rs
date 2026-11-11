@@ -41,6 +41,13 @@ pub extern "C" fn catat(fid: i32, ip: i32, nilai: *const i64, n: i32) {
     CATATAN.with(|c| c.borrow_mut().push(Rekaman { fid: fid as u32, ip: ip as u32, nilai: nilai.to_vec() }));
 }
 
+thread_local! {
+    /// Sebuah spekulasi gagal sejak terakhir ditanya (`lambat::keluar`: kode pemanggil sudah basi).
+    static SPEK_BARU: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn ambil_spek_baru() -> bool { SPEK_BARU.with(|s| s.replace(false)) }
+
 /// Rekaman panggilan native yang baru keluar (dikosongkan).
 pub fn ambil() -> Catatan { CATATAN.with(|c| std::mem::take(&mut *c.borrow_mut())) }
 
@@ -75,6 +82,7 @@ pub(crate) fn pulihkan(vm: &mut Vm, catatan: Catatan) {
         if bendera & GAGAL_SPEK != 0 {
             let situs = if bendera & PUNCAK_VM != 0 { ip - 1 } else if rencana.cara[ip] == Cara::Muat { ip + 1 } else { ip };
             f.chunk.kode_jit.tandai_spek_gagal(situs);
+            SPEK_BARU.with(|s| s.set(true));
         }
         let mut jenis = rencana.keadaan[ip].clone().expect("ip lanjut selalu terjangkau");
         // Bukaan yang sudah berhasil: angkanya di bingkai native (lokal gabungan tidak pernah di stack VM).

@@ -836,10 +836,16 @@ pub fn turunkan(
                 let r0 = b.inst_results(c)[0];
                 let (gagal2, terus) = (b.create_block(), b.create_block());
                 b.set_cold_block(gagal2);
-                b.ins().brif(r0, gagal2, &[], terus, &[]);
+                let galat = b.ins().icmp_imm_u(IntCC::Equal, r0, 2);
+                b.ins().brif(galat, gagal2, &[], terus, &[]);
                 b.switch_to_block(gagal2);
                 kembali_status(&mut b, GAGAL);
                 b.switch_to_block(terus);
+                // 3 = kode callee basi: hasilnya sudah di slot VM, VM melanjutkan sesudah panggilan ini.
+                let basi = b.ins().icmp_imm_u(IntCC::Equal, r0, 3);
+                let lama = k.bendera.replace(PUNCAK_VM);
+                jaga(&mut b, &k, &var, basi, ip + 1, r.keadaan[ip + 1].as_ref().expect("penerus panggilan terjangkau"));
+                k.bendera.set(lama);
                 if let Some(j) = r.spek[ip] { buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t - a - 1, j); }
                 continue;
             }
