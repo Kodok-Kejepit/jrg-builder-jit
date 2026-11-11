@@ -712,7 +712,10 @@ fn efek_langkah(f: &VmFunction, ip: usize, s: &[Jenis]) -> Option<(usize, usize,
         OpCode::BuildArray | OpCode::BuildTuple => (a, 1, None),
         // Pola dan literal tipe pemakai: tidak satu pun digabung VM dengan instruksi sesudahnya.
         OpCode::CekEnum | OpCode::CekStruct | OpCode::AmbilPayload | OpCode::HasField | OpCode::BuildEnum => (1, 1, None),
-        OpCode::BuildStruct => (2 * a + 1, 1, None),
+        OpCode::BuildStruct => match f.chunk.constants.get(a)? {
+            VmValue::Array(k) => (k.lock().ok()?.len() + 1, 1, None),
+            _ => return None,
+        },
         OpCode::SetField | OpCode::SetFieldPrivat if ada_vm(2) => (2, 0, None),
         OpCode::StoreGlobal => (1, 1, None),
         // Fungsi bawaan tidak pernah mendorong bingkai (`Vm::call_value`, cabang `NativeFn`).

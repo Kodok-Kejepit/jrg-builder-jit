@@ -113,6 +113,7 @@ impl Compiler {
         });
         self.chunk.emit_arg(OpCode::Const, proto);
 
+        let mut kunci: Vec<VmValue> = Vec::new();
         for (i, field) in fields.iter().enumerate() {
             // Field liar gagal saat JALAN, di gilirannya, seperti di interpreter.
             if !declared_fields.is_empty() && !declared_fields.iter().any(|d| d.name == field.name) {
@@ -124,11 +125,10 @@ impl Compiler {
                 self.chunk.emit_arg(OpCode::Const, pesan);
                 self.chunk.emit(OpCode::Panic);
             }
-            let field_key = self.chunk.add_constant(VmValue::str(&field.name));
-            self.chunk.emit_arg(OpCode::Const, field_key);
+            kunci.push(VmValue::str(&field.name));
             // Nilai field juga penyerahan nilai: `P { isi: a }` tidak boleh membuat
             // struct yang field-nya beralias ke `a`.
-            let tumpuk = spread.is_some() as usize + 1 + i * 2 + 1;
+            let tumpuk = spread.is_some() as usize + 1 + i;
             self.dgn_temp(tumpuk, |c| c.compile_value_expr(&field.value))?;
         }
         // Default sesudah field yang ditulis, sama dengan dua mesin lain.
@@ -139,19 +139,16 @@ impl Compiler {
                     continue;
                 }
                 if let Some(default) = &declared.default {
-                    let field_key = self.chunk.add_constant(VmValue::str(&declared.name));
-                    self.chunk.emit_arg(OpCode::Const, field_key);
-                    let tumpuk = 1 + (fields.len() + default_count) * 2 + 1;
+                    kunci.push(VmValue::str(&declared.name));
+                    let tumpuk = 1 + fields.len() + default_count;
                     self.dgn_temp(tumpuk, |c| c.compile_expr(default))?;
                     default_count += 1;
                 }
             }
         }
 
-        self.chunk.emit_arg(
-            OpCode::BuildStruct,
-            (default_count + fields.len()) as u32,
-        );
+        let daftar = self.chunk.add_constant(VmValue::array(kunci));
+        self.chunk.emit_arg(OpCode::BuildStruct, daftar);
         if spread.is_some() {
             self.chunk.emit(OpCode::MergeMap);
             // Default untuk field yang tidak dibawa basis maupun literalnya.

@@ -349,11 +349,17 @@ pub extern "C" fn payload_lokal(slot: i64, ke: i64) -> i32 {
 pub extern "C" fn field_lokal(slot: i64, nama: *const String, privat: i32, jenis: i32, keluar: *mut i64, ke: i64) -> i32 {
     let (vm, basis) = konteks();
     let nama = unsafe { &*nama };
-    let cepat = {
+    // Angka yang cocok dengan spekulasi dibaca di tempat; yang lain disalin.
+    let angka = |v: &VmValue| match (v, jenis) {
+        (VmValue::Int(n), 1) => i64::try_from(*n).ok(),
+        (VmValue::Float(x), 5) => Some(x.to_bits() as i64),
+        _ => None,
+    };
+    let cepat: Option<Result<i64, VmValue>> = {
         let vm: &Vm = vm;
         let lihat = |v: &VmValue| match v {
             VmValue::Map(m) if privat == 0 || vm.periksa_visibilitas(v, nama, None).is_ok() =>
-                m.lock().unwrap_or_else(|p| p.into_inner()).get(nama.as_str()).cloned(),
+                m.lock().unwrap_or_else(|p| p.into_inner()).get(nama.as_str()).map(|x| angka(x).ok_or_else(|| x.clone())),
             _ => None,
         };
         match vm.stack.get(basis + slot as usize) {
@@ -363,20 +369,17 @@ pub extern "C" fn field_lokal(slot: i64, nama: *const String, privat: i32, jenis
         }
     };
     let v = match cepat {
-        Some(v) => v,
+        Some(Ok(n)) => { unsafe { *keluar = n }; return 4; }
+        Some(Err(v)) => v,
         None => {
             let obj = vm.baca_lokal(basis + slot as usize).unwrap_or(VmValue::Nil);
             *sediakan(vm, basis, ke as usize) = obj;
             if field(ke, nama, privat) != 0 { return 1; }
-            std::mem::replace(&mut vm.stack[basis + ke as usize], VmValue::Nil)
+            let i = basis + ke as usize;
+            if let Some(n) = angka(&vm.stack[i]) { unsafe { *keluar = n }; return 4; }
+            return 0;
         }
     };
-    let n = match (&v, jenis) {
-        (VmValue::Int(n), 1) => i64::try_from(*n).ok(),
-        (VmValue::Float(x), 5) => Some(x.to_bits() as i64),
-        _ => None,
-    };
-    if let Some(n) = n { unsafe { *keluar = n }; return 4; }
     *sediakan(vm, basis, ke as usize) = v;
     0
 }

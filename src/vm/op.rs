@@ -83,20 +83,26 @@ impl Vm {
 
     #[inline]
     pub(crate) fn op_build_struct(&mut self, arg: u32, sp: Option<crate::lexer::Span>) -> VmResult<()> {
-        let n = arg as usize;
-        let start = self.stack.len().saturating_sub(n * 2);
-        let kv: Vec<VmValue> = self.stack.drain(start..).collect();
-        let label = match self.pop(sp)? {
-            VmValue::Map(p) => p.label.clone(),
-            lain => return Err(VmError::at(format!(
-                "BuildStruct: prototipe harus struct, dapat `{}`", lain.type_name_penuh()), sp)),
+        let peta = {
+            let f = self.frames.last().ok_or_else(|| VmError::new("no active frame"))?;
+            let Some(VmValue::Array(ks)) = f.chunk().constants.get(arg as usize) else {
+                return Err(VmError::at("BuildStruct: daftar field bukan larik", sp));
+            };
+            let ks = ks.lock().unwrap_or_else(|p| p.into_inner());
+            let n = ks.len();
+            let start = self.stack.len().checked_sub(n + 1).ok_or_else(|| VmError::at("BuildStruct: stack kurang", sp))?;
+            let label = match &self.stack[start] {
+                VmValue::Map(p) => p.label.clone(),
+                lain => return Err(VmError::at(format!(
+                    "BuildStruct: prototipe harus struct, dapat `{}`", lain.type_name_penuh()), sp)),
+            };
+            let pasangan = ks.iter().zip(self.stack.drain(start + 1..)).map(|(k, v)| (match k {
+                VmValue::Str(s) => super::value::Kunci(s.clone()),
+                k => k.to_string().into(),
+            }, v));
+            Peta::baru_n(label, n, pasangan)
         };
-        let mut it = kv.into_iter();
-        let pasangan = std::iter::from_fn(|| {
-            let (k, v) = (it.next()?, it.next()?);
-            Some((match k { VmValue::Str(s) => super::value::Kunci(s), k => k.to_string().into() }, v))
-        });
-        self.push(VmValue::Map(Arc::new(Peta::baru_n(label, n, pasangan))));
+        *self.stack.last_mut().expect("prototipe") = VmValue::Map(Arc::new(peta));
         Ok(())
     }
 
