@@ -539,3 +539,63 @@ fn titik_temu_dilebarkan() {
     let h = jalankan(TITIK_TEMU, &["--jit"], &[("JRG_JIT_LOG", "ringkas")]);
     assert!(h.stderr.lines().filter(|b| b.starts_with("[jit]   keluar ")).all(|b| b.contains("keluar Return")), "{}", h.stderr);
 }
+
+// ── J5: bulat 128 bit native, `math::wrap_*` intrinsik (`dokumentasi/jit/j5-rencana.md`) ───────────
+
+const LEBAR: &str = r#"fn fnv(h, s) {
+    var acc = h
+    for i in 0..len(s) {
+        acc = math::wrap_mul(acc ^ (str::char_at(s, i) as uint), 1099511628211)
+    }
+    return acc
+}
+fn campur(x) {
+    var a = x
+    for i in 0..50 {
+        a = math::wrap_add(a, 18446744073709551557) ^ (a >> 7)
+        a = math::wrap_sub(a, i * 3) | (a & 255)
+        if a > 9223372036854775807 { a = a >> 1 }
+    }
+    a
+}
+pub fn main() {
+    var h = 14695981039346656037
+    for r in 0..300 { h = fnv(h, "item-" + str(r)) }
+    wok(h)
+    wok(campur(1), campur(-5), campur(170141183460469231731687303715884105727))
+    let besar = 170141183460469231731687303715884105727
+    wok(besar >> 127, besar >> 64, (besar ^ 1) & 3, ~besar, besar == besar, besar < 1)
+    wok(math::wrap_mul(-1, -1), math::wrap_add(-1, 1), math::wrap_sub(0, 1))
+    var g = 18446744073709551615
+    for i in 0..3 { g = g << 1 }
+    wok(g)
+    wok(besar << 128)
+}
+"#;
+
+/// Hash 64 bit tak bertanda dalam loop: lokal yang di satu putaran bulat 64 bit dan di putaran lain i128.
+/// Dulu sasaran titik temu yang cuma didatangi jatuh-terus tidak menerima konversi tepinya: jawaban salah.
+const LEBAR_LOOP: &str = r#"fn f(a) {
+    var acc = a
+    for i in 0..2 { acc = math::wrap_mul(acc ^ 97, 3) }
+    return acc
+}
+pub fn main() {
+    var h = 14695981039346656037
+    for r in 0..30 { h = f(h); wok_(h % 1000, "") }
+    wok("")
+}
+"#;
+
+#[test]
+fn bulat_lebar_native() {
+    for src in [LEBAR, LEBAR_LOOP] {
+        let i = jalankan(src, &[], &[]);
+        for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+            let j = jalankan(src, &["--jit"], env);
+            assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+        }
+    }
+    let i = jalankan(LEBAR, &[], &[]);
+    assert!(i.stdout.starts_with("7476383727222582879\n") && i.stderr.contains("<< 128"), "{} {}", i.stdout, i.stderr);
+}

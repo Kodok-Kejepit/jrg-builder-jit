@@ -22,7 +22,7 @@ fn kode_jenis(j: Jenis) -> u8 {
         Jenis::Bool => 2,
         Jenis::Kosong => 3,
         Jenis::Pecahan => 5,
-        Jenis::Nilai | Jenis::Bawaan | Jenis::Fungsi(_) => 4,
+        Jenis::Nilai | Jenis::Bawaan | Jenis::Bungkus(_) | Jenis::Lebar | Jenis::Fungsi(_) => 4,
     }
 }
 

@@ -66,8 +66,9 @@ pub struct PintuJit {
     pub panggilan_mati: std::sync::atomic::AtomicBool,
     /// Naik tiap kali kodenya dibuang (spekulasi gagal); bagian kunci tembolok `modul`.
     pub versi: std::sync::atomic::AtomicU32,
-    /// Instruksi yang spekulasinya (nilai VM sebagai angka, larik berelemen angka) pernah gagal.
-    pub spek_gagal: std::sync::Mutex<Vec<u32>>,
+    /// Instruksi yang spekulasinya (nilai VM sebagai angka, larik berelemen angka) pernah gagal, dan berapa
+    /// kali: sekali = bulat 64 bit gagal (coba `Lebar`), dua kali = tidak berspekulasi lagi.
+    pub spek_gagal: std::sync::Mutex<Vec<(u32, u8)>>,
     /// Umpan `GetMethod`: situs, label tipe penerima pertama yang teramati, dan method pemakai-nya.
     pub metode: std::sync::Mutex<Vec<(u32, String, std::sync::Arc<crate::vm::value::VmFunction>)>>,
 }
@@ -86,15 +87,23 @@ impl PintuJit {
         g.iter().find(|(i, ..)| *i == ip as u32).map(|(_, l, f)| (l.clone(), std::sync::Arc::clone(f)))
     }
 
-    pub fn spek_gagal_di(&self, ip: usize) -> bool {
-        self.spek_gagal.lock().unwrap_or_else(|p| p.into_inner()).contains(&(ip as u32))
+    pub fn spek_gagal_di(&self, ip: usize) -> bool { self.spek_tingkat(ip) > 0 }
+
+    /// Berapa kali spekulasi di `ip` gagal (0, 1, 2).
+    pub fn spek_tingkat(&self, ip: usize) -> u8 {
+        let g = self.spek_gagal.lock().unwrap_or_else(|p| p.into_inner());
+        g.iter().find(|(i, _)| *i == ip as u32).map_or(0, |(_, n)| *n)
     }
 
-    /// Spekulasi di `ip` gagal: kodenya dibuang, kompilasi berikutnya tidak berspekulasi di sana.
+    /// Spekulasi di `ip` gagal: kodenya dibuang, kompilasi berikutnya berspekulasi lebih lebar (`Lebar`)
+    /// atau tidak sama sekali.
     pub fn tandai_spek_gagal(&self, ip: usize) {
         let mut g = self.spek_gagal.lock().unwrap_or_else(|p| p.into_inner());
-        if g.contains(&(ip as u32)) { return; }
-        g.push(ip as u32);
+        match g.iter_mut().find(|(i, _)| *i == ip as u32) {
+            Some((_, n)) if *n >= 2 => return,
+            Some((_, n)) => *n += 1,
+            None => g.push((ip as u32, 1)),
+        }
         if g.len() > MAKS_SPEK_GAGAL { self.panggilan_mati.store(true, Ordering::Relaxed); }
         drop(g);
         self.versi.fetch_add(1, Ordering::Relaxed);

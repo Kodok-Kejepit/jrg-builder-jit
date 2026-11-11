@@ -504,6 +504,24 @@ pub extern "C" fn tulis_vm(p: i64, nilai: i64, jenis: i32) {
     *sediakan(vm, basis, p as usize) = v;
 }
 
+/// `Jenis::Lebar` di posisi `p` ke stack VM: bulat i128 dari dua belahan 64 bit.
+pub extern "C" fn tulis_lebar(p: i64, lo: i64, hi: i64) {
+    let (vm, basis) = konteks();
+    *sediakan(vm, basis, p as usize) = VmValue::Int(((hi as i128) << 64) | (lo as u64 as i128));
+}
+
+/// Posisi `p` (milik VM) sebagai bulat i128: `keluar[0]` belahan bawah, `keluar[1]` atas; 1 = bukan bulat.
+pub extern "C" fn buka_lebar(p: i64, keluar: *mut i64) -> i32 {
+    let (vm, basis) = konteks();
+    match vm.stack.get(basis + p as usize) {
+        Some(VmValue::Int(n)) => {
+            unsafe { *keluar = *n as i64; *keluar.add(1) = (*n >> 64) as i64; }
+            0
+        }
+        _ => 1,
+    }
+}
+
 /// Posisi `p` dilepas (`Pop` atas nilai milik VM).
 pub extern "C" fn buang(p: i64) {
     let (vm, basis) = konteks();

@@ -88,7 +88,7 @@ pub struct ImporLambat {
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
     pub bawaan: FuncId, pub biner: FuncId, pub muat_upval: FuncId, pub simpan_upval: FuncId,
-    pub tulis_vm: FuncId,
+    pub tulis_vm: FuncId, pub tulis_lebar: FuncId, pub buka_lebar: FuncId,
 }
 
 /// Fungsi impor dan identitas bingkai untuk blok deopt.
@@ -104,7 +104,43 @@ fn kembali_status(b: &mut FunctionBuilder, st: i64) {
 }
 
 /// `bendera`: `BUKA_SUDAH` selama sisa instruksi `Cara::Buka` sesudah bukaannya berhasil.
-struct Keluar { catat: FuncRef, fid: i64, ptr: Type, slot: StackSlot, bendera: std::cell::Cell<i64> }
+/// `v128`/`lebar`: variabel `I128` tiap posisi dan `lambat::tulis_lebar` (posisi `Jenis::Lebar`).
+struct Keluar {
+    catat: FuncRef, fid: i64, ptr: Type, slot: StackSlot, bendera: std::cell::Cell<i64>, v128: Vec<Variable>, lebar: FuncRef,
+    buka_lebar: FuncRef, wadah16: StackSlot,
+}
+
+/// Posisi `p` milik VM dibuka jadi `Jenis::Lebar` (`lambat::buka_lebar`): status (bukan 0 = bukan bulat).
+fn buka_ke_lebar(b: &mut FunctionBuilder, k: &Keluar, p: usize) -> Value {
+    let pk = b.ins().stack_addr(k.ptr, k.wadah16, 0);
+    let pv = b.ins().iconst(types::I64, p as i64);
+    let c = b.ins().call(k.buka_lebar, &[pv, pk]);
+    b.inst_results(c)[0]
+}
+
+/// Isi `wadah16` sesudah `buka_ke_lebar` yang berhasil ke variabel `I128` posisi `p`.
+fn ambil_lebar(b: &mut FunctionBuilder, k: &Keluar, p: usize) {
+    let lo = b.ins().stack_load(k.ptr, types::I64, k.wadah16, 0);
+    let hi = b.ins().stack_load(k.ptr, types::I64, k.wadah16, 8);
+    let v = b.ins().iconcat(lo, hi);
+    b.def_var(k.v128[p], v);
+}
+
+/// Isi native posisi `dari` ke posisi `ke` (variabel 64 dan 128 bit sekaligus).
+fn salin_pos(b: &mut FunctionBuilder, var: &[Variable], v128: &[Variable], dari: usize, ke: usize) {
+    let v = b.use_var(var[dari]);
+    b.def_var(var[ke], v);
+    let w = b.use_var(v128[dari]);
+    b.def_var(v128[ke], w);
+}
+
+/// `Jenis::Lebar` di posisi `i` ditulis ke stack VM (batas: deopt, tumpah, tepi, simpan, kembali).
+fn tulis_lebar(b: &mut FunctionBuilder, k: &Keluar, i: usize) {
+    let v = b.use_var(k.v128[i]);
+    let (lo, hi) = b.ins().isplit(v);
+    let p = b.ins().iconst(types::I64, i as i64);
+    b.ins().call(k.lebar, &[p, lo, hi]);
+}
 
 /// Bit `ip` deopt: posisi yang dibuka instruksi itu sudah berisi angka native (`deopt::pulihkan`).
 pub const BUKA_SUDAH: i64 = 1 << 30;
@@ -118,6 +154,7 @@ fn keluar_deopt(b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], ip: usize
     let slot = k.slot;
     for (i, j) in jenis.iter().enumerate() {
         // Fungsi, `nil` dan nilai milik VM tidak punya isi native; `deopt::pulihkan` membangunnya.
+        if *j == Jenis::Lebar { tulis_lebar(b, k, i); continue; }
         if !matches!(j, Jenis::Bulat | Jenis::Bool | Jenis::Pecahan) { continue; }
         let v = b.use_var(var[i]);
         b.ins().stack_store(k.ptr, v, slot, (i * 8) as i32);
@@ -157,6 +194,14 @@ fn buka_hasil(
     b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], r: &Rencana, buka: FuncRef, wadah: StackSlot,
     lanjut: usize, pos: usize, j: Jenis,
 ) {
+    if j == Jenis::Lebar {
+        let st = buka_ke_lebar(b, k, pos);
+        let lama = k.bendera.replace(PUNCAK_VM | GAGAL_SPEK);
+        jaga(b, k, var, st, lanjut, r.keadaan[lanjut].as_ref().expect("penerus hasil terjangkau"));
+        k.bendera.set(lama);
+        ambil_lebar(b, k, pos);
+        return;
+    }
     let pk = b.ins().stack_addr(k.ptr, wadah, 0);
     let pv = b.ins().iconst(types::I64, pos as i64);
     let jv = b.ins().iconst(types::I32, if j == Jenis::Pecahan { 5 } else { 1 });
@@ -184,14 +229,15 @@ fn tepi(b: &mut FunctionBuilder, r: &Rencana, blok: &[Option<Block>], dari: usiz
 /// Isi blok stub `tepi` yang tertunda; builder berakhir di stub terakhir (sudah tertutup).
 #[allow(clippy::too_many_arguments)]
 fn isi_tepi(
-    b: &mut FunctionBuilder, r: &Rencana, blok: &[Option<Block>], var: &[Variable], tunda: &mut Vec<(Block, usize, usize)>,
-    tulis: FuncRef, taruh: FuncRef,
+    b: &mut FunctionBuilder, k: &Keluar, r: &Rencana, blok: &[Option<Block>], var: &[Variable],
+    tunda: &mut Vec<(Block, usize, usize)>, tulis: FuncRef, taruh: FuncRef,
 ) {
     for (stub, dari, ke) in tunda.drain(..) {
         b.switch_to_block(stub);
         let (asal, tuju) = (&r.tepi[&(dari, ke)], r.keadaan[ke].as_ref().expect("sasaran tepi terjangkau"));
         for (i, (a, t)) in asal.iter().zip(tuju).enumerate() {
             if !t.di_vm() || a.di_vm() { continue; }
+            if *a == Jenis::Lebar { tulis_lebar(b, k, i); continue; }
             let p = b.ins().iconst(types::I64, i as i64);
             match a {
                 Jenis::Fungsi(c) => {
@@ -210,6 +256,99 @@ fn isi_tepi(
     }
 }
 
+/// Operasi atas `Jenis::Lebar`; `false` = bukan bentuk `Lebar` (lowering biasa yang menanganinya).
+#[allow(clippy::too_many_arguments)]
+fn turun_lebar(
+    b: &mut FunctionBuilder, k: &Keluar, r: &Rencana, var: &[Variable], v128: &[Variable], blok: &[Option<Block>],
+    tunda: &mut Vec<(Block, usize, usize)>, tulis: FuncRef, taruh: FuncRef, ip: usize, op: OpCode, a: usize, s: &[Jenis],
+) -> bool {
+    use Jenis::{Bulat, Bungkus, Lebar};
+    let t = s.len();
+    // Operand ke i128: `Lebar` apa adanya, bulat 64 bit diperluas bertanda.
+    let ke128 = |b: &mut FunctionBuilder, i: usize| -> Value {
+        if s[i] == Lebar { b.use_var(v128[i]) } else { let x = b.use_var(var[i]); b.ins().sextend(types::I128, x) }
+    };
+    let nol = |b: &mut FunctionBuilder| -> Value { let z = b.ins().iconst(types::I64, 0); b.ins().sextend(types::I128, z) };
+    let dua = t >= 2 && matches!((s[t - 2], s[t - 1]), (Lebar, Bulat | Lebar) | (Bulat, Lebar));
+    match op {
+        OpCode::Const => {
+            let Some(v) = r.konstanta128[ip] else { return false };
+            let lo = b.ins().iconst(types::I64, v as i64);
+            let hi = b.ins().iconst(types::I64, (v >> 64) as i64);
+            let h = b.ins().iconcat(lo, hi);
+            b.def_var(v128[t], h);
+        }
+        OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge | OpCode::Eq | OpCode::Ne if dua => {
+            let cc = match op {
+                OpCode::Lt => IntCC::SignedLessThan,
+                OpCode::Le => IntCC::SignedLessThanOrEqual,
+                OpCode::Gt => IntCC::SignedGreaterThan,
+                OpCode::Ge => IntCC::SignedGreaterThanOrEqual,
+                OpCode::Eq => IntCC::Equal,
+                _ => IntCC::NotEqual,
+            };
+            let (x, y) = (ke128(b, t - 2), ke128(b, t - 1));
+            let c = b.ins().icmp(cc, x, y);
+            let v = b.ins().uextend(types::I64, c);
+            b.def_var(var[t - 2], v);
+        }
+        OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::AndNot if dua => {
+            let (x, y) = (ke128(b, t - 2), ke128(b, t - 1));
+            let h = match op {
+                OpCode::BitAnd => b.ins().band(x, y),
+                OpCode::BitOr => b.ins().bor(x, y),
+                OpCode::BitXor => b.ins().bxor(x, y),
+                _ => b.ins().band_not(x, y),
+            };
+            b.def_var(v128[t - 2], h);
+        }
+        // Geseran 0-127 atas 128 bit (bit yang keluar dibuang, seperti `checked_shl` VM); selain itu VM melapor.
+        OpCode::Shl | OpCode::Shr if t >= 2 && s[t - 2] == Lebar && s[t - 1] == Bulat => {
+            let (x, y) = (b.use_var(v128[t - 2]), b.use_var(var[t - 1]));
+            let salah = b.ins().icmp_imm_u(IntCC::UnsignedGreaterThan, y, 127);
+            jaga(b, k, var, salah, ip, s);
+            let h = if op == OpCode::Shl { b.ins().ishl(x, y) } else { b.ins().sshr(x, y) };
+            b.def_var(v128[t - 2], h);
+        }
+        OpCode::BitNot if s[t - 1] == Lebar => {
+            let x = b.use_var(v128[t - 1]);
+            let h = b.ins().bnot(x);
+            b.def_var(v128[t - 1], h);
+        }
+        OpCode::KeBool if s[t - 1] == Lebar => {
+            let (x, z) = (b.use_var(v128[t - 1]), nol(b));
+            let c = b.ins().icmp(IntCC::NotEqual, x, z);
+            let v = b.ins().uextend(types::I64, c);
+            b.def_var(var[t - 1], v);
+        }
+        OpCode::JumpFalse | OpCode::JumpTrue | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep if s[t - 1] == Lebar => {
+            let (x, z) = (b.use_var(v128[t - 1]), nol(b));
+            let c = b.ins().icmp(IntCC::NotEqual, x, z);
+            let (sesudah, sasaran) = (tepi(b, r, blok, ip, ip + 1, tunda), tepi(b, r, blok, ip, a, tunda));
+            let (ya, tidak) = if matches!(op, OpCode::JumpFalse | OpCode::JumpFalseKeep) { (sesudah, sasaran) } else { (sasaran, sesudah) };
+            b.ins().brif(c, ya, &[], tidak, &[]);
+            isi_tepi(b, k, r, blok, var, tunda, tulis, taruh);
+        }
+        // `math::wrap_*`: 64 bit bawah kedua operand, hasil tak bertanda 0..2^64-1 (aturan `MathWrap*`).
+        OpCode::Call if t >= 3 && matches!(s[t - 3], Bungkus(_)) => {
+            let Bungkus(jenis) = s[t - 3] else { return false };
+            let bawah = |b: &mut FunctionBuilder, i: usize| -> Value {
+                if s[i] == Lebar { let x = b.use_var(v128[i]); b.ins().ireduce(types::I64, x) } else { b.use_var(var[i]) }
+            };
+            let (x, y) = (bawah(b, t - 2), bawah(b, t - 1));
+            let h = match jenis {
+                super::layak::BUNGKUS_TAMBAH => b.ins().iadd(x, y),
+                super::layak::BUNGKUS_KURANG => b.ins().isub(x, y),
+                _ => b.ins().imul(x, y),
+            };
+            let h = b.ins().uextend(types::I128, h);
+            b.def_var(v128[t - 3], h);
+        }
+        _ => return false,
+    }
+    true
+}
+
 /// Nilai angka jadi `f64`: pecahan dibaca bitnya, bulat dikonversi seperti `i128 as f64` acuan.
 fn ke_f64(b: &mut FunctionBuilder, v: Value, j: Jenis) -> Value {
     if j == Jenis::Pecahan { b.ins().bitcast(types::F64, MemFlagsData::new(), v) }
@@ -224,10 +363,12 @@ fn dari_f64(b: &mut FunctionBuilder, f: Value) -> Value {
 /// fungsi yang dimuat kode native (`LoadGlobal`) ditaruh langsung sebagai nilai VM-nya.
 #[allow(clippy::too_many_arguments)]
 fn tumpahkan(
-    b: &mut FunctionBuilder, var: &[Variable], s: &[Jenis], rentang: std::ops::Range<usize>,
+    b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], s: &[Jenis], rentang: std::ops::Range<usize>,
     slot: StackSlot, ptr: Type, taruh: FuncRef, callee: &[crate::vm::value::VmValue],
 ) {
     for i in rentang {
+        // `Lebar` langsung ke stack VM; pembantu membacanya dari sana (`nilai_skalar` tidak mengenalnya).
+        if s[i] == Jenis::Lebar { tulis_lebar(b, k, i); continue; }
         if let Jenis::Fungsi(c) = s[i] {
             let ke = b.ins().iconst(types::I64, i as i64);
             let kv = b.ins().iconst(types::I64, &callee[c] as *const _ as i64);
@@ -253,6 +394,9 @@ pub fn turunkan(
     let ptr = m.target_config().pointer_type();
     let mut b = FunctionBuilder::new(fungsi, fctx);
     let var: Vec<Variable> = (0..r.maks.max(1)).map(|_| b.declare_var(types::I64)).collect();
+    // Variabel `I128` tiap posisi untuk `Jenis::Lebar`; salinan posisi menyalin keduanya (yang tak terpakai
+    // hilang di SSA).
+    let v128: Vec<Variable> = (0..r.maks.max(1)).map(|_| b.declare_var(types::I128)).collect();
     // Penyangga argumen dan hasil milik pemanggil: selaras, tidak pernah menjebak.
     let fl = MemFlagsData::trusted();
     let kode = &f.chunk.code;
@@ -268,7 +412,12 @@ pub fn turunkan(
     };
     // Satu slot rekaman untuk semua titik deopt fungsi ini (cuma satu yang pernah dipakai per panggilan).
     let slot = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, (r.maks.max(1) * 8) as u32, 3));
-    let k = Keluar { catat: m.declare_func_in_func(impor.catat, b.func), fid: impor.fid as i64, ptr, slot, bendera: Default::default() };
+    let k = Keluar {
+        catat: m.declare_func_in_func(impor.catat, b.func), fid: impor.fid as i64, ptr, slot, bendera: Default::default(),
+        v128: v128.clone(), lebar: m.declare_func_in_func(impor.lambat.tulis_lebar, b.func),
+        buka_lebar: m.declare_func_in_func(impor.lambat.buka_lebar, b.func),
+        wadah16: b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3)),
+    };
     let undi = impor.undi.map(|u| m.declare_func_in_func(u, b.func));
     let (baca, tulis) = (m.declare_func_in_func(impor.baca, b.func), m.declare_func_in_func(impor.tulis, b.func));
     let wadah = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
@@ -294,6 +443,8 @@ pub fn turunkan(
     // Isi bingkai di titik masuk; posisi tanpa isi native diberi nol supaya tiap variabel terdefinisi.
     let nol = b.ins().iconst(types::I64, 0);
     for v in &var { b.def_var(*v, nol); }
+    let nol128 = b.ins().sextend(types::I128, nol);
+    for v in &v128 { b.def_var(*v, nol128); }
     for (i, j) in r.jenis_masuk.iter().enumerate() {
         if !matches!(j, Jenis::Bulat | Jenis::Bool | Jenis::Pecahan) { continue; }
         let v = b.ins().load(types::I64, fl, args, (i * 8) as i32);
@@ -313,7 +464,7 @@ pub fn turunkan(
             if terbuka {
                 let ke = tepi(&mut b, r, &blok, ip - 1, ip, &mut tunda);
                 b.ins().jump(ke, &[]);
-                isi_tepi(&mut b, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
+                isi_tepi(&mut b, &k, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
             }
             b.switch_to_block(bl);
             terbuka = true;
@@ -345,6 +496,12 @@ pub fn turunkan(
                 for &(p, j) in daftar {
                     buka_s[p] = j;
                     if dibuka { continue; }
+                    if j == Jenis::Lebar {
+                        let st = buka_ke_lebar(&mut b, &k, p);
+                        jaga_spek(&mut b, &k, &var, st, ip, s);
+                        ambil_lebar(&mut b, &k, p);
+                        continue;
+                    }
                     let pk = b.ins().stack_addr(ptr, wadah, 0);
                     let (pv, jv) = (i64c(&mut b, p as i64), b.ins().iconst(types::I32, if j == Jenis::Pecahan { 5 } else { 1 }));
                     let c = b.ins().call(f_buka, &[pv, jv, pk]);
@@ -359,7 +516,7 @@ pub fn turunkan(
             }
             Cara::Langkah { ambil, taruh, tumpah } => {
                 // Operand milik kode native ke slot rekaman, lalu VM menjalankan instruksinya.
-                tumpahkan(&mut b, &var, s, t - tumpah..t, slot, ptr, f_taruh, &r.callee_nilai);
+                tumpahkan(&mut b, &k, &var, s, t - tumpah..t, slot, ptr, f_taruh, &r.callee_nilai);
                 let args = [
                     i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
                     i64c(&mut b, *tumpah as i64), i64c(&mut b, (t - ambil + taruh) as i64),
@@ -403,7 +560,7 @@ pub fn turunkan(
                         continue;
                     }
                     // Semua bukaan instruksi sesudahnya dikerjakan di sini, jadi deopt-nya tetap di `ip`.
-                    Some(Cara::Buka(daftar)) if gabung && daftar.iter().any(|(p, _)| *p == t) => {
+                    Some(Cara::Buka(daftar)) if gabung && daftar.iter().any(|(p, _)| *p == t) && !daftar.iter().any(|(_, j)| *j == Jenis::Lebar) => {
                         for &(p, j) in daftar {
                             let pk = b.ins().stack_addr(ptr, wadah, 0);
                             let jv = b.ins().iconst(types::I32, if j == Jenis::Pecahan { 5 } else { 1 });
@@ -437,6 +594,7 @@ pub fn turunkan(
                 continue;
             }
             Cara::Simpan => {
+                if s[t - 1] == Jenis::Lebar { tulis_lebar(&mut b, &k, t - 1); }
                 let j = s[t - 1];
                 let kode = match j { Jenis::Bulat => 1, Jenis::Bool => 2, Jenis::Kosong => 3, Jenis::Pecahan => 5, _ => 4 };
                 let v = if matches!(kode, 1 | 2 | 5) { b.use_var(var[t - 1]) } else { i64c(&mut b, 0) };
@@ -465,7 +623,7 @@ pub fn turunkan(
                     (sesudah, sasaran)
                 } else { (sasaran, sesudah) };
                 b.ins().brif(v, ya, &[], tidak, &[]);
-                isi_tepi(&mut b, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
+                isi_tepi(&mut b, &k, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
                 terbuka = false;
                 continue;
             }
@@ -481,7 +639,7 @@ pub fn turunkan(
                 continue;
             }
             Cara::Cabang { tumpah, hasil_bool, tujuan } => {
-                tumpahkan(&mut b, &var, s, t - tumpah..t, slot, ptr, f_taruh, &r.callee_nilai);
+                tumpahkan(&mut b, &k, &var, s, t - tumpah..t, slot, ptr, f_taruh, &r.callee_nilai);
                 let args = [
                     i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
                     i64c(&mut b, *tumpah as i64), b.ins().stack_addr(ptr, slot, 0), i64c(&mut b, *hasil_bool as i64),
@@ -498,7 +656,7 @@ pub fn turunkan(
                 let (ya, tidak) = (tepi(&mut b, r, &blok, ip, tujuan[0], &mut tunda), tepi(&mut b, r, &blok, ip, tujuan[1], &mut tunda));
                 let pilih = if *hasil_bool { h } else { b.ins().icmp_imm_s(IntCC::Equal, h, tujuan[0] as i64) };
                 b.ins().brif(pilih, ya, &[], tidak, &[]);
-                isi_tepi(&mut b, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
+                isi_tepi(&mut b, &k, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
                 terbuka = false;
                 continue;
             }
@@ -514,8 +672,7 @@ pub fn turunkan(
                     let (dari, ke) = (i64c(&mut b, t as i64 - 1), i64c(&mut b, d0 as i64));
                     b.ins().call(f_pindah, &[dari, ke]);
                 } else {
-                    let v = b.use_var(var[t - 1]);
-                    b.def_var(var[d0], v);
+                    salin_pos(&mut b, &var, &v128, t - 1, d0);
                 }
                 continue;
             }
@@ -529,6 +686,7 @@ pub fn turunkan(
                 continue;
             }
             Cara::SimpanGlobal => {
+                if s[t - 1] == Jenis::Lebar { tulis_lebar(&mut b, &k, t - 1); }
                 let j = s[t - 1];
                 let kode = match j { Jenis::Bulat => 1, Jenis::Bool => 2, Jenis::Kosong => 3, Jenis::Pecahan => 5, _ => 4 };
                 let v = if matches!(kode, 1 | 2 | 5) { b.use_var(var[t - 1]) } else { i64c(&mut b, 0) };
@@ -542,6 +700,7 @@ pub fn turunkan(
                 continue;
             }
             Cara::Indeks => {
+                if s[t - 1] == Jenis::Lebar { tulis_lebar(&mut b, &k, t - 1); }
                 let j = s[t - 1];
                 let kode = match j { Jenis::Bulat => 1, Jenis::Bool => 2, Jenis::Kosong => 3, Jenis::Pecahan => 5, _ => 4 };
                 let v = if matches!(kode, 1 | 2 | 5) { b.use_var(var[t - 1]) } else { i64c(&mut b, 0) };
@@ -567,7 +726,7 @@ pub fn turunkan(
             Cara::Langsung(n) => {
                 // Bingkai VM callee didorong `masuk`; kode callee dipanggil langsung; `keluar` menaruh hasilnya.
                 let jenis = &r.langsung[*n].1;
-                tumpahkan(&mut b, &var, s, t - a - 1..t, slot, ptr, f_taruh, &r.callee_nilai);
+                tumpahkan(&mut b, &k, &var, s, t - a - 1..t, slot, ptr, f_taruh, &r.callee_nilai);
                 let args = [
                     i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
                     i64c(&mut b, a as i64), b.ins().stack_addr(ptr, slot, 0),
@@ -612,7 +771,7 @@ pub fn turunkan(
                 continue;
             }
             Cara::Bawaan => {
-                tumpahkan(&mut b, &var, s, t - a..t, slot, ptr, f_taruh, &r.callee_nilai);
+                tumpahkan(&mut b, &k, &var, s, t - a..t, slot, ptr, f_taruh, &r.callee_nilai);
                 let args = [
                     i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
                     i64c(&mut b, a as i64), b.ins().stack_addr(ptr, slot, 0),
@@ -629,7 +788,7 @@ pub fn turunkan(
                 continue;
             }
             Cara::Biner => {
-                tumpahkan(&mut b, &var, s, t - 2..t, slot, ptr, f_taruh, &r.callee_nilai);
+                tumpahkan(&mut b, &k, &var, s, t - 2..t, slot, ptr, f_taruh, &r.callee_nilai);
                 let args = [i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64), b.ins().stack_addr(ptr, slot, 0)];
                 let c = b.ins().call(f_biner, &args);
                 let st = b.inst_results(c)[0];
@@ -655,6 +814,7 @@ pub fn turunkan(
                 continue;
             }
             Cara::SimpanUpval => {
+                if s[t - 1] == Jenis::Lebar { tulis_lebar(&mut b, &k, t - 1); }
                 let j = s[t - 1];
                 let kode = match j { Jenis::Bulat => 1, Jenis::Bool => 2, Jenis::Kosong => 3, Jenis::Pecahan => 5, _ => 4 };
                 let v = if matches!(kode, 1 | 2 | 5) { b.use_var(var[t - 1]) } else { i64c(&mut b, 0) };
@@ -675,8 +835,8 @@ pub fn turunkan(
                 let (px, py) = (i64c(&mut b, x as i64), i64c(&mut b, y as i64));
                 match (s[x].di_vm(), s[y].di_vm()) {
                     (true, true) => { b.ins().call(f_tukar, &[px, py]); }
-                    (true, false) => { b.ins().call(f_pindah, &[px, py]); let v = b.use_var(var[y]); b.def_var(var[x], v); }
-                    _ => { b.ins().call(f_pindah, &[py, px]); let v = b.use_var(var[x]); b.def_var(var[y], v); }
+                    (true, false) => { b.ins().call(f_pindah, &[px, py]); salin_pos(&mut b, &var, &v128, y, x); }
+                    _ => { b.ins().call(f_pindah, &[py, px]); salin_pos(&mut b, &var, &v128, x, y); }
                 }
                 continue;
             }
@@ -731,6 +891,7 @@ pub fn turunkan(
                 continue;
             }
             Cara::KembaliNilai => {
+                if s[t - 1] == Jenis::Lebar { tulis_lebar(&mut b, &k, t - 1); }
                 let p = i64c(&mut b, t as i64 - 1);
                 b.ins().store(fl, p, keluar, 0);
                 kembali_status(&mut b, BERHASIL_NILAI);
@@ -743,8 +904,15 @@ pub fn turunkan(
                 continue;
             }
         };
+        // `Jenis::Lebar` (i128 di `v128`): bentuk yang `layak::langkah_asli` izinkan.
+        let ada_lebar = r.konstanta128[ip].is_some()
+            || s[t.saturating_sub(3)..].iter().any(|j| matches!(j, Jenis::Lebar | Jenis::Bungkus(_)));
+        if ada_lebar && turun_lebar(&mut b, &k, r, &var, &v128, &blok, &mut tunda, f_tulis_vm, f_taruh, ip, ins.op, a, s) {
+            if matches!(ins.op, OpCode::JumpFalse | OpCode::JumpTrue | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep) { terbuka = false; }
+            continue;
+        }
         match ins.op {
-            OpCode::LoadLocal | OpCode::LokalHitung => { let v = b.use_var(var[a]); b.def_var(var[t], v); }
+            OpCode::LoadLocal | OpCode::LokalHitung => salin_pos(&mut b, &var, &v128, a, t),
             OpCode::IntImm => { let v = b.ins().iconst(types::I64, ins.arg as i32 as i64); b.def_var(var[t], v); }
             OpCode::Const => { let v = b.ins().iconst(types::I64, r.konstanta[ip].unwrap_or(0)); b.def_var(var[t], v); }
             OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div if s[t - 1] == Jenis::Pecahan || s[t - 2] == Jenis::Pecahan => {
@@ -847,7 +1015,7 @@ pub fn turunkan(
                 let h = b.ins().sshr(x, kk);
                 b.def_var(var[t - 2], h);
             }
-            OpCode::AmbilLokal => { let v = b.use_var(var[a]); b.def_var(var[t], v); }
+            OpCode::AmbilLokal => salin_pos(&mut b, &var, &v128, a, t),
             OpCode::IndeksLokal => {
                 let (rel, i) = (b.ins().iconst(types::I64, a as i64), atas(&mut b, 1));
                 let pk = b.ins().stack_addr(ptr, wadah, 0);
@@ -892,19 +1060,22 @@ pub fn turunkan(
                 let h = b.ins().uextend(types::I64, c);
                 b.def_var(var[t - 1], h);
             }
-            OpCode::Dup => { let v = atas(&mut b, 1); b.def_var(var[t], v); }
+            OpCode::Dup => salin_pos(&mut b, &var, &v128, t - 1, t),
             OpCode::Swap => {
                 let (x, y) = (atas(&mut b, 2), atas(&mut b, 1));
+                let (x2, y2) = (b.use_var(v128[t - 2]), b.use_var(v128[t - 1]));
                 b.def_var(var[t - 2], y);
                 b.def_var(var[t - 1], x);
+                b.def_var(v128[t - 2], y2);
+                b.def_var(v128[t - 1], x2);
             }
-            OpCode::SlideDown => { let v = atas(&mut b, 1); b.def_var(var[t - a - 1], v); }
+            OpCode::SlideDown => salin_pos(&mut b, &var, &v128, t - 1, t - a - 1),
             OpCode::Pop | OpCode::LoadGlobal | OpCode::PeriksaArgMetode => {}
-            OpCode::StoreLocal | OpCode::SimpanBuang => { let v = atas(&mut b, 1); b.def_var(var[a], v); }
+            OpCode::StoreLocal | OpCode::SimpanBuang => salin_pos(&mut b, &var, &v128, t - 1, a),
             OpCode::Jump => {
                 let ke = tepi(&mut b, r, &blok, ip, a, &mut tunda);
                 b.ins().jump(ke, &[]);
-                isi_tepi(&mut b, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
+                isi_tepi(&mut b, &k, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
                 terbuka = false;
             }
             OpCode::JumpFalse | OpCode::JumpTrue | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep => {
@@ -914,7 +1085,7 @@ pub fn turunkan(
                     (sesudah, sasaran)
                 } else { (sasaran, sesudah) };
                 b.ins().brif(c, ya, &[], tidak, &[]);
-                isi_tepi(&mut b, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
+                isi_tepi(&mut b, &k, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
                 terbuka = false;
             }
             OpCode::MakeIterRentang => {

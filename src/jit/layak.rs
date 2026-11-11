@@ -22,11 +22,29 @@ pub enum Jenis {
     Nilai,
     /// `Nilai` yang pasti fungsi bawaan (`Const`), jadi `Call` atasnya tidak pernah mendorong bingkai.
     Bawaan,
+    /// `Bawaan` yang dikenal sebagai `math::wrap_add`/`wrap_sub`/`wrap_mul` (`BUNGKUS_*`): dihitung native.
+    Bungkus(u8),
+    /// Bulat i128 di variabel `I128`; ditulis ke stack VM (`lambat::tulis_lebar`) cuma di batas.
+    Lebar,
 }
+
+pub const BUNGKUS_TAMBAH: u8 = 0;
+pub const BUNGKUS_KURANG: u8 = 1;
+pub const BUNGKUS_KALI: u8 = 2;
 
 impl Jenis {
     /// Isinya ada di stack VM, bukan di variabel native.
-    pub fn di_vm(self) -> bool { matches!(self, Jenis::Nilai | Jenis::Bawaan) }
+    pub fn di_vm(self) -> bool { matches!(self, Jenis::Nilai | Jenis::Bawaan | Jenis::Bungkus(_)) }
+}
+
+/// Fungsi bawaan `f` sebagai intrinsik `Jenis::Bungkus`.
+fn bungkus(f: crate::vm::value::VmNativeFn) -> Option<u8> {
+    match crate::vm::info_native::info(f)?.kanonik.as_str() {
+        "math::wrap_add" => Some(BUNGKUS_TAMBAH),
+        "math::wrap_sub" => Some(BUNGKUS_KURANG),
+        "math::wrap_mul" => Some(BUNGKUS_KALI),
+        _ => None,
+    }
 }
 
 /// Cara satu instruksi dijalankan kode native (`Rencana::cara`).
@@ -134,6 +152,8 @@ pub struct Rencana {
     pub maks: usize,
     /// Nilai `Const` bulat (atau bit pecahan) per instruksi.
     pub konstanta: Vec<Option<i64>>,
+    /// Nilai `Const` bulat di luar 64 bit (`Jenis::Lebar`) per instruksi.
+    pub konstanta128: Vec<Option<i128>>,
     /// Cara tiap instruksi yang bukan titik keluar dijalankan.
     pub cara: Vec<Cara>,
     /// `callee` sebagai nilai VM: posisi `Fungsi` yang dibaca langkah VM ditaruh dari sini.
@@ -179,10 +199,11 @@ impl Rencana {
 /// pernah gagal di sana.
 fn spek_hasil(f: &VmFunction, ip: usize) -> Option<Jenis> {
     use super::profil::bit;
-    if f.chunk.kode_jit.spek_gagal_di(ip) { return None; }
-    match f.chunk.profil.as_ref()?.umpan.get(ip)?.load(std::sync::atomic::Ordering::Relaxed) {
-        bit::BULAT => Some(Jenis::Bulat),
-        bit::PECAHAN => Some(Jenis::Pecahan),
+    // Bulat yang pernah tidak muat 64 bit dicoba sekali lagi sebagai `Lebar`.
+    match (f.chunk.kode_jit.spek_tingkat(ip), f.chunk.profil.as_ref()?.umpan.get(ip)?.load(std::sync::atomic::Ordering::Relaxed)) {
+        (0, bit::BULAT) => Some(Jenis::Bulat),
+        (1, bit::BULAT) => Some(Jenis::Lebar),
+        (0, bit::PECAHAN) => Some(Jenis::Pecahan),
         _ => None,
     }
 }
@@ -238,7 +259,7 @@ fn analisis_sekali(
     let mut r = Rencana {
         masuk, jenis_masuk: jenis_masuk.clone(), kembali,
         keadaan: vec![None; n], keluar: vec![false; n], callee: Vec::new(),
-        pemimpin: vec![false; n], maks: jenis_masuk.len(), konstanta: vec![None; n],
+        pemimpin: vec![false; n], maks: jenis_masuk.len(), konstanta: vec![None; n], konstanta128: vec![None; n],
         cara: vec![Cara::Asli; n], callee_nilai: Vec::new(),
         ada_defer: kode.iter().any(|i| i.op == OpCode::DeferPush),
         langsung: Vec::new(),
@@ -251,6 +272,8 @@ fn analisis_sekali(
     };
     r.keadaan[masuk] = Some(jenis_masuk);
     let mut kerja = vec![masuk];
+    // Titik temu yang dilebarkan selalu awal blok: tepi jatuh-terus ke sana juga lewat `turun::tepi`.
+    let mut dilebarkan = vec![false; n];
     while let Some(ip) = kerja.pop() {
         let s = r.keadaan[ip].clone().expect("diisi saat masuk antrean");
         // Penerus yang keadaannya bentrok dengan kedatangan sebelumnya: instruksi ini dijalankan VM.
@@ -286,6 +309,7 @@ fn analisis_sekali(
             }
         }
         for (t, w) in lebarkan {
+            dilebarkan[t] = true;
             if r.keadaan[t].as_ref() != Some(&w) {
                 r.keadaan[t] = Some(w);
                 kerja.push(t);
@@ -330,6 +354,7 @@ fn analisis_sekali(
     }
     // Blok dasar: titik masuk, sasaran lompat, dan instruksi yang tidak didatangi dari pendahulunya.
     r.pemimpin[masuk] = true;
+    for ip in 0..n { if dilebarkan[ip] { r.pemimpin[ip] = true; } }
     for ip in 0..n {
         if r.keadaan[ip].is_none() { continue; }
         let ins = kode[ip];
@@ -403,13 +428,20 @@ fn langkah_lambat(
     let k = operand_angka(ins.op, a).min(t);
     let atas = &s[t - k..];
     let indeks = matches!(ins.op, OpCode::IndeksLokal | OpCode::TulisIndexLokal);
-    // Spekulasi yang pernah gagal di sini (`PintuJit::tandai_spek_gagal`) tidak diulang. Penerima method
-    // tidak pernah bulat.
+    // Spekulasi yang pernah gagal di sini (`PintuJit::tandai_spek_gagal`) dicoba sekali lagi sebagai `Lebar`
+    // (operasi bit, banding, intrinsik `wrap_*`), lalu tidak lagi. Penerima method tidak pernah bulat.
     let metode_dipanggil = ins.op == OpCode::Call && a < t
         && matches!(s[t - a - 1], Fungsi(i) if r.callee[i].chunk.tipe_self.is_some());
-    let boleh = !f.chunk.kode_jit.spek_gagal_di(ip) && !metode_dipanggil;
-    if boleh && atas.contains(&Nilai) && (indeks || atas.iter().any(|j| matches!(j, Bulat | Pecahan))) {
-        let sasaran = if atas.contains(&Pecahan) && ins.op != OpCode::Call { Pecahan } else { Bulat };
+    let tingkat = f.chunk.kode_jit.spek_tingkat(ip);
+    let lebar_ok = r.kembali != KEMBALI_BULAT && match ins.op {
+        OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::AndNot | OpCode::Shl | OpCode::Shr
+        | OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge | OpCode::BitNot => true,
+        OpCode::Call => a < t && matches!(s[t - a - 1], Bungkus(_)),
+        _ => false,
+    };
+    let boleh = (tingkat == 0 || (tingkat == 1 && lebar_ok)) && !metode_dipanggil;
+    if boleh && atas.contains(&Nilai) && (indeks || atas.iter().any(|j| matches!(j, Bulat | Pecahan | Lebar))) {
+        let sasaran = if tingkat == 1 { Lebar } else if atas.contains(&Pecahan) && ins.op != OpCode::Call { Pecahan } else { Bulat };
         let buka: Vec<(usize, Jenis)> = (t - k..t).filter(|&i| s[i] == Nilai).map(|i| (i, sasaran)).collect();
         let mut s2 = s.clone();
         for (i, j) in &buka { s2[*i] = *j; }
@@ -438,7 +470,7 @@ fn langkah_lambat(
         OpCode::JumpFalseKeep | OpCode::JumpTrueKeep if puncak.di_vm() => {
             return Some((Cara::Benar, vec![(a, s.clone()), (lanjut, s)]));
         }
-        OpCode::Return if r.kembali == KEMBALI_SKALAR && puncak.di_vm() && !r.ada_defer => return Some((Cara::KembaliNilai, vec![])),
+        OpCode::Return if r.kembali == KEMBALI_SKALAR && (puncak.di_vm() || puncak == Lebar) && !r.ada_defer => return Some((Cara::KembaliNilai, vec![])),
         OpCode::Dup if puncak.di_vm() => {
             s.push(Nilai);
             return Some((Cara::Salin, vec![(lanjut, s)]));
@@ -552,8 +584,11 @@ fn langkah_lambat(
             return Some((Cara::Maju, vec![(lanjut, s)]));
         }
         OpCode::Const | OpCode::Unit => {
-            let bawaan = ins.op == OpCode::Const && matches!(f.chunk.constants.get(a)?, VmValue::NativeFn(_));
-            s.push(if bawaan { Bawaan } else { Nilai });
+            let j = match (ins.op, f.chunk.constants.get(a)?) {
+                (OpCode::Const, VmValue::NativeFn(g)) => bungkus(*g).map_or(Bawaan, Bungkus),
+                _ => Nilai,
+            };
+            s.push(j);
             return Some((Cara::Konstanta, vec![(lanjut, s)]));
         }
         OpCode::AmbilLokal if s.get(a)?.di_vm() => {
@@ -581,7 +616,7 @@ fn langkah_lambat(
         return Some((Cara::Biner, vec![(lanjut, s)]));
     }
     // Fungsi bawaan: tidak pernah mendorong bingkai, dipanggil langsung oleh pembantu.
-    if ins.op == OpCode::Call && a < t && s[t - a - 1] == Bawaan && !s[t - a..].iter().any(|j| matches!(j, Fungsi(_))) {
+    if ins.op == OpCode::Call && a < t && matches!(s[t - a - 1], Bawaan | Bungkus(_)) && !s[t - a..].iter().any(|j| matches!(j, Fungsi(_))) {
         s.truncate(t - a - 1);
         r.spek[ip] = spek_hasil(f, ip);
         s.push(r.spek[ip].unwrap_or(Nilai));
@@ -591,7 +626,7 @@ fn langkah_lambat(
     if let (OpCode::Call, true) = (ins.op, a < t) {
         if let Fungsi(i) = s[t - a - 1] {
             if r.callee[i].arity as usize == a && !s[t - a..].iter().any(|j| matches!(j, Fungsi(_))) {
-                let jenis: Vec<Jenis> = s[t - a..].iter().map(|j| if j.di_vm() { Nilai } else { *j }).collect();
+                let jenis: Vec<Jenis> = s[t - a..].iter().map(|j| if j.di_vm() || *j == Lebar { Nilai } else { *j }).collect();
                 let k = match r.langsung.iter().position(|(c, js)| *c == i && *js == jenis) {
                     Some(k) => k,
                     None => { r.langsung.push((i, jenis)); r.langsung.len() - 1 }
@@ -714,8 +749,12 @@ fn langkah_asli(
     use Jenis::*;
     let ins = f.chunk.code[ip];
     let a = ins.arg as usize;
-    let skalar = |j: Jenis| matches!(j, Bulat | Bool | Pecahan | Kosong);
+    // `Lebar` cuma di bingkai yang punya stack VM (bukan callee bulat).
+    let lebar = r.kembali != KEMBALI_BULAT;
+    let skalar = |j: Jenis| matches!(j, Bulat | Bool | Pecahan | Kosong) || (lebar && j == Lebar);
     let angka = |j: Jenis| matches!(j, Bulat | Pecahan);
+    // Dua bulat yang salah satunya `Lebar`: hasilnya `Lebar`.
+    let lebar2 = |x: Jenis, y: Jenis| lebar && matches!((x, y), (Lebar, Bulat | Lebar) | (Bulat, Lebar));
     // Dua angka: bulat dengan bulat tetap bulat, selain itu pecahan (aturan `VmValue::add` dkk.).
     let angka2 = |s: &mut Vec<Jenis>| -> Option<Jenis> {
         let y = s.pop()?; let x = s.pop()?;
@@ -758,20 +797,36 @@ fn langkah_asli(
         OpCode::True | OpCode::False => s.push(Bool),
         OpCode::Nil => s.push(Kosong),
         OpCode::Const => match f.chunk.constants.get(a)? {
-            VmValue::Int(v) => { r.konstanta[ip] = Some(i64::try_from(*v).ok()?); s.push(Bulat) }
+            VmValue::Int(v) => match i64::try_from(*v) {
+                Ok(k) => { r.konstanta[ip] = Some(k); s.push(Bulat) }
+                Err(_) if lebar => { r.konstanta128[ip] = Some(*v); s.push(Lebar) }
+                Err(_) => return None,
+            },
             VmValue::Float(x) => { r.konstanta[ip] = Some(x.to_bits() as i64); s.push(Pecahan) }
             _ => return None,
         },
         OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div => { let j = angka2(&mut s)?; s.push(j) }
         // `%` pecahan adalah `fmod`, yang tidak punya instruksi mesin: VM yang menghitungnya.
         OpCode::Mod => { bulat2(&mut s)?; s.push(Bulat) }
+        OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge | OpCode::Eq | OpCode::Ne
+            if s.len() >= 2 && lebar2(s[s.len() - 2], s[s.len() - 1]) => {
+            s.truncate(s.len() - 2);
+            s.push(Bool)
+        }
         OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge => { angka2(&mut s)?; s.push(Bool) }
+        // Bit atas `Lebar`: geseran yang jumlahnya bulat 64 bit.
+        OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::AndNot
+            if s.len() >= 2 && lebar2(s[s.len() - 2], s[s.len() - 1]) => {
+            s.truncate(s.len() - 2);
+            s.push(Lebar)
+        }
+        OpCode::Shl | OpCode::Shr if s.len() >= 2 && lebar && s[s.len() - 2] == Lebar && s[s.len() - 1] == Bulat => { s.pop(); }
         // Bit atas dua bulat 64 bit: hasil yang tidak muat (geser kiri) atau geseran di luar batas deopt.
         OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::AndNot | OpCode::Shl | OpCode::Shr => {
             bulat2(&mut s)?;
             s.push(Bulat)
         }
-        OpCode::BitNot => if *s.last()? != Bulat { return None },
+        OpCode::BitNot => if !matches!(*s.last()?, Bulat) && !(lebar && *s.last()? == Lebar) { return None },
         OpCode::Eq | OpCode::Ne => {
             let t = s.len();
             if t >= 2 && s[t - 1] == Bool && s[t - 2] == Bool { s.truncate(t - 2); } else { angka2(&mut s)?; }
@@ -780,7 +835,8 @@ fn langkah_asli(
         OpCode::Neg => if !angka(*s.last()?) { return None },
         OpCode::Not => if *s.last()? != Bool { return None },
         OpCode::KeBool => {
-            if !matches!(s.pop()?, Bulat | Bool) { return None; }
+            let j = s.pop()?;
+            if !matches!(j, Bulat | Bool) && !(lebar && j == Lebar) { return None; }
             s.push(Bool);
         }
         // Nilai milik VM yang dibuang dilepas lewat `Cara::Buang`.
@@ -812,11 +868,13 @@ fn langkah_asli(
         }
         OpCode::Jump => return Some(vec![(a, s)]),
         OpCode::JumpFalse | OpCode::JumpTrue => {
-            if !matches!(s.pop()?, Bulat | Bool) { return None; }
+            let j = s.pop()?;
+            if !matches!(j, Bulat | Bool) && !(lebar && j == Lebar) { return None; }
             return Some(vec![(a, s.clone()), (lanjut, s)]);
         }
         OpCode::JumpFalseKeep | OpCode::JumpTrueKeep => {
-            if !matches!(*s.last()?, Bulat | Bool) { return None; }
+            let j = *s.last()?;
+            if !matches!(j, Bulat | Bool) && !(lebar && j == Lebar) { return None; }
             return Some(vec![(a, s.clone()), (lanjut, s)]);
         }
         OpCode::Return | OpCode::ReturnNil if r.ada_defer => return None,
@@ -841,6 +899,12 @@ fn langkah_asli(
                 None => { r.callee.push(g); r.callee.len() - 1 }
             };
             s.push(Fungsi(i));
+        }
+        // `math::wrap_*` atas dua bulat (64 bit bawahnya): hasil 0 sampai 2^64-1, selalu `Lebar`.
+        OpCode::Call if a == 2 && lebar && s.len() >= 3 && matches!(s[s.len() - 3], Bungkus(_))
+            && s[s.len() - 2..].iter().all(|j| matches!(j, Bulat | Lebar)) => {
+            s.truncate(s.len() - 3);
+            s.push(Lebar);
         }
         OpCode::Call => {
             if s.len() < a + 1 { return None; }
