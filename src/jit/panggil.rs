@@ -16,16 +16,7 @@ const MAKS_MASUK: usize = 8;
 /// Bingkai yang lebih tinggi dari ini tidak dimasuki.
 const MAKS_POSISI: usize = 256;
 
-fn kode_jenis(j: Jenis) -> u8 {
-    match j {
-        Jenis::Bulat => 1,
-        Jenis::Bool => 2,
-        Jenis::Kosong => 3,
-        Jenis::Pecahan => 5,
-        Jenis::Lebar => 6,
-        Jenis::Nilai | Jenis::Bawaan | Jenis::Bungkus(_) | Jenis::Fungsi(_) => 4,
-    }
-}
+fn kode_jenis(j: Jenis) -> u8 { j.kode() as u8 }
 
 /// Panggilan baru: bingkainya baru didorong `call_value`. `Err` = instruksi yang dijalankan VM dari
 /// dalam kode native gagal; bingkainya sudah dalam keadaan VM di titik galat itu.

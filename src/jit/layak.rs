@@ -26,15 +26,40 @@ pub enum Jenis {
     Bungkus(u8),
     /// Bulat i128 di variabel `I128`; ditulis ke stack VM (`lambat::tulis_lebar`) cuma di batas.
     Lebar,
+    /// Kode karakter (`u32` di variabel `i64`); cuma lahir dari intrinsik `str::char_at`, tidak pernah
+    /// jenis titik masuk (rune milik VM tetap `Nilai`).
+    Rune,
 }
 
 pub const BUNGKUS_TAMBAH: u8 = 0;
 pub const BUNGKUS_KURANG: u8 = 1;
 pub const BUNGKUS_KALI: u8 = 2;
+/// `str::char_at` dan `int`/`uint`: intrinsik rune (`Jenis::Rune`), bukan `math::wrap_*`.
+pub const BUNGKUS_CHAR_AT: u8 = 3;
+pub const BUNGKUS_KE_BULAT: u8 = 4;
 
 impl Jenis {
     /// Isinya ada di stack VM, bukan di variabel native.
     pub fn di_vm(self) -> bool { matches!(self, Jenis::Nilai | Jenis::Bawaan | Jenis::Bungkus(_)) }
+
+    /// `math::wrap_*` (hasil `Lebar`).
+    pub fn wrap(self) -> bool { matches!(self, Jenis::Bungkus(k) if k <= BUNGKUS_KALI) }
+
+    /// Kode jenis untuk pembantu dan titik masuk (`lambat::skalar_kode`); 4 = milik VM.
+    pub fn kode(self) -> i64 {
+        match self {
+            Jenis::Bulat => 1,
+            Jenis::Bool => 2,
+            Jenis::Kosong => 3,
+            Jenis::Pecahan => 5,
+            Jenis::Lebar => 6,
+            Jenis::Rune => 7,
+            Jenis::Nilai | Jenis::Bawaan | Jenis::Bungkus(_) | Jenis::Fungsi(_) => 4,
+        }
+    }
+
+    /// Isinya angka di variabel `i64` (bukan `Lebar`, bukan milik VM).
+    pub fn skalar(self) -> bool { matches!(self, Jenis::Bulat | Jenis::Bool | Jenis::Pecahan | Jenis::Rune) }
 }
 
 /// Fungsi bawaan `f` sebagai intrinsik `Jenis::Bungkus`.
@@ -43,6 +68,8 @@ fn bungkus(f: crate::vm::value::VmNativeFn) -> Option<u8> {
         "math::wrap_add" => Some(BUNGKUS_TAMBAH),
         "math::wrap_sub" => Some(BUNGKUS_KURANG),
         "math::wrap_mul" => Some(BUNGKUS_KALI),
+        "str::char_at" => Some(BUNGKUS_CHAR_AT),
+        "int" | "uint" => Some(BUNGKUS_KE_BULAT),
         _ => None,
     }
 }
@@ -474,7 +501,7 @@ fn langkah_lambat(
     let lebar_ok = r.kembali != KEMBALI_BULAT && match ins.op {
         OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::AndNot | OpCode::Shl | OpCode::Shr
         | OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge | OpCode::BitNot => true,
-        OpCode::Call => a < t && matches!(s[t - a - 1], Bungkus(_)),
+        OpCode::Call => a < t && s[t - a - 1].wrap(),
         _ => false,
     };
     let boleh = (tingkat == 0 || (tingkat == 1 && lebar_ok)) && !metode_dipanggil;
@@ -665,7 +692,8 @@ fn langkah_lambat(
         if let Fungsi(i) = s[t - a - 1] {
             if r.callee[i].arity as usize == a && !s[t - a..].iter().any(|j| matches!(j, Fungsi(_))) {
                 // `Lebar` tetap: isinya sudah di stack VM (tumpahan), callee membacanya di prolog.
-                let jenis: Vec<Jenis> = s[t - a..].iter().map(|j| if j.di_vm() { Nilai } else { *j }).collect();
+                // Rune tidak pernah jenis titik masuk: ditumpahkan sebagai nilai VM.
+                let jenis: Vec<Jenis> = s[t - a..].iter().map(|j| if j.di_vm() || *j == Rune { Nilai } else { *j }).collect();
                 let k = match r.langsung.iter().position(|(c, js)| *c == i && *js == jenis) {
                     Some(k) => k,
                     None => { r.langsung.push((i, jenis)); r.langsung.len() - 1 }
@@ -953,10 +981,21 @@ fn langkah_asli(
             s.push(Fungsi(i));
         }
         // `math::wrap_*` atas dua bulat (64 bit bawahnya): hasil 0 sampai 2^64-1, selalu `Lebar`.
-        OpCode::Call if a == 2 && lebar && s.len() >= 3 && matches!(s[s.len() - 3], Bungkus(_))
+        OpCode::Call if a == 2 && lebar && s.len() >= 3 && s[s.len() - 3].wrap()
             && s[s.len() - 2..].iter().all(|j| matches!(j, Bulat | Lebar)) => {
             s.truncate(s.len() - 3);
             s.push(Lebar);
+        }
+        // `str::char_at(teks, i)`: kode karakter native (yang tak bisa dijawab di tempat lewat jalur umum).
+        OpCode::Call if a == 2 && s.len() >= 3 && s[s.len() - 3] == Bungkus(BUNGKUS_CHAR_AT)
+            && s[s.len() - 2].di_vm() && s[s.len() - 1] == Bulat => {
+            s.truncate(s.len() - 3);
+            s.push(Rune);
+        }
+        // `int(rune)` / `rune as uint`: kodenya, tanpa panggilan.
+        OpCode::Call if a == 1 && s.len() >= 2 && s[s.len() - 2] == Bungkus(BUNGKUS_KE_BULAT) && s[s.len() - 1] == Rune => {
+            s.truncate(s.len() - 2);
+            s.push(Bulat);
         }
         OpCode::Call => {
             if s.len() < a + 1 { return None; }

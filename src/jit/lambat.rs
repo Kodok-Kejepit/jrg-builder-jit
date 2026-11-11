@@ -42,13 +42,32 @@ fn sediakan(vm: &mut Vm, basis: usize, p: usize) -> &mut VmValue {
 }
 
 fn nilai_skalar(j: Jenis, v: i64) -> Option<VmValue> {
-    match j {
-        Jenis::Bulat => Some(VmValue::Int(v as i128)),
-        Jenis::Bool => Some(VmValue::Bool(v != 0)),
-        Jenis::Pecahan => Some(VmValue::Float(f64::from_bits(v as u64))),
-        Jenis::Kosong => Some(VmValue::Nil),
-        _ => None,
-    }
+    if j == Jenis::Lebar { return None; }
+    skalar_kode(j.kode() as i32, v)
+}
+
+/// Satu definisi isi native → nilai VM menurut `Jenis::kode`; `None` = milik VM (4) atau `Lebar` (6).
+pub(crate) fn skalar_kode(kode: i32, nilai: i64) -> Option<VmValue> {
+    Some(match kode {
+        1 => VmValue::Int(nilai as i128),
+        2 => VmValue::Bool(nilai != 0),
+        3 => VmValue::Nil,
+        5 => VmValue::Float(f64::from_bits(nilai as u64)),
+        // Kode rune selalu lahir dari `char` (`karakter`, `buka` kode 7).
+        7 => VmValue::Rune(char::from_u32(nilai as u32).expect("kode rune dari char")),
+        _ => return None,
+    })
+}
+
+/// `str::char_at(teks, i)` atas posisi `p` milik VM: kode karakternya; −1 = jalur bawaan umum (indeks negatif
+/// atau di luar batas, bukan teks — yang juga melapor galatnya). Prefiks ASCII lewat indeks byte.
+pub extern "C" fn karakter(p: i64, i: i64) -> i64 {
+    if i < 0 { return -1; }
+    let (vm, basis) = konteks();
+    let Some(VmValue::Str(s)) = vm.stack.get(basis + p as usize) else { return -1 };
+    let (b, i) = (s.as_bytes(), i as usize);
+    if i < b.len() && b[..=i].is_ascii() { return b[i] as i64; }
+    s.chars().nth(i).map_or(-1, |c| c as i64)
 }
 
 /// VM menjalankan instruksi `ip` bingkai terluar. Stack VM dipotong ke `t` posisi dan `tumpah` posisi
@@ -321,12 +340,9 @@ pub extern "C" fn ambil(dari: i64, ke: i64) {
 /// (kode `panggil::kode_jenis`; 4 = milik VM, dibaca dari stack-nya).
 pub extern "C" fn simpan(ke: i64, dari: i64, nilai: i64, jenis: i32, pindah: i32) {
     let (vm, basis) = konteks();
-    let v = match jenis {
-        1 => VmValue::Int(nilai as i128),
-        2 => VmValue::Bool(nilai != 0),
-        3 => VmValue::Nil,
-        5 => VmValue::Float(f64::from_bits(nilai as u64)),
-        _ => {
+    let v = match skalar_kode(jenis, nilai) {
+        Some(v) => v,
+        None => {
             let t = sediakan(vm, basis, dari as usize);
             if pindah != 0 { std::mem::replace(t, VmValue::Nil) } else { t.clone() }
         }
@@ -518,12 +534,9 @@ pub extern "C" fn muat_upval(idx: i64, ke: i64) -> i32 {
 pub extern "C" fn simpan_upval(idx: i64, dari: i64, nilai: i64, jenis: i32) -> i32 {
     let (vm, basis) = konteks();
     let Ok(sel) = vm.upval_at(idx as u32, None) else { return 1 };
-    let v = match jenis {
-        1 => VmValue::Int(nilai as i128),
-        2 => VmValue::Bool(nilai != 0),
-        3 => VmValue::Nil,
-        5 => VmValue::Float(f64::from_bits(nilai as u64)),
-        _ => sediakan(vm, basis, dari as usize).clone(),
+    let v = match skalar_kode(jenis, nilai) {
+        Some(v) => v,
+        None => sediakan(vm, basis, dari as usize).clone(),
     };
     *sel.lock().unwrap_or_else(|p| p.into_inner()) = v;
     0
@@ -533,12 +546,9 @@ pub extern "C" fn simpan_upval(idx: i64, dari: i64, nilai: i64, jenis: i32) -> i
 /// 1 = bukan `var` yang sudah didefinisikan (VM yang melapor), belum ada yang berubah.
 pub extern "C" fn simpan_global(nama: *const String, dari: i64, nilai: i64, jenis: i32) -> i32 {
     let (vm, basis) = konteks();
-    let v = match jenis {
-        1 => VmValue::Int(nilai as i128),
-        2 => VmValue::Bool(nilai != 0),
-        3 => VmValue::Nil,
-        5 => VmValue::Float(f64::from_bits(nilai as u64)),
-        _ => sediakan(vm, basis, dari as usize).clone(),
+    let v = match skalar_kode(jenis, nilai) {
+        Some(v) => v,
+        None => sediakan(vm, basis, dari as usize).clone(),
     };
     match vm.globals.get(unsafe { &*nama }) {
         Some(VmValue::Cell(sel)) => { *sel.lock().unwrap_or_else(|p| p.into_inner()) = v; 0 }
@@ -551,12 +561,9 @@ pub extern "C" fn simpan_global(nama: *const String, dari: i64, nilai: i64, jeni
 pub extern "C" fn indeks(p: i64, nilai: i64, jenis: i32) -> i32 {
     let (vm, basis) = konteks();
     let i = basis + p as usize;
-    let idx = match jenis {
-        1 => VmValue::Int(nilai as i128),
-        2 => VmValue::Bool(nilai != 0),
-        3 => VmValue::Nil,
-        5 => VmValue::Float(f64::from_bits(nilai as u64)),
-        _ => match vm.stack.get(i + 1) { Some(v) => v.clone(), None => return 1 },
+    let idx = match skalar_kode(jenis, nilai) {
+        Some(v) => v,
+        None => match vm.stack.get(i + 1) { Some(v) => v.clone(), None => return 1 },
     };
     let Some(wadah) = vm.stack.get(i) else { return 1 };
     match vm.get_index(wadah, &idx, None) {
@@ -609,12 +616,8 @@ pub extern "C" fn cek_metode(p: i64, label: *const String) -> i32 {
 /// Tepi ke titik temu yang dilebarkan: angka native di posisi `p` jadi nilai VM (kode jenis `simpan`).
 pub extern "C" fn tulis_vm(p: i64, nilai: i64, jenis: i32) {
     let (vm, basis) = konteks();
-    let v = match jenis {
-        1 => VmValue::Int(nilai as i128),
-        2 => VmValue::Bool(nilai != 0),
-        5 => VmValue::Float(f64::from_bits(nilai as u64)),
-        _ => VmValue::Nil,
-    };
+    // Tepi cuma menulis posisi native (`Jenis::kode` selain 4).
+    let v = skalar_kode(jenis, nilai).expect("tepi menulis angka native");
     *sediakan(vm, basis, p as usize) = v;
 }
 
@@ -657,6 +660,7 @@ pub extern "C" fn buka(p: i64, jenis: i32, keluar: *mut i64) -> i32 {
     let v = match (vm.stack.get(basis + p as usize), jenis) {
         (Some(VmValue::Int(n)), 1) => i64::try_from(*n).ok(),
         (Some(VmValue::Float(x)), 5) => Some(x.to_bits() as i64),
+        (Some(VmValue::Rune(c)), 7) => Some(*c as i64),
         _ => None,
     };
     match v {
@@ -708,12 +712,7 @@ pub extern "C" fn baca(rel: i64, i: i64, keluar: *mut i64) -> i32 {
 
 /// `TulisIndexLokal`: elemen ke-`i` = nilai berjenis `jenis` (1 bulat, 2 bool, 5 pecahan); 0 = tertulis.
 pub extern "C" fn tulis(rel: i64, i: i64, nilai: i64, jenis: i32) -> i32 {
-    let v = match jenis {
-        1 => VmValue::Int(nilai as i128),
-        2 => VmValue::Bool(nilai != 0),
-        5 => VmValue::Float(f64::from_bits(nilai as u64)),
-        _ => return 1,
-    };
+    let Some(v) = skalar_kode(jenis, nilai) else { return 1 };
     let ok = atas_larik(rel, |t| {
         // Aturan `PinjamLokal`: isi dipisahkan dari pemegang lain sebelum ditulis (tidak terlihat bila gagal).
         t.pisahkan();

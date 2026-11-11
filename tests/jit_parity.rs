@@ -807,3 +807,44 @@ fn callee_basi_tidak_dipakai_lagi() {
     let deopt: usize = j.stderr.lines().find_map(|l| l.strip_prefix("[jit] deopt: ")).and_then(|n| n.trim().parse().ok()).unwrap_or(0);
     assert!(deopt < 20, "deopt {deopt} kali (dulu satu per panggilan):\n{}", j.stderr);
 }
+
+/// `Jenis::Rune` dari intrinsik `str::char_at`: disimpan, dibandingkan, dicetak, dikonversi `as int`/`uint`,
+/// diserahkan dan dikembalikan, masuk larik, bertemu bulat di titik temu; indeks negatif dan di luar batas
+/// lewat jalur umum.
+const RUNE_NATIVE: &str = r#"fn huruf(s, i) { str::char_at(s, i) }
+fn sama(a, b) { a == b }
+fn kode(s, i) { str::char_at(s, i) as int }
+pub fn main() {
+    let t = "aé☃𝔘bc"
+    var n = 0
+    var akhir = ' '
+    var kumpul = []
+    for r in 0..2000 {
+        for i in 0..len(t) {
+            let c = str::char_at(t, i)
+            n = n + (c as uint) + kode(t, i)
+            if c == 'b' { n = n + 1 }
+            akhir = c
+            if r == 0 { kumpul = arr::push(kumpul, c) }
+        }
+        let x = r % 2 == 0 $ str::char_at(t, 2) : 7
+        n = n + typeof(x).len()
+    }
+    wok(n, akhir, kumpul, huruf(t, -1), sama(huruf(t, 1), 'é'))
+    wok(str::char_at("xyz", -2), typeof(str::char_at("a", 0)))
+    var m = 0
+    for i in 0..3000 { m = m + (str::char_at(i % 2 == 0 $ "ab" : "☃☃", i % 2) as int) }
+    wok(m)
+    wok(str::char_at(t, 99))
+}
+"#;
+
+#[test]
+fn rune_native() {
+    let i = jalankan(RUNE_NATIVE, &[], &[]);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(RUNE_NATIVE, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    assert!(i.stdout.starts_with("521393000 c [a, é, ☃, 𝔘, b, c] c true\n") && i.stderr.contains("index 99"), "{}", i.stdout);
+}
