@@ -1583,7 +1583,8 @@ impl Vm {
 pub(crate) fn cocok_enum(v: &VmValue, desc: &VmValue) -> Result<bool, String> {
     let cocok = match (desc, v.bagian_enum()) {
         (VmValue::Tuple(d), Some((tipe, varian, payload))) => {
-            let d = crate::vm::value::isi_tuple(d);
+            // Dibaca di tempat: deskriptornya konstanta chunk, payload-nya cuma dihitung.
+            let d = d.lock().unwrap_or_else(|p| p.into_inner());
             let tipe_cocok = match &d[0] { VmValue::Str(t) => t.as_str() == tipe, _ => true };
             let varian_cocok = matches!(&d[1], VmValue::Str(s) if s.as_str() == varian);
             let payload_cocok = !matches!(d[2], VmValue::Bool(true)) || payload.is_some();
@@ -1594,7 +1595,7 @@ pub(crate) fn cocok_enum(v: &VmValue, desc: &VmValue) -> Result<bool, String> {
                 if let Some(VmValue::Int(dapat)) = d.get(3) {
                     let butuh = match payload {
                         None => 0usize,
-                        Some(VmValue::Tuple(t)) => crate::vm::value::isi_tuple(t).len(),
+                        Some(VmValue::Tuple(t)) => t.lock().unwrap_or_else(|p| p.into_inner()).len(),
                         Some(_) => 1,
                     };
                     let dapat = *dapat as usize;
