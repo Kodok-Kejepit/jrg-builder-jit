@@ -124,7 +124,7 @@ pub const KEMBALI_SKALAR: u8 = 2;
 /// Jenis nilai VM di titik masuk.
 pub fn jenis_nilai(v: &VmValue) -> Jenis {
     match v {
-        VmValue::Int(n) if i64::try_from(*n).is_ok() => Jenis::Bulat,
+        VmValue::Int(n) => if i64::try_from(*n).is_ok() { Jenis::Bulat } else { Jenis::Lebar },
         VmValue::Bool(_) => Jenis::Bool,
         VmValue::Float(_) => Jenis::Pecahan,
         VmValue::Nil => Jenis::Kosong,
@@ -199,10 +199,12 @@ impl Rencana {
 /// pernah gagal di sana.
 fn spek_hasil(f: &VmFunction, ip: usize) -> Option<Jenis> {
     use super::profil::bit;
-    // Bulat yang pernah tidak muat 64 bit dicoba sekali lagi sebagai `Lebar`.
-    match (f.chunk.kode_jit.spek_tingkat(ip), f.chunk.profil.as_ref()?.umpan.get(ip)?.load(std::sync::atomic::Ordering::Relaxed)) {
+    // Bulat yang pernah terlihat (atau terbukti lewat deopt) di luar 64 bit dispekulasikan `Lebar`.
+    let b = f.chunk.profil.as_ref()?.umpan.get(ip)?.load(std::sync::atomic::Ordering::Relaxed);
+    let bulat = b & !(bit::BULAT | bit::BESAR) == 0 && b != 0;
+    match (f.chunk.kode_jit.spek_tingkat(ip), b) {
         (0, bit::BULAT) => Some(Jenis::Bulat),
-        (1, bit::BULAT) => Some(Jenis::Lebar),
+        (0 | 1, _) if bulat => Some(Jenis::Lebar),
         (0, bit::PECAHAN) => Some(Jenis::Pecahan),
         _ => None,
     }
@@ -242,7 +244,7 @@ fn gabung(a: &[Jenis], b: &[Jenis]) -> Option<Vec<Jenis>> {
 
 /// Jenis masuk yang diperlebar supaya `datang` bertemu dengannya: posisi yang beda jadi `Nilai`.
 fn perlebar(masuk: &[Jenis], datang: &[Jenis]) -> Option<Vec<Jenis>> {
-    let ok = |j: &Jenis| matches!(j, Jenis::Bulat | Jenis::Bool | Jenis::Pecahan | Jenis::Kosong | Jenis::Nilai);
+    let ok = |j: &Jenis| matches!(j, Jenis::Bulat | Jenis::Bool | Jenis::Pecahan | Jenis::Kosong | Jenis::Nilai | Jenis::Lebar);
     if masuk.len() != datang.len() || !masuk.iter().chain(datang).all(ok) { return None; }
     Some(masuk.iter().zip(datang).map(|(a, b)| if a == b { *a } else { Jenis::Nilai }).collect())
 }
@@ -626,7 +628,8 @@ fn langkah_lambat(
     if let (OpCode::Call, true) = (ins.op, a < t) {
         if let Fungsi(i) = s[t - a - 1] {
             if r.callee[i].arity as usize == a && !s[t - a..].iter().any(|j| matches!(j, Fungsi(_))) {
-                let jenis: Vec<Jenis> = s[t - a..].iter().map(|j| if j.di_vm() || *j == Lebar { Nilai } else { *j }).collect();
+                // `Lebar` tetap: isinya sudah di stack VM (tumpahan), callee membacanya di prolog.
+                let jenis: Vec<Jenis> = s[t - a..].iter().map(|j| if j.di_vm() { Nilai } else { *j }).collect();
                 let k = match r.langsung.iter().position(|(c, js)| *c == i && *js == jenis) {
                     Some(k) => k,
                     None => { r.langsung.push((i, jenis)); r.langsung.len() - 1 }

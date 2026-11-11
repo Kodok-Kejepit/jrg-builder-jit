@@ -28,7 +28,7 @@ pub fn cetak_bila_diminta() {
         for (sebab, n) in super::deopt::sebab().iter().take(12) { eprintln!("[jit]   {sebab}: {n}"); }
     }
     for p in semua.iter().take(20) {
-        let situs: Vec<u8> = p.umpan.iter().map(|s| s.load(Ordering::Relaxed)).filter(|b| *b != 0).collect();
+        let situs: Vec<u16> = p.umpan.iter().map(|s| s.load(Ordering::Relaxed)).filter(|b| *b != 0).collect();
         let mono = situs.iter().filter(|b| b.count_ones() == 1).count();
         eprintln!("[jit]   {}: panggilan {}, putaran {}, situs {} ({} monomorfik)",
             crate::ruang_tipe::bersih(&p.nama), p.panggilan.load(Ordering::Relaxed),

@@ -446,6 +446,18 @@ pub fn turunkan(
     let nol128 = b.ins().sextend(types::I128, nol);
     for v in &v128 { b.def_var(*v, nol128); }
     for (i, j) in r.jenis_masuk.iter().enumerate() {
+        // `Lebar` dibaca dari stack VM (isinya di sana); yang bukan bulat lagi = ULANG, belum ada yang berubah.
+        if *j == Jenis::Lebar {
+            let st = buka_ke_lebar(&mut b, &k, i);
+            let (ulang, terus) = (b.create_block(), b.create_block());
+            b.set_cold_block(ulang);
+            b.ins().brif(st, ulang, &[], terus, &[]);
+            b.switch_to_block(ulang);
+            kembali_status(&mut b, ULANG);
+            b.switch_to_block(terus);
+            ambil_lebar(&mut b, &k, i);
+            continue;
+        }
         if !matches!(j, Jenis::Bulat | Jenis::Bool | Jenis::Pecahan) { continue; }
         let v = b.ins().load(types::I64, fl, args, (i * 8) as i32);
         b.def_var(var[i], v);
