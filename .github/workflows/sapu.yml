@@ -17,7 +17,10 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup target add wasm32-unknown-unknown
-          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb imagemagick python3-pil > /dev/null
+          # security.ubuntu.com kadang tak bisa di-resolve dari runner (2026-11-11, tiga kali berturut): pocket
+          # -security juga ada di archive.ubuntu.com.
+          sudo sed -i 's#security.ubuntu.com#archive.ubuntu.com#g' /etc/apt/apt-mirrors.txt /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+          sudo apt-get -o Acquire::Retries=5 update -qq && sudo apt-get -o Acquire::Retries=5 install -y -qq xvfb imagemagick python3-pil > /dev/null
 
       - uses: Swatinem/rust-cache@v2
 

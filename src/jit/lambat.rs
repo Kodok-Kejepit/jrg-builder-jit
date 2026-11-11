@@ -200,14 +200,10 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
     let (t, argc) = (t as usize, argc as usize);
     let jenis = unsafe { std::slice::from_raw_parts(jenis, t) };
     let nilai = unsafe { std::slice::from_raw_parts(nilai, t) };
-    // Posisi milik VM saja yang sah dibaca dari stack VM (posisi native bisa berisi nilai basi).
-    if argc == 2 && jenis[t - 1] == Jenis::Bulat && nilai[t - 1] >= 0 && jenis[t - 2].di_vm() && jenis[t - 3].di_vm() {
-        if let Some(c) = char_at_cepat(vm, basis + t - 3, basis + t - 2, nilai[t - 1] as usize) {
-            let v = VmValue::Rune(c);
-            vm.catat_hasil(&v);
-            *sediakan(vm, basis, t - 3) = v;
-            return 0;
-        }
+    if let Some(v) = bawaan_cepat(vm, basis, jenis, nilai, t, argc) {
+        vm.catat_hasil(&v);
+        *sediakan(vm, basis, t - argc - 1) = v;
+        return 0;
     }
     let mut args = Vec::with_capacity(argc);
     for i in t - argc..t {
@@ -233,19 +229,32 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
     }
 }
 
-/// `str::char_at(s, i)` dengan `i` tak negatif yang ada: dibaca di tempat, tanpa jembatan nilai. Prefiks ASCII
-/// (diperiksa per kata mesin) langsung lewat indeks byte; `None` = jalur umum (yang juga melapor galatnya).
-fn char_at_cepat(vm: &Vm, callee: usize, teks: usize, i: usize) -> Option<char> {
-    static CHAR_AT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    let f = *CHAR_AT.get_or_init(|| match crate::vm::bawaan::bawaan("str::char_at") {
-        Some(VmValue::NativeFn(f)) => f as usize,
-        _ => 0,
-    });
-    let (Some(VmValue::NativeFn(g)), Some(VmValue::Str(s))) = (vm.stack.get(callee), vm.stack.get(teks)) else { return None };
-    if *g as usize != f { return None; }
-    let b = s.as_bytes();
-    if i < b.len() && b[..=i].is_ascii() { return Some(b[i] as char); }
-    s.chars().nth(i)
+/// Bawaan yang dijawab di tempat, tanpa larik argumen dan jembatan nilai; `None` = jalur umum (yang juga
+/// melapor galatnya). Posisi milik VM saja yang sah dibaca dari stack VM (posisi native bisa basi).
+fn bawaan_cepat(vm: &Vm, basis: usize, jenis: &[Jenis], nilai: &[i64], t: usize, argc: usize) -> Option<VmValue> {
+    fn alamat(nama: &str) -> usize {
+        match crate::vm::bawaan::bawaan(nama) { Some(VmValue::NativeFn(f)) => f as usize, _ => 0 }
+    }
+    static ALAMAT: std::sync::OnceLock<[usize; 3]> = std::sync::OnceLock::new();
+    let [char_at, int, uint] = *ALAMAT.get_or_init(|| [alamat("str::char_at"), alamat("int"), alamat("uint")]);
+    if !jenis[t - argc - 1].di_vm() { return None; }
+    let Some(VmValue::NativeFn(f)) = vm.stack.get(basis + t - argc - 1) else { return None };
+    let f = *f as usize;
+    match argc {
+        // `str::char_at(s, i)`, `i` tak negatif yang ada: prefiks ASCII (per kata mesin) lewat indeks byte.
+        2 if f == char_at && jenis[t - 1] == Jenis::Bulat && nilai[t - 1] >= 0 && jenis[t - 2].di_vm() => {
+            let Some(VmValue::Str(s)) = vm.stack.get(basis + t - 2) else { return None };
+            let (b, i) = (s.as_bytes(), nilai[t - 1] as usize);
+            if i < b.len() && b[..=i].is_ascii() { return Some(VmValue::Rune(b[i] as char)); }
+            s.chars().nth(i).map(VmValue::Rune)
+        }
+        // `rune as int` / `as uint`: kode karakternya (selalu muat).
+        1 if (f == int || f == uint) && jenis[t - 1].di_vm() => match vm.stack.get(basis + t - 1) {
+            Some(VmValue::Rune(c)) => Some(VmValue::Int(*c as i128)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Aritmetika/banding instruksi `ip` atas posisi `t - 2`, `t - 1` (angka native atau milik VM, diambil),
