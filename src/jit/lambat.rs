@@ -318,13 +318,32 @@ pub extern "C" fn sebar(p: i64) -> i32 {
 /// `LoadLocal` atas lokal milik VM: posisi `ke` = isi lokal `dari` (sel dibaca isinya).
 pub extern "C" fn muat(dari: i64, ke: i64) {
     let (vm, basis) = konteks();
+    // Di loop posisinya biasanya masih memegang penyimpanan yang sama dari putaran sebelumnya.
+    if let (Some(a), Some(b)) = (vm.stack.get(basis + dari as usize), vm.stack.get(basis + ke as usize)) {
+        if sama_penyimpanan(a, b) { return; }
+    }
     let v = vm.baca_lokal(basis + dari as usize).unwrap_or(VmValue::Nil);
     *sediakan(vm, basis, ke as usize) = v;
+}
+
+/// Dua nilai berbagi penyimpanan yang sama (isinya identik); sel tangkapan tidak termasuk.
+fn sama_penyimpanan(a: &VmValue, b: &VmValue) -> bool {
+    match (a, b) {
+        (VmValue::Str(x), VmValue::Str(y)) => Arc::ptr_eq(x, y),
+        (VmValue::Array(x), VmValue::Array(y)) | (VmValue::Tuple(x), VmValue::Tuple(y)) => Arc::ptr_eq(x, y),
+        (VmValue::Map(x), VmValue::Map(y)) => Arc::ptr_eq(x, y),
+        (VmValue::Function(x), VmValue::Function(y)) => Arc::ptr_eq(x, y),
+        _ => false,
+    }
 }
 
 /// `Const`/`Unit`: posisi `ke` = salinan konstanta di `k` (milik chunk yang dikompilasi); null = `()`.
 pub extern "C" fn taruh(ke: i64, k: *const VmValue) {
     let (vm, basis) = konteks();
+    // Callee bawaan di loop: posisinya biasanya sudah memegang fungsi yang sama dari putaran sebelumnya.
+    if let (Some(VmValue::NativeFn(k)), Some(VmValue::NativeFn(ada))) = (unsafe { k.as_ref() }, vm.stack.get(basis + ke as usize)) {
+        if *k as usize == *ada as usize { return; }
+    }
     let v = if k.is_null() { VmValue::Unit } else { unsafe { (*k).clone() } };
     *sediakan(vm, basis, ke as usize) = v;
 }
