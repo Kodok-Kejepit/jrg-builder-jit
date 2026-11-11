@@ -702,6 +702,15 @@ pub fn turunkan(
                 b.def_var(var[t - 1], v);
                 continue;
             }
+            Cara::TipeLipat(ya) => {
+                let v = b.ins().iconst(types::I64, *ya as i64);
+                b.def_var(var[t - 1], v);
+                let ke = tepi(&mut b, r, &blok, ip, ip + 3, &mut tunda);
+                b.ins().jump(ke, &[]);
+                isi_tepi(&mut b, &k, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
+                terbuka = false;
+                continue;
+            }
             Cara::Cabang { tumpah, hasil_bool, tujuan } => {
                 tumpahkan(&mut b, &k, &var, s, t - tumpah..t, slot, ptr, f_taruh, &r.callee_nilai);
                 let args = [

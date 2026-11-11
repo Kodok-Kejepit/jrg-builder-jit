@@ -63,6 +63,8 @@ pub enum Cara {
     /// VM menjalankan instruksi yang bercabang (`lambat::langkah_cabang`), lalu kode native lompat ke
     /// `tujuan[0]` bila `bool` hasilnya benar / `ip` berikutnya sama dengannya, selain itu `tujuan[1]`.
     Cabang { tumpah: usize, hasil_bool: bool, tujuan: [usize; 2] },
+    /// `Typeof; Const "<nama>"; Eq` atas jenis native yang pasti: bool tetap, lanjut di `ip + 3`.
+    TipeLipat(bool),
     /// `Propagate` atas `Nilai` (`lambat::sebar`).
     Sebar,
     /// `SlideDown` dengan posisi milik VM: yang dibuang dilepas (`lambat::buang`), puncaknya dipindah.
@@ -343,7 +345,7 @@ fn analisis_sekali(
     // Satu langkah VM dari kode native berongkos ±10 instruksi VM biasa (masuk loop VM, menyalin
     // operand); kode yang kebanyakan langkah lebih lambat dari VM sendiri.
     let jalan = |ip: usize| r.keadaan[ip].is_some() && !r.keluar[ip];
-    let asli = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Asli | Cara::Buka(_))).count();
+    let asli = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Asli | Cara::Buka(_) | Cara::TipeLipat(_))).count();
     // Pintu masuk bingkai callee (`Call` ke fungsi VM) dibayar VM juga; yang ditambah cuma langkahnya.
     let langkah_vm = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Langkah { .. } | Cara::Cabang { .. })).count();
     // Mode stres memaksa jalur native sebanyak mungkin, untung atau tidak.
@@ -382,6 +384,7 @@ fn analisis_sekali(
         if let (true, Cara::Cabang { tujuan, .. }) = (jalan(ip), &r.cara[ip]) {
             for t in *tujuan { r.pemimpin[t] = true; }
         }
+        if let (true, Cara::TipeLipat(_)) = (jalan(ip), &r.cara[ip]) { r.pemimpin[ip + 3] = true; }
     }
     // `JumpFalse` dkk. bercabang ke instruksi sesudahnya juga.
     for ip in 0..n.saturating_sub(1) {
@@ -400,6 +403,10 @@ fn langkah(
     f: &VmFunction, cari: &dyn Fn(&str) -> Option<Arc<VmFunction>>,
     r: &mut Rencana, ip: usize, s: Vec<Jenis>,
 ) -> Option<Vec<(usize, Vec<Jenis>)>> {
+    if let Some((b, s2)) = tipe_lipat(f, ip, &s) {
+        r.cara[ip] = Cara::TipeLipat(b);
+        return Some(vec![(ip + 3, s2)]);
+    }
     // `langkah_asli` boleh memilih cara lain (`ReturnNil`).
     r.cara[ip] = Cara::Asli;
     if let Some(p) = langkah_asli(f, cari, r, ip, s.clone()) { return Some(p); }
@@ -408,6 +415,26 @@ fn langkah(
     let (cara, p) = langkah_lambat(f, cari, r, ip, s)?;
     r.cara[ip] = cara;
     Some(p)
+}
+
+/// Pemeriksaan jenis pola (`emit_pattern_type_check`) atas angka/bool native: jawabannya sudah pasti. Yang
+/// dilewati tidak boleh jadi sasaran lompat.
+fn tipe_lipat(f: &VmFunction, ip: usize, s: &[Jenis]) -> Option<(bool, Vec<Jenis>)> {
+    let kode = &f.chunk.code;
+    if kode[ip].op != OpCode::Typeof || kode.get(ip + 2)?.op != OpCode::Eq || kode[ip + 1].op != OpCode::Const { return None; }
+    let VmValue::Str(nama) = f.chunk.constants.get(kode[ip + 1].arg as usize)? else { return None };
+    let contoh = match s.last()? {
+        Jenis::Bulat => VmValue::Int(0),
+        Jenis::Pecahan => VmValue::Float(0.0),
+        Jenis::Bool => VmValue::Bool(false),
+        _ => return None,
+    };
+    let sasaran = |i: &crate::vm::opcode::Instruction| matches!(i.op, OpCode::Jump | OpCode::JumpFalse | OpCode::JumpTrue
+        | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep) && matches!(i.arg as usize, x if x == ip + 1 || x == ip + 2);
+    if kode.iter().any(sasaran) { return None; }
+    let mut s2 = s.to_vec();
+    *s2.last_mut()? = Jenis::Bool;
+    Some((contoh.type_name_penuh() == **nama, s2))
 }
 
 /// Jumlah operand teratas yang dibaca instruksi yang boleh dibuka (`Cara::Buka`).

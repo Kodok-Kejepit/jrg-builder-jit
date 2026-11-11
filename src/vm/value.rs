@@ -300,7 +300,7 @@ impl Peta {
     /// Prototipe literal: nama field berurutan (juga untuk dict — cuma pembawa urutan, tidak pernah dibaca).
     pub fn prototipe(label: Label, nama: Vec<Kunci>) -> Self {
         let n = nama.len();
-        Peta { label, isi: Mutex::new(IsiPeta::rapat(Bentuk::baru(nama), vec![VmValue::Nil; n])) }
+        Peta { label, isi: Mutex::new(IsiPeta::rapat(Bentuk::intern(nama), vec![VmValue::Nil; n])) }
     }
 
     /// Bentuk rapat isi ini, kalau rapat.

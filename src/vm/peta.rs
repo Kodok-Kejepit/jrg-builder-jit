@@ -27,6 +27,14 @@ impl Bentuk {
         Arc::new(Bentuk { nama: nama.into_boxed_slice(), unik })
     }
 
+    /// Bentuk prototipe literal, diintern: literal berbeda dengan nama field berurutan sama berbagi satu
+    /// bentuk (tembolok per situs di JIT tidak meleset antar-literal). Cuma saat kompilasi, jadi terbatas.
+    pub fn intern(nama: Vec<Kunci>) -> Arc<Bentuk> {
+        static TABEL: std::sync::OnceLock<std::sync::Mutex<HashMap<Vec<Kunci>, Arc<Bentuk>>>> = std::sync::OnceLock::new();
+        let mut t = TABEL.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+        t.entry(nama.clone()).or_insert_with(|| Bentuk::baru(nama)).clone()
+    }
+
     pub fn unik(nama: &[Kunci]) -> bool {
         nama.iter().enumerate().all(|(i, k)| !nama[..i].contains(k))
     }

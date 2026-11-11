@@ -713,3 +713,44 @@ fn field_lokal_digabung() {
     let i = jalankan(FIELD_LOKAL, &[], &[]);
     assert!(i.stdout.starts_with("4501500\n3000 teks 2.5 teks 3\n") && i.stderr.contains("bernama `a`"), "{}", i.stdout);
 }
+
+/// Pemeriksaan jenis pola (`Typeof; Const; Eq`) atas angka/bool native dilipat (`Cara::TipeLipat`); pola
+/// literal dan rentang atas bulat, pecahan, bool, rune dan teks di satu `match`.
+const TIPE_LIPAT: &str = r#"fn kelas(v) {
+    match v {
+        0 => 5,
+        1 | 2 | 3 => 7,
+        4..=8 => 11,
+        1.5..=2.5 => 17,
+        true => 19,
+        'a'..='z' => 23,
+        _ => 13,
+    }
+}
+fn bilang(x) { match x % 11 { 0 => 1, 4..=8 => 2, _ => 3 } }
+fn pecah(x) { match x * 0.5 { 0.0..=2.0 => 1, _ => 2 } }
+pub fn main() {
+    var t = 0
+    for i in 0..5000 { t = t + bilang(i) + pecah(i as float) }
+    wok(t)
+    var u = 0
+    for i in 0..3000 { u = u + kelas(i % 12) }
+    wok(u)
+    for _, v in [0, 3, 5, 9, 2.0, 7.0, true, false, 'q', "s", 1.0] { wok_(kelas(v), " ") }
+    wok("")
+    var w = 0
+    for i in 0..4000 { let v = i % 4 == 0 $ 2.0 : (i % 4 == 1 $ true : (i % 4 == 2 $ 5 : "x")); w = w + campur(v) }
+    wok(w)
+}
+fn campur(v) { match v { 4..=8 => 1, 1.5..=2.5 => 2, true => 3, _ => 4 } }
+"#;
+
+#[test]
+fn tipe_pola_dilipat() {
+    let i = jalankan(TIPE_LIPAT, &[], &[]);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(TIPE_LIPAT, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    assert!(i.stdout.contains("5  7  11  13  7  11  19  13  23  13  7"), "{}", i.stdout);
+}
