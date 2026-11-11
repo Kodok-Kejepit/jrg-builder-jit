@@ -289,7 +289,7 @@ impl Vm {
             kelompok.entry(kunci).or_default().push(item);
         }
         Ok(VmValue::map(
-            kelompok.into_iter().map(|(k, isi)| (k, VmValue::array(isi))).collect(),
+            kelompok.into_iter().map(|(k, isi)| (k, VmValue::array(isi))),
         ))
     }
 

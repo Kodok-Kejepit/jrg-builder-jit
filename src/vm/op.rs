@@ -1,7 +1,6 @@
 // src/vm/op.rs — badan handler opcode yang juga dijalankan langsung oleh jalur lambat JIT
 // (`jit::lambat::satu`), tanpa masuk loop dispatch: satu definisi untuk keduanya.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::opcode::OpCode;
@@ -92,12 +91,12 @@ impl Vm {
             lain => return Err(VmError::at(format!(
                 "BuildStruct: prototipe harus struct, dapat `{}`", lain.type_name_penuh()), sp)),
         };
-        let mut isi = HashMap::with_capacity(n);
         let mut it = kv.into_iter();
-        while let (Some(k), Some(v)) = (it.next(), it.next()) {
-            isi.insert(k.to_string(), v);
-        }
-        self.push(VmValue::Map(Arc::new(Peta::baru(label, isi))));
+        let pasangan = std::iter::from_fn(|| {
+            let (k, v) = (it.next()?, it.next()?);
+            Some((match k { VmValue::Str(s) => String::clone(&s), k => k.to_string() }, v))
+        });
+        self.push(VmValue::Map(Arc::new(Peta::baru_n(label, n, pasangan))));
         Ok(())
     }
 

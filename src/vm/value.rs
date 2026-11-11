@@ -180,19 +180,100 @@ pub enum Label {
     Enum { tipe: Arc<str>, varian: Arc<str>, payload: Option<VmValue> },
 }
 
+/// Hasher isi `Peta`: dict memakai SipHash berkunci acak (kuncinya bisa datang dari luar — HashDoS,
+/// Fase AMAN-7); struct dan enum hash cepat, tapi cuma sampai `KUNCI_CEPAT` kunci (`json::merge` bisa
+/// memberi struct kunci dari dict) — tabrakan sebanyak itu tidak berarti apa-apa.
+#[derive(Clone, Debug)]
+pub struct HashPeta(Option<std::collections::hash_map::RandomState>);
+
+pub enum PengacakPeta {
+    Sip(std::collections::hash_map::DefaultHasher),
+    Cepat(u64),
+}
+
+impl std::hash::Hasher for PengacakPeta {
+    #[inline(always)]
+    fn write_u8(&mut self, x: u8) {
+        match self { PengacakPeta::Sip(h) => h.write_u8(x), PengacakPeta::Cepat(s) => *s = (s.rotate_left(5) ^ x as u64).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95) }
+    }
+    #[inline(always)]
+    fn write(&mut self, b: &[u8]) {
+        match self {
+            PengacakPeta::Sip(h) => h.write(b),
+            // FxHash: dua instruksi per 8 byte.
+            PengacakPeta::Cepat(s) => {
+                let mut c = b.chunks_exact(8);
+                for k in &mut c { *s = (s.rotate_left(5) ^ u64::from_le_bytes(k.try_into().unwrap())).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95); }
+                for &x in c.remainder() { *s = (s.rotate_left(5) ^ x as u64).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95); }
+            }
+        }
+    }
+    #[inline(always)]
+    fn finish(&self) -> u64 {
+        match self { PengacakPeta::Sip(h) => h.finish(), PengacakPeta::Cepat(s) => *s }
+    }
+}
+
+impl std::hash::BuildHasher for HashPeta {
+    type Hasher = PengacakPeta;
+    #[inline(always)]
+    fn build_hasher(&self) -> PengacakPeta {
+        match &self.0 { Some(r) => PengacakPeta::Sip(r.build_hasher()), None => PengacakPeta::Cepat(0) }
+    }
+}
+
+const KUNCI_CEPAT: usize = 64;
+
+/// Isi sebuah `Peta`.
+pub type IsiPeta = HashMap<String, VmValue, HashPeta>;
+
 /// Isi sebuah `Map` plus labelnya. Isinya cuma field atau key milik program.
 #[derive(Debug)]
 pub struct Peta {
     pub label: Label,
-    isi: Mutex<HashMap<String, VmValue>>,
+    isi: Mutex<IsiPeta>,
 }
 
 impl Peta {
-    pub fn baru(label: Label, isi: HashMap<String, VmValue>) -> Self {
-        Peta { label, isi: Mutex::new(isi) }
+    pub fn baru(label: Label, isi: impl IntoIterator<Item = (String, VmValue)>) -> Self {
+        let it = isi.into_iter();
+        let n = it.size_hint().0;
+        Self::baru_n(label, n, it)
     }
 
-    pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, HashMap<String, VmValue>>> {
+    pub fn baru_n(label: Label, n: usize, isi: impl IntoIterator<Item = (String, VmValue)>) -> Self {
+        let mut peta = Self::isi_untuk(&label, n);
+        peta.extend(isi);
+        if peta.hasher().0.is_none() && peta.len() > KUNCI_CEPAT { return Self::dari_isi(label, peta); }
+        Peta { label, isi: Mutex::new(peta) }
+    }
+
+    fn pakai_sip(label: &Label, n: usize) -> bool { matches!(label, Label::Dict) || n > KUNCI_CEPAT }
+
+    /// Isi kosong ber-hasher sesuai label.
+    pub fn isi_untuk(label: &Label, n: usize) -> IsiPeta {
+        IsiPeta::with_capacity_and_hasher(n, HashPeta(Self::pakai_sip(label, n).then(std::collections::hash_map::RandomState::new)))
+    }
+
+    /// Dari isi yang sudah jadi (salinan peta lain) tanpa meng-hash ulang bila hasher-nya cocok.
+    pub fn dari_isi(label: Label, isi: IsiPeta) -> Self {
+        if isi.hasher().0.is_some() == Self::pakai_sip(&label, isi.len()) { return Peta { label, isi: Mutex::new(isi) }; }
+        let mut baru = Self::isi_untuk(&label, isi.len());
+        baru.extend(isi);
+        Peta { label, isi: Mutex::new(baru) }
+    }
+
+    /// Sisip satu kunci; peta ber-hash cepat yang melewati `KUNCI_CEPAT` pindah ke SipHash.
+    pub fn sisip(&self, k: String, v: VmValue) {
+        let mut g = self.isi.lock().unwrap_or_else(|p| p.into_inner());
+        g.insert(k, v);
+        if g.hasher().0.is_none() && g.len() > KUNCI_CEPAT {
+            let lama = std::mem::replace(&mut *g, Self::isi_untuk(&Label::Dict, 0));
+            g.extend(lama);
+        }
+    }
+
+    pub fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, IsiPeta>> {
         self.isi.lock()
     }
 
@@ -223,7 +304,7 @@ impl VmValue {
                 VmValue::array(isi.iter().map(|v| v.deep_copy()).collect())
             }
             VmValue::Map(m) => {
-                let isi: HashMap<String, VmValue> = m.lock().unwrap_or_else(|p| p.into_inner())
+                let isi: Vec<(String, VmValue)> = m.lock().unwrap_or_else(|p| p.into_inner())
                     .iter().map(|(k, v)| (k.clone(), v.deep_copy())).collect();
                 let label = match &m.label {
                     Label::Enum { tipe, varian, payload } => Label::Enum {
@@ -275,11 +356,11 @@ impl VmValue {
     pub fn tuple(v: Vec<VmValue>)    -> Self { VmValue::Tuple(Arc::new(Mutex::new(v))) }
     pub fn function(f: VmFunction)   -> Self { VmValue::Function(Arc::new(f)) }
     /// Dict biasa.
-    pub fn map(m: HashMap<String, VmValue>) -> Self {
+    pub fn map(m: impl IntoIterator<Item = (String, VmValue)>) -> Self {
         VmValue::Map(Arc::new(Peta::baru(Label::Dict, m)))
     }
     /// Instance struct `nama`, termasuk handle bawaan (`Ptr`, `Future`, `Regex`, …).
-    pub fn struktur(nama: &str, isi: HashMap<String, VmValue>) -> Self {
+    pub fn struktur(nama: &str, isi: impl IntoIterator<Item = (String, VmValue)>) -> Self {
         VmValue::Map(Arc::new(Peta::baru(Label::Struct(Arc::from(nama)), isi)))
     }
     /// Varian enum `tipe::varian`, dengan payload kalau ada.

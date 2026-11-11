@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 /// Pasangan key/value sebuah map, DIURUTKAN menurut key.
 fn pasangan_terurut(
-    g: &std::collections::HashMap<String, VmValue>,
+    g: &crate::vm::value::IsiPeta,
 ) -> Vec<(&String, &VmValue)> {
     let mut v: Vec<(&String, &VmValue)> =
         g.iter().collect();
@@ -79,7 +79,7 @@ pub fn register(vm: &mut Vm) {
         (Some(o @ Map(m)), Some(Str(k)), Some(v)) if o.type_name_penuh() == "dict" => {
             let mut isi = m.lock().unwrap().clone();
             isi.insert(k.as_str().to_string(), v.clone());
-            Ok(VmValue::map(isi))
+            Ok(VmValue::Map(Arc::new(crate::vm::value::Peta::dari_isi(crate::vm::value::Label::Dict, isi))))
         }
         _ => Err("json::set(obj, key, val)".to_string()),
     });
@@ -125,7 +125,7 @@ pub fn register(vm: &mut Vm) {
                 crate::vm::value::Label::Dict => a_map.label.clone(),
                 lain => lain.clone(),
             };
-            Ok(Map(Arc::new(crate::vm::value::Peta::baru(label, merged))))
+            Ok(Map(Arc::new(crate::vm::value::Peta::dari_isi(label, merged))))
         }
         _ => Err("json::merge(a, b)".to_string()),
     });

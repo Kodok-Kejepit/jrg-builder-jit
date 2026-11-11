@@ -2724,5 +2724,9 @@ pub fn main() {
       var k = K { v: V { x: 1 }, s: \"k\" }\n k.v += V { x: 2 }\n k.s += V { x: 3 }\n wok(k.v.x, k.s)\n\
       var a = [V { x: 1 }]\n a[0] += V { x: 4 }\n var t = \"t\"\n t += V { x: 9 }\n wok(a[0].x, t) }"),
     ("for atas rentang tak berawal 0: indeks, lalu (indeks, nilai)",
-     "for i in 5..8 { wok(i) }\nfor i, x in 5..=7 { wok(i, x) }\nlet a = 3\nfor i, x in a..a + 2 { wok(i, x) }\n"),
+     "for i in 5..8 { wok(i) }\nfor i, x in 5..=7 { wok(i, x) }\nlet a = 3\nfor i, x in a..a + 2 { wok(i, x) }\n"),    ("struct berisi banyak kunci dari json::merge, tulis field, sebar (hasher struct berbatas)",
+     "struct P { pub x: int, pub y: int }\nvar d = dict::new()\nfor i in 0..200 { d = dict::set(d, «k${i}», i) }\n\
+      let m = json::merge(d, P { x: 1, y: 2 })\nvar t = 0\nfor i in 0..200 { t = t + m[«k${i}»] }\n\
+      wok(typeof(m), len(json::keys(m)), t, m.x, m.y)\nvar p = P { x: 3, y: 4 }\np.x = p.x + p.y\n\
+      let q = P { y: 9, ...p }\nwok(p, q, q.x * q.y)\n"),
 ];

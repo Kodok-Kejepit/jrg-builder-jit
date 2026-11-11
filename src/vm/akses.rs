@@ -119,6 +119,10 @@ impl Vm {
     /// field menyerahkan methodnya sebagai nilai, sementara acuan memanggilnya.
     pub(crate) fn get_field_pintu(&self, obj: &VmValue, name: &str, sp: Option<crate::lexer::Span>,
                                   pintu_metode: bool) -> VmResult<VmValue> {
+        // Field yang ada di struct/dict selalu menang di dua pintu (langkah 1 `get_field_khusus`).
+        if let VmValue::Map(m) = obj {
+            if let Some(v) = m.lock().unwrap().get(name) { return Ok(v.clone()); }
+        }
         if !pintu_metode {
             let tn = obj.type_name();
             if matches!(obj, VmValue::Asing(_)) {
@@ -336,7 +340,7 @@ impl Vm {
                         }
                     }
                 }
-                m.lock().unwrap().insert(name.to_string(), val);
+                m.sisip(name.to_string(), val);
                 Ok(())
             }
             _ => Err(VmError::at(
@@ -345,7 +349,7 @@ impl Vm {
     }
 
 /// Kalimat untuk key/field yang tidak ada di sebuah dict atau struct.
-fn pesan_map_hilang(label: &Label, g: &std::collections::HashMap<String, VmValue>, k: &str) -> String {
+fn pesan_map_hilang(label: &Label, g: &crate::vm::value::IsiPeta, k: &str) -> String {
     let ada: Vec<String> = g.keys().cloned().collect();
     match label {
         Label::Struct(t) => crate::interpreter::galat_index::field_hilang(t, k, &ada),

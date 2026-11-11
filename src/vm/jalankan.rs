@@ -670,13 +670,10 @@ impl Vm {
                     let n = arg as usize;
                     let start = self.stack.len().saturating_sub(n * 2);
                     let kv: Vec<VmValue> = self.stack.drain(start..).collect();
-                    let mut map = HashMap::new();
-                    for chunk in kv.chunks(2) {
-                        if let [k, v] = chunk {
-                            map.insert(format!("{}", k), v.clone());
-                        }
-                    }
-                    self.push(VmValue::map(map));
+                    self.push(VmValue::map(kv.chunks(2).filter_map(|c| match c {
+                        [k, v] => Some((format!("{}", k), v.clone())),
+                        _ => None,
+                    })));
                 }
                 OpCode::MergeMap => {
                     let overrides = self.pop(sp)?;
@@ -698,7 +695,7 @@ impl Vm {
                     };
                     merged.extend(o.lock().unwrap().clone());
                     // Label dari literalnya sendiri: `P { a: 9, ...q }` adalah sebuah `P`.
-                    self.push(VmValue::Map(Arc::new(Peta::baru(o.label.clone(), merged))));
+                    self.push(VmValue::Map(Arc::new(Peta::dari_isi(o.label.clone(), merged))));
                 }
                 OpCode::BuildStruct => self.op_build_struct(arg, sp)?,
                 OpCode::BuildEnum => {
