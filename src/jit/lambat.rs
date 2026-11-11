@@ -3,6 +3,7 @@
 //! apa pun yang terlihat, jadi kode native deopt di instruksi itu dan VM yang menjalankannya.
 
 use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 
 use super::layak::Jenis;
 use crate::vm::opcode::OpCode;
@@ -344,11 +345,50 @@ pub extern "C" fn payload_lokal(slot: i64, ke: i64) -> i32 {
     0
 }
 
-/// `LoadLocal` + `GetField` tanpa menyalin lokalnya. 4 = angka berjenis `jenis` (1 bulat, 5 pecahan) di
-/// `keluar`; 0 = nilai di posisi `ke`; 1 = gagal sesudah lokalnya ditaruh di `ke` (VM yang melapor).
-pub extern "C" fn field_lokal(slot: i64, nama: *const String, privat: i32, jenis: i32, keluar: *mut i64, ke: i64) -> i32 {
+/// Satu situs `x.f` yang digabung: nama, privat, jenis spekulasi, dan tembolok bentuk (monomorfik — diisi
+/// sekali, memegang referensi kuat ke bentuknya, jadi alamatnya tidak pernah dipakai bentuk lain).
+pub struct SitusField {
+    pub nama: *const String,
+    pub privat: bool,
+    pub jenis: i32,
+    bentuk: std::sync::atomic::AtomicPtr<crate::vm::peta::Bentuk>,
+    indeks: std::sync::atomic::AtomicUsize,
+}
+
+impl SitusField {
+    /// Hidup selama kode yang memakainya (kode JIT tidak pernah dibebaskan).
+    pub fn bocor(nama: &String, privat: bool, jenis: i32) -> &'static SitusField {
+        Box::leak(Box::new(SitusField {
+            nama, privat, jenis,
+            bentuk: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+            indeks: std::sync::atomic::AtomicUsize::new(0),
+        }))
+    }
+
+    #[inline]
+    fn baca<'a>(&self, isi: &'a crate::vm::peta::IsiPeta, nama: &str) -> Option<&'a VmValue> {
+        use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+        let crate::vm::peta::IsiPeta::Rapat { bentuk, nilai } = isi else { return isi.get(nama) };
+        let p = Arc::as_ptr(bentuk) as *mut crate::vm::peta::Bentuk;
+        if self.bentuk.load(Acquire) == p { return nilai.get(self.indeks.load(Relaxed)); }
+        let i = bentuk.posisi(nama)?;
+        if self.bentuk.load(Relaxed).is_null() {
+            self.indeks.store(i, Relaxed);
+            let kuat = Arc::into_raw(bentuk.clone()) as *mut crate::vm::peta::Bentuk;
+            if self.bentuk.compare_exchange(std::ptr::null_mut(), kuat, Release, Relaxed).is_err() {
+                unsafe { drop(Arc::from_raw(kuat)) }
+            }
+        }
+        nilai.get(i)
+    }
+}
+
+/// `LoadLocal` + `GetField` tanpa menyalin lokalnya. 4 = angka berjenis `situs.jenis` (1 bulat, 5 pecahan)
+/// di `keluar`; 0 = nilai di posisi `ke`; 1 = gagal sesudah lokalnya ditaruh di `ke` (VM yang melapor).
+pub extern "C" fn field_lokal(slot: i64, situs: *const SitusField, keluar: *mut i64, ke: i64) -> i32 {
     let (vm, basis) = konteks();
-    let nama = unsafe { &*nama };
+    let situs = unsafe { &*situs };
+    let (nama, jenis) = (unsafe { &*situs.nama }, situs.jenis);
     // Angka yang cocok dengan spekulasi dibaca di tempat; yang lain disalin.
     let angka = |v: &VmValue| match (v, jenis) {
         (VmValue::Int(n), 1) => i64::try_from(*n).ok(),
@@ -358,8 +398,8 @@ pub extern "C" fn field_lokal(slot: i64, nama: *const String, privat: i32, jenis
     let cepat: Option<Result<i64, VmValue>> = {
         let vm: &Vm = vm;
         let lihat = |v: &VmValue| match v {
-            VmValue::Map(m) if privat == 0 || vm.periksa_visibilitas(v, nama, None).is_ok() =>
-                m.lock().unwrap_or_else(|p| p.into_inner()).get(nama.as_str()).map(|x| angka(x).ok_or_else(|| x.clone())),
+            VmValue::Map(m) if !situs.privat || vm.periksa_visibilitas(v, nama, None).is_ok() =>
+                situs.baca(&m.lock().unwrap_or_else(|p| p.into_inner()), nama).map(|x| angka(x).ok_or_else(|| x.clone())),
             _ => None,
         };
         match vm.stack.get(basis + slot as usize) {
@@ -374,7 +414,7 @@ pub extern "C" fn field_lokal(slot: i64, nama: *const String, privat: i32, jenis
         None => {
             let obj = vm.baca_lokal(basis + slot as usize).unwrap_or(VmValue::Nil);
             *sediakan(vm, basis, ke as usize) = obj;
-            if field(ke, nama, privat) != 0 { return 1; }
+            if field(ke, nama, situs.privat as i32) != 0 { return 1; }
             let i = basis + ke as usize;
             if let Some(n) = angka(&vm.stack[i]) { unsafe { *keluar = n }; return 4; }
             return 0;

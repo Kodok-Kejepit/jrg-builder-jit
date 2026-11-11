@@ -679,9 +679,31 @@ pub fn main() {
 }
 "#;
 
+/// Satu situs `o.x` atas bentuk berbeda (urutan field lain, bentuk yang bertambah nama, dict): tembolok
+/// bentuknya monomorfik, yang lain dicari ulang.
+const FIELD_POLIMORF: &str = r#"struct A { pub x: int, pub y: int }
+struct B { pub y: int, pub z: int, pub x: int }
+fn ambil(o) { o.x * 10 + o.y }
+pub fn main() {
+    var t = 0
+    for i in 0..4000 {
+        t = t + ambil(A { x: i, y: 1 })
+        if i % 3 == 0 { t = t + ambil(B { y: 2, z: 9, x: i }) }
+        if i % 7 == 0 { t = t + ambil(json::merge(dict { w: 5 }, A { x: 1, y: i })) }
+        if i % 11 == 0 { t = t + ambil({"x": 3, "y": 4}) }
+    }
+    wok(t)
+    let c = B { x: 7, y: 8, z: 9 }
+    let f = || ambil(c)
+    var u = 0
+    for i in 0..3000 { u = u + f() }
+    wok(u)
+}
+"#;
+
 #[test]
 fn field_lokal_digabung() {
-    for src in [FIELD_LOKAL, FIELD_PRIVAT] {
+    for src in [FIELD_LOKAL, FIELD_PRIVAT, FIELD_POLIMORF] {
         let i = jalankan(src, &[], &[]);
         for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
             let j = jalankan(src, &["--jit"], env);

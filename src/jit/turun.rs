@@ -592,12 +592,13 @@ pub fn turunkan(
                     // Field lokal: angka yang dispekulasikan langsung ke register; gagal di field = deopt di
                     // `GetField` (lokalnya sudah di posisi VM), jenis lain = deopt spekulasi sesudahnya.
                     Some(Cara::Field) if gabung && matches!(r.spek[ip + 1], None | Some(Jenis::Bulat | Jenis::Pecahan)) => {
-                        let nama = i64c(&mut b, &f.chunk.names[kode[ip + 1].arg as usize] as *const String as i64);
-                        let privat = b.ins().iconst(types::I32, (kode[ip + 1].op == OpCode::GetFieldPrivat) as i64);
-                        let jv = b.ins().iconst(types::I32, match r.spek[ip + 1] { Some(Jenis::Bulat) => 1, Some(_) => 5, None => 0 });
+                        let situs = super::lambat::SitusField::bocor(
+                            &f.chunk.names[kode[ip + 1].arg as usize], kode[ip + 1].op == OpCode::GetFieldPrivat,
+                            match r.spek[ip + 1] { Some(Jenis::Bulat) => 1, Some(_) => 5, None => 0 });
+                        let situs = i64c(&mut b, situs as *const _ as i64);
                         let pk = b.ins().stack_addr(k.ptr, wadah, 0);
                         let ke = i64c(&mut b, t as i64);
-                        let c = b.ins().call(f_field_lokal, &[d, nama, privat, jv, pk, ke]);
+                        let c = b.ins().call(f_field_lokal, &[d, situs, pk, ke]);
                         let c = b.inst_results(c)[0];
                         let gagal = b.ins().icmp_imm_u(IntCC::Equal, c, 1);
                         let s1 = r.keadaan[ip + 1].as_ref().expect("penerus Muat terjangkau");
