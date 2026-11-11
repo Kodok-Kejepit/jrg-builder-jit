@@ -113,7 +113,7 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
                 payload_lokal: impor("jrg_jit_payload_lokal", &[I64, I64], Some(I32))?,
                 field_lokal: impor("jrg_jit_field_lokal", &[I64, I64, I64, I64], Some(I32))?,
                 karakter: impor("jrg_jit_karakter", &[I64, I64], Some(I64))?,
-                bangun: impor("jrg_jit_bangun", &[I64, I64, I64, I64, I64], Some(I32))?,
+                bangun: impor("jrg_jit_bangun", &[I64, I64, I64, I64, I64], None)?,
                 buka_lokal: impor("jrg_jit_buka_lokal", &[I64, I32, p], Some(I32))?,
                 iter_ada: impor("jrg_jit_iter_ada", &[I64], Some(I32))?,
                 maju: impor("jrg_jit_maju", &[I64], Some(I32))?,

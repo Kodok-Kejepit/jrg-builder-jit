@@ -59,9 +59,21 @@ pub(crate) fn skalar_kode(kode: i32, nilai: i64) -> Option<VmValue> {
     })
 }
 
-/// `BuildStruct`/`BuildArray`/`BuildTuple` instruksi `ip` atas posisi `t - n .. t` (angka native dari
-/// tumpahan `nilai`, sisanya dipindah dari stack VM); hasilnya di posisi `t - n`. 2 = galat.
-pub extern "C" fn bangun(ip: i64, jenis: *const Jenis, t: i64, n: i64, nilai: *const i64) -> i32 {
+/// Satu situs `Cara::Bangun`, disiapkan saat kompilasi: struct (label + bentuk prototipe), larik, atau tuple.
+pub enum SitusBangun {
+    Struktur(crate::vm::value::Label, Arc<crate::vm::peta::Bentuk>),
+    Larik,
+    Tuple,
+}
+
+impl SitusBangun {
+    /// Hidup selama kode yang memakainya (kode JIT tidak pernah dibebaskan).
+    pub fn bocor(s: SitusBangun) -> &'static SitusBangun { Box::leak(Box::new(s)) }
+}
+
+/// Literal atas posisi `t - n .. t` (angka native dari tumpahan `nilai`, sisanya dipindah dari stack VM);
+/// hasilnya di posisi `t - n`, dibangun lewat definisi yang sama dengan VM.
+pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64, n: i64, nilai: *const i64) {
     let (vm, basis) = konteks();
     let (t, n) = (t as usize, n as usize);
     let jenis = unsafe { std::slice::from_raw_parts(jenis, t) };
@@ -73,21 +85,13 @@ pub extern "C" fn bangun(ip: i64, jenis: *const Jenis, t: i64, n: i64, nilai: *c
             None => std::mem::replace(sediakan(vm, basis, i), VmValue::Nil),
         });
     }
-    let fr = vm.frames.last().expect("bingkai terluar");
-    let ins = fr.func.chunk.code[ip as usize];
-    let v = match ins.op {
-        OpCode::BuildStruct => match fr.func.chunk.constants.get(ins.arg as usize) {
-            Some(VmValue::Map(p)) => match p.bentuk() {
-                Some(b) => VmValue::Map(Arc::new(crate::vm::value::Peta::struktur_dari(p.label.clone(), b, isi))),
-                None => return 2,
-            },
-            _ => return 2,
-        },
-        OpCode::BuildTuple => VmValue::tuple(isi),
-        _ => VmValue::array(isi),
+    let v = match unsafe { &*situs } {
+        SitusBangun::Struktur(label, bentuk) =>
+            VmValue::Map(Arc::new(crate::vm::value::Peta::struktur_dari(label.clone(), Arc::clone(bentuk), isi))),
+        SitusBangun::Tuple => VmValue::tuple(isi),
+        SitusBangun::Larik => VmValue::array(isi),
     };
     *sediakan(vm, basis, t - n) = v;
-    0
 }
 
 /// `str::char_at(teks, i)` atas posisi `p` milik VM: kode karakternya; −1 = jalur bawaan umum (indeks negatif
@@ -498,6 +502,16 @@ pub extern "C" fn field_lokal(slot: i64, situs: *const SitusField, keluar: *mut 
         (VmValue::Float(x), 5) => Some(x.to_bits() as i64),
         _ => None,
     };
+    // Jalur panas: struct milik lokal (bukan sel), bukan privat, angka yang cocok spekulasi — tanpa `VmValue`.
+    if !situs.privat {
+        if let Some(VmValue::Map(m)) = vm.stack.get(basis + slot as usize) {
+            let g = m.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(n) = situs.baca(&g, nama).and_then(angka) {
+                unsafe { *keluar = n };
+                return 4;
+            }
+        }
+    }
     let cepat: Option<Result<i64, VmValue>> = {
         let vm: &Vm = vm;
         let lihat = |v: &VmValue| match v {

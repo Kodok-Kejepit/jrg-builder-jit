@@ -703,19 +703,21 @@ pub fn turunkan(
                 continue;
             }
             Cara::Bangun(n) => {
+                use super::lambat::SitusBangun;
+                let situs = SitusBangun::bocor(match ins.op {
+                    OpCode::BuildStruct => match &f.chunk.constants[a] {
+                        crate::vm::value::VmValue::Map(p) => SitusBangun::Struktur(p.label.clone(), p.bentuk().expect("dijamin layak.rs")),
+                        _ => unreachable!("dijamin layak.rs"),
+                    },
+                    OpCode::BuildTuple => SitusBangun::Tuple,
+                    _ => SitusBangun::Larik,
+                });
                 tumpahkan(&mut b, &k, &var, s, t - n..t, slot, ptr, f_taruh, &r.callee_nilai);
                 let args = [
-                    i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
+                    i64c(&mut b, situs as *const _ as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
                     i64c(&mut b, *n as i64), b.ins().stack_addr(ptr, slot, 0),
                 ];
-                let c = b.ins().call(f_bangun, &args);
-                let st = b.inst_results(c)[0];
-                let (gagal, terus) = (b.create_block(), b.create_block());
-                b.set_cold_block(gagal);
-                b.ins().brif(st, gagal, &[], terus, &[]);
-                b.switch_to_block(gagal);
-                kembali_status(&mut b, GAGAL);
-                b.switch_to_block(terus);
+                b.ins().call(f_bangun, &args);
                 continue;
             }
             Cara::TipeLipat(ya) => {
