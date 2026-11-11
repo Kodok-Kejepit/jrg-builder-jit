@@ -11,7 +11,7 @@ fn pasangan_terurut(
     g: &crate::vm::value::IsiPeta,
 ) -> Vec<(&String, &VmValue)> {
     let mut v: Vec<(&String, &VmValue)> =
-        g.iter().collect();
+        g.iter().map(|(k, v)| (&**k, v)).collect();
     v.sort_unstable_by(|a, b| a.0.cmp(b.0));
     v
 }
@@ -78,7 +78,7 @@ pub fn register(vm: &mut Vm) {
     vm.def("json::set", |a| match (a.get(0), a.get(1), a.get(2)) {
         (Some(o @ Map(m)), Some(Str(k)), Some(v)) if o.type_name_penuh() == "dict" => {
             let mut isi = m.lock().unwrap().clone();
-            isi.insert(k.as_str().to_string(), v.clone());
+            isi.insert(crate::vm::value::Kunci(k.clone()), v.clone());
             Ok(VmValue::Map(Arc::new(crate::vm::value::Peta::dari_isi(crate::vm::value::Label::Dict, isi))))
         }
         _ => Err("json::set(obj, key, val)".to_string()),

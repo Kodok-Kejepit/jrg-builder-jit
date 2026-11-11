@@ -94,7 +94,7 @@ impl Vm {
         let mut it = kv.into_iter();
         let pasangan = std::iter::from_fn(|| {
             let (k, v) = (it.next()?, it.next()?);
-            Some((match k { VmValue::Str(s) => String::clone(&s), k => k.to_string() }, v))
+            Some((match k { VmValue::Str(s) => super::value::Kunci(s), k => k.to_string().into() }, v))
         });
         self.push(VmValue::Map(Arc::new(Peta::baru_n(label, n, pasangan))));
         Ok(())

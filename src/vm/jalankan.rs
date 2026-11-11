@@ -1,6 +1,5 @@
 // src/vm/jalankan.rs — loop dispatch opcode
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::opcode::OpCode;
@@ -709,7 +708,7 @@ impl Vm {
                     };
                     self.push(VmValue::Map(Arc::new(Peta::baru(
                         Label::Enum { tipe, varian, payload: Some(payload) },
-                        HashMap::new(),
+                        std::iter::empty::<(crate::vm::value::Kunci, VmValue)>(),
                     ))));
                 }
 
@@ -801,7 +800,7 @@ impl Vm {
                         if let Some(minta) = minta {
                             let punya: Vec<String> = match &v {
                                 VmValue::Map(m) => {
-                                    let mut k: Vec<String> = m.lock().map(|g| g.keys().cloned().collect())
+                                    let mut k: Vec<String> = m.lock().map(|g| g.keys().map(|k| k.to_string()).collect())
                                         .unwrap_or_default();
                                     k.sort();
                                     k
@@ -903,7 +902,7 @@ impl Vm {
                             let g = m.lock().unwrap_or_else(|p| p.into_inner());
                             // Kunci diurutkan supaya urutannya deterministik,
                             // sama seperti `dict::keys`.
-                            let mut kunci: Vec<String> = g.keys().cloned().collect();
+                            let mut kunci: Vec<String> = g.keys().map(|k| k.to_string()).collect();
                             kunci.sort();
                             (kunci.into_iter()
                                 .map(|k| { let v = g[&k].clone(); VmValue::tuple(vec![VmValue::str(k), v]) })

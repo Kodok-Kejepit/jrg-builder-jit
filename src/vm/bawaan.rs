@@ -241,7 +241,7 @@ impl Vm {
             };
             if let Some((boleh, sebutan)) = sasaran {
                 let peta = isi.lock().unwrap();
-                if let Some(f) = crate::interpreter::galat_index::field_sebar_liar(peta.keys(), &boleh) {
+                if let Some(f) = crate::interpreter::galat_index::field_sebar_liar(peta.keys().map(|k| &**k), &boleh) {
                     return Err(crate::interpreter::galat_index::sebar_field_liar(&sebutan, f));
                 }
             }

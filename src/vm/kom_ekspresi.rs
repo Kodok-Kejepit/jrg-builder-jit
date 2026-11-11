@@ -107,9 +107,9 @@ impl Compiler {
         // Prototipe membawa label struct-nya; yang di atasnya cuma pasangan field.
         // `dict { a: 1 }` membangun dict sungguhan, bukan struct berlabel "dict".
         let proto = self.chunk.add_constant(if type_name == "dict" && varian.is_none() {
-            VmValue::map(std::iter::empty())
+            VmValue::map(std::iter::empty::<(crate::vm::value::Kunci, VmValue)>())
         } else {
-            VmValue::struktur(type_name, std::iter::empty())
+            VmValue::struktur(type_name, std::iter::empty::<(crate::vm::value::Kunci, VmValue)>())
         });
         self.chunk.emit_arg(OpCode::Const, proto);
 

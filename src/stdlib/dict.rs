@@ -7,7 +7,6 @@ use crate::interpreter::{
 };
 use crate::vm::value::VmValue;
 use crate::vm::vm::Vm;
-use std::collections::HashMap;
 
 /// Isi dict dari argumen ke-`ke` (mulai 1). Struct dan enum juga `Map` di VM,
 /// jadi yang diterima cuma yang tipenya `dict` — tanpa itu
@@ -42,14 +41,9 @@ fn milik_tunggal(v: Option<&VmValue>) -> Option<&std::sync::Arc<crate::vm::value
     }
 }
 
-fn kunci(v: Option<&VmValue>, fname: &str) -> Result<String, String> {
-    match v {
-        Some(VmValue::Str(s)) => Ok(s.to_string()),
-        // Kunci non-teks diterima dengan diformat, sama seperti interpreter
-        // memperlakukan `d[1]`.
-        Some(other) => Ok(format!("{}", other)),
-        None => Err(pesan_dict_kurang(fname)),
-    }
+/// Kunci non-teks diterima dengan diformat, sama seperti interpreter memperlakukan `d[1]`.
+fn kunci(v: Option<&VmValue>, fname: &str) -> Result<crate::vm::value::Kunci, String> {
+    v.map(crate::vm::value::Kunci::dari_nilai).ok_or_else(|| pesan_dict_kurang(fname))
 }
 
 fn jadi_dict(m: crate::vm::value::IsiPeta) -> VmValue {
@@ -57,8 +51,8 @@ fn jadi_dict(m: crate::vm::value::IsiPeta) -> VmValue {
 }
 
 /// Kunci yang terurut — dipakai semua fungsi yang mengembalikan urutan.
-fn kunci_terurut<S: std::hash::BuildHasher>(m: &HashMap<String, VmValue, S>) -> Vec<String> {
-    let mut k: Vec<String> = m.keys().cloned().collect();
+fn kunci_terurut(m: &crate::vm::value::IsiPeta) -> Vec<String> {
+    let mut k: Vec<String> = m.keys().map(|k| k.to_string()).collect();
     k.sort();
     k
 }

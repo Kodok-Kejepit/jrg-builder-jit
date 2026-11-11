@@ -153,7 +153,7 @@ impl Vm {
             Label::Struct(n) => format!("struct {}", n),
             _ => "dict".to_string(),
         };
-        let mut punya: Vec<String> = m.lock().unwrap().keys().cloned().collect();
+        let mut punya: Vec<String> = m.lock().unwrap().keys().map(|k| k.to_string()).collect();
         punya.sort();
         let tambahan = if punya.is_empty() { String::new() } else {
             format!(" (kalau maksudnya field/key, yang ada: {})", punya.join(", "))
@@ -350,7 +350,7 @@ impl Vm {
 
 /// Kalimat untuk key/field yang tidak ada di sebuah dict atau struct.
 fn pesan_map_hilang(label: &Label, g: &crate::vm::value::IsiPeta, k: &str) -> String {
-    let ada: Vec<String> = g.keys().cloned().collect();
+    let ada: Vec<String> = g.keys().map(|k| k.to_string()).collect();
     match label {
         Label::Struct(t) => crate::interpreter::galat_index::field_hilang(t, k, &ada),
         _ => crate::interpreter::galat_index::key_hilang(k, &ada),
@@ -514,7 +514,7 @@ fn pesan_map_hilang(label: &Label, g: &crate::vm::value::IsiPeta, k: &str) -> St
                 self.set_field(obj, &k, val, sp)
             }
             (VmValue::Map(m), _) if !matches!(m.label, Label::Enum { .. }) => {
-                m.lock().unwrap().insert(format!("{}", idx), val);
+                m.lock().unwrap().insert(super::value::Kunci::dari_nilai(&idx), val);
                 Ok(())
             }
             // Kalimat yang sama dengan langkah tengah (`pinjam_index`) dan dengan interpreter.

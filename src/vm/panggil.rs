@@ -229,7 +229,7 @@ impl Vm {
                 };
                 self.push(VmValue::Map(Arc::new(super::value::Peta::baru(
                     super::value::Label::Enum { tipe: k.tipe.clone(), varian: k.varian.clone(), payload },
-                    std::collections::HashMap::new(),
+                    std::iter::empty::<(crate::vm::value::Kunci, VmValue)>(),
                 ))));
                 Ok(())
             }
