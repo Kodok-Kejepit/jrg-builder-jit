@@ -303,6 +303,17 @@ impl Peta {
         Peta { label, isi: Mutex::new(IsiPeta::rapat(Bentuk::intern(nama), vec![VmValue::Nil; n])) }
     }
 
+    /// Struct dari literal (`BuildStruct`): nilai field berurutan menurut bentuk prototipenya (`bentuk()`),
+    /// yang dibagi; dict dan nama kembar lewat jalur tabel.
+    pub fn struktur_dari(label: Label, bentuk: Arc<Bentuk>, nilai: Vec<VmValue>) -> Peta {
+        if bentuk.unik && !matches!(label, Label::Dict) {
+            Peta::dari_isi(label, IsiPeta::rapat(bentuk, nilai))
+        } else {
+            let n = nilai.len();
+            Peta::baru_n(label, n, bentuk.nama.iter().cloned().zip(nilai))
+        }
+    }
+
     /// Bentuk rapat isi ini, kalau rapat.
     pub fn bentuk(&self) -> Option<Arc<Bentuk>> {
         match &*self.isi.lock().unwrap_or_else(|p| p.into_inner()) {

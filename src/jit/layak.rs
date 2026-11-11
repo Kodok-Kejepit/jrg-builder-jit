@@ -92,6 +92,9 @@ pub enum Cara {
     Cabang { tumpah: usize, hasil_bool: bool, tujuan: [usize; 2] },
     /// `Typeof; Const "<nama>"; Eq` atas jenis native yang pasti: bool tetap, lanjut di `ip + 3`.
     TipeLipat(bool),
+    /// `BuildStruct`/`BuildArray`/`BuildTuple` atas `n` posisi teratas (`lambat::bangun`): angka native
+    /// diambil dari tumpahan, tanpa lewat stack VM.
+    Bangun(usize),
     /// `Propagate` atas `Nilai` (`lambat::sebar`).
     Sebar,
     /// `SlideDown` dengan posisi milik VM: yang dibuang dilepas (`lambat::buang`), puncaknya dipindah.
@@ -641,6 +644,19 @@ fn langkah_lambat(
             return Some((Cara::Payload, vec![(lanjut, s)]));
         }
         // Iterator larik/teks/dict (`MakeIter` lewat langkah): ketiga posisinya milik VM.
+        OpCode::BuildStruct | OpCode::BuildArray | OpCode::BuildTuple => {
+            let n = match ins.op {
+                OpCode::BuildStruct => match f.chunk.constants.get(a)? {
+                    VmValue::Map(p) => p.bentuk()?.nama.len(),
+                    _ => return None,
+                },
+                _ => a,
+            };
+            if n > t { return None; }
+            s.truncate(t - n);
+            s.push(Nilai);
+            return Some((Cara::Bangun(n), vec![(lanjut, s)]));
+        }
         OpCode::IterAda if s.get(a..a + 3)?.iter().all(|j| j.di_vm()) => {
             s.push(Bool);
             return Some((Cara::IterAda, vec![(lanjut, s)]));

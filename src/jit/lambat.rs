@@ -59,6 +59,37 @@ pub(crate) fn skalar_kode(kode: i32, nilai: i64) -> Option<VmValue> {
     })
 }
 
+/// `BuildStruct`/`BuildArray`/`BuildTuple` instruksi `ip` atas posisi `t - n .. t` (angka native dari
+/// tumpahan `nilai`, sisanya dipindah dari stack VM); hasilnya di posisi `t - n`. 2 = galat.
+pub extern "C" fn bangun(ip: i64, jenis: *const Jenis, t: i64, n: i64, nilai: *const i64) -> i32 {
+    let (vm, basis) = konteks();
+    let (t, n) = (t as usize, n as usize);
+    let jenis = unsafe { std::slice::from_raw_parts(jenis, t) };
+    let nilai = unsafe { std::slice::from_raw_parts(nilai, t) };
+    let mut isi = Vec::with_capacity(n);
+    for i in t - n..t {
+        isi.push(match nilai_skalar(jenis[i], nilai[i]) {
+            Some(v) => v,
+            None => std::mem::replace(sediakan(vm, basis, i), VmValue::Nil),
+        });
+    }
+    let fr = vm.frames.last().expect("bingkai terluar");
+    let ins = fr.func.chunk.code[ip as usize];
+    let v = match ins.op {
+        OpCode::BuildStruct => match fr.func.chunk.constants.get(ins.arg as usize) {
+            Some(VmValue::Map(p)) => match p.bentuk() {
+                Some(b) => VmValue::Map(Arc::new(crate::vm::value::Peta::struktur_dari(p.label.clone(), b, isi))),
+                None => return 2,
+            },
+            _ => return 2,
+        },
+        OpCode::BuildTuple => VmValue::tuple(isi),
+        _ => VmValue::array(isi),
+    };
+    *sediakan(vm, basis, t - n) = v;
+    0
+}
+
 /// `str::char_at(teks, i)` atas posisi `p` milik VM: kode karakternya; −1 = jalur bawaan umum (indeks negatif
 /// atau di luar batas, bukan teks — yang juga melapor galatnya). Prefiks ASCII lewat indeks byte.
 pub extern "C" fn karakter(p: i64, i: i64) -> i64 {
@@ -159,11 +190,14 @@ pub extern "C" fn masuk(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai: 
     }
     let d = vm.frames.len();
     let fr = vm.frames.last_mut().expect("bingkai terluar");
-    let sp = fr.func.chunk.code.get(ip as usize).and_then(|i| (i.span != 0).then(|| fr.func.chunk.spans.get(i.span as usize).copied()).flatten());
     fr.ip = ip as usize + 1;
     let slot = basis + t - argc - 1;
     let VmValue::Function(func) = vm.stack[slot].clone() else { panic!("bug di jrgc: panggilan langsung JIT bukan atas fungsi") };
-    if let Err(e) = vm.periksa_kedalaman(&func.name, sp) {
+    if vm.periksa_kedalaman(&func.name, None).is_err() {
+        // Span cuma untuk kalimat galatnya.
+        let fr = vm.frames.last().expect("bingkai terluar");
+        let sp = fr.func.chunk.code.get(ip as usize).and_then(|i| (i.span != 0).then(|| fr.func.chunk.spans.get(i.span as usize).copied()).flatten());
+        let e = vm.periksa_kedalaman(&func.name, sp).expect_err("diperiksa barusan");
         GALAT.with(|g| *g.borrow_mut() = Some(e));
         return 2;
     }

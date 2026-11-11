@@ -88,15 +88,10 @@ impl Vm {
             return Err(VmError::at("BuildStruct: prototipe bukan struct", sp));
         };
         let bentuk = proto.bentuk().ok_or_else(|| VmError::at("BuildStruct: prototipe tanpa bentuk", sp))?;
-        let n = bentuk.nama.len();
-        let start = self.stack.len().checked_sub(n).ok_or_else(|| VmError::at("BuildStruct: stack kurang", sp))?;
+        let start = self.stack.len().checked_sub(bentuk.nama.len()).ok_or_else(|| VmError::at("BuildStruct: stack kurang", sp))?;
         let label = proto.label.clone();
-        // Struct dari literal berbagi bentuk prototipenya; dict dan nama kembar lewat jalur tabel.
-        let peta = if bentuk.unik && !matches!(label, super::value::Label::Dict) {
-            Peta::dari_isi(label, super::peta::IsiPeta::rapat(bentuk, self.stack.drain(start..).collect()))
-        } else {
-            Peta::baru_n(label, n, bentuk.nama.iter().cloned().zip(self.stack.drain(start..)))
-        };
+        let nilai: Vec<VmValue> = self.stack.drain(start..).collect();
+        let peta = Peta::struktur_dari(label, bentuk, nilai);
         self.stack.push(VmValue::Map(Arc::new(peta)));
         Ok(())
     }

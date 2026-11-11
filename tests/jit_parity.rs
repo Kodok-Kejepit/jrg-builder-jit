@@ -848,3 +848,34 @@ fn rune_native() {
     }
     assert!(i.stdout.starts_with("521393000 c [a, é, ☃, 𝔘, b, c] c true\n") && i.stderr.contains("index 99"), "{}", i.stdout);
 }
+
+/// `Cara::Bangun`: struct/larik/tuple/dict literal dari angka native (bulat, pecahan, `Lebar`) dan nilai VM.
+const BANGUN: &str = r#"struct P { pub x: float, pub n: int, pub s: string, pub h: uint }
+pub fn main() {
+    var t = 0
+    var akhir = P { x: 0.0, n: 0, s: "", h: 0 }
+    var kumpul = []
+    for i in 0..3000 {
+        let h: uint = math::wrap_mul(i as uint, 11400714819323198485)
+        let p = P { x: i as float * 0.5, n: i, s: «k${i % 3}», h: h }
+        let a = [i, i * 2, p.x, p.s]
+        let u = (i, p.h, "t")
+        t = t + p.n + a[1] + len(a) + u.0
+        akhir = p
+        if i % 1000 == 0 { kumpul = arr::push(kumpul, (a, u)) }
+        let d = dict { a: i, b: p.s }
+        t = t + d.a
+    }
+    wok(t, akhir, kumpul)
+}
+"#;
+
+#[test]
+fn bangun_dari_angka_native() {
+    let i = jalankan(BANGUN, &[], &[]);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(BANGUN, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    assert!(i.stdout.starts_with("22504500 P {h: 8926974566473112067"), "{}", i.stdout);
+}

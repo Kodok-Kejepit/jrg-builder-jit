@@ -83,7 +83,7 @@ pub fn tanda_tangan_umum(cc: CallConv, param: &[Type], hasil: Option<Type>) -> S
 pub struct ImporLambat {
     pub langkah: FuncId, pub muat: FuncId, pub buang: FuncId, pub benar: FuncId, pub buka: FuncId,
     pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
-    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub karakter: FuncId,
+    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub karakter: FuncId, pub bangun: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
@@ -458,7 +458,7 @@ pub fn turunkan(
     let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode, f_bawaan, f_biner] =
         [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode, il.bawaan, il.biner]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter] = [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter]
+    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun] = [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -700,6 +700,22 @@ pub fn turunkan(
                 jaga(&mut b, &k, &var, salah, ip, s);
                 let v = b.ins().uextend(types::I64, c);
                 b.def_var(var[t - 1], v);
+                continue;
+            }
+            Cara::Bangun(n) => {
+                tumpahkan(&mut b, &k, &var, s, t - n..t, slot, ptr, f_taruh, &r.callee_nilai);
+                let args = [
+                    i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
+                    i64c(&mut b, *n as i64), b.ins().stack_addr(ptr, slot, 0),
+                ];
+                let c = b.ins().call(f_bangun, &args);
+                let st = b.inst_results(c)[0];
+                let (gagal, terus) = (b.create_block(), b.create_block());
+                b.set_cold_block(gagal);
+                b.ins().brif(st, gagal, &[], terus, &[]);
+                b.switch_to_block(gagal);
+                kembali_status(&mut b, GAGAL);
+                b.switch_to_block(terus);
                 continue;
             }
             Cara::TipeLipat(ya) => {
