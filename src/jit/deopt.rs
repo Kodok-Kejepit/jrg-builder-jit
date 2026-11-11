@@ -98,7 +98,7 @@ pub(crate) fn pulihkan(vm: &mut Vm, catatan: Catatan) {
             // `Lebar` sudah ditulis ke stack VM oleh blok deopt-nya (`turun::keluar_deopt`).
             let nilai = match jenis[i] {
                 j if j.di_vm() || j == Jenis::Lebar => std::mem::replace(&mut lama[i], VmValue::Nil),
-                j => nilai_dari(j, v, &rencana.callee),
+                j => nilai_dari(j, v, &rencana.callee, &f.chunk.constants),
             };
             vm.stack.push(nilai);
         }
@@ -109,7 +109,7 @@ pub(crate) fn pulihkan(vm: &mut Vm, catatan: Catatan) {
         let slot = vm.stack.len() - 1;
         let jenis = rencana.keadaan[r.ip as usize].as_ref().expect("ip lanjut selalu terjangkau");
         for (i, v) in r.nilai.into_iter().enumerate() {
-            vm.stack.push(nilai_dari(jenis[i], v, &rencana.callee));
+            vm.stack.push(nilai_dari(jenis[i], v, &rencana.callee, &f.chunk.constants));
         }
         let argc = f.arity as u8;
         vm.dorong_bingkai(CallFrame { func: f, ip: r.ip as usize, slot, defers: Vec::new(), argc, closure: None });
@@ -141,8 +141,10 @@ pub fn sebab() -> Vec<(String, u64)> {
     v
 }
 
-fn nilai_dari(j: Jenis, v: i64, callee: &[Arc<crate::vm::value::VmFunction>]) -> VmValue {
+fn nilai_dari(j: Jenis, v: i64, callee: &[Arc<crate::vm::value::VmFunction>], konstanta: &[VmValue]) -> VmValue {
     match j {
+        // Fungsi bawaan maya: tidak pernah ditulis ke stack VM, dibangun dari konstantanya.
+        Jenis::Bawaan(i) | Jenis::Bungkus(_, i) => konstanta[i as usize].clone(),
         Jenis::Bulat => VmValue::Int(v as i128),
         Jenis::Bool => VmValue::Bool(v != 0),
         Jenis::Pecahan => VmValue::Float(f64::from_bits(v as u64)),
@@ -150,6 +152,6 @@ fn nilai_dari(j: Jenis, v: i64, callee: &[Arc<crate::vm::value::VmFunction>]) ->
         Jenis::Fungsi(c) => VmValue::Function(Arc::clone(&callee[c])),
         Jenis::Kosong => VmValue::Nil,
         // Bingkai callee native tidak pernah memegang nilai milik VM (argumennya selalu bulat).
-        Jenis::Nilai | Jenis::Bawaan | Jenis::Bungkus(_) | Jenis::Lebar => unreachable!("posisi Nilai cuma ada di bingkai terluar"),
+        Jenis::Nilai | Jenis::Lebar => unreachable!("posisi Nilai cuma ada di bingkai terluar"),
     }
 }

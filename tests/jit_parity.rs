@@ -879,3 +879,37 @@ fn bangun_dari_angka_native() {
     }
     assert!(i.stdout.starts_with("22504500 P {h: 8926974566473112067"), "{}", i.stdout);
 }
+
+/// Fungsi bawaan sebagai konstanta maya (tidak ditulis ke stack VM): disimpan, diserahkan, dikembalikan, masuk
+/// larik, bertemu fungsi lain di titik temu, dipanggil lewat variabel, dibandingkan (galat), intrinsik.
+const KONSTANTA_MAYA: &str = r#"fn terap(f, x) { f(x) }
+fn pilih(i) { i % 2 == 0 $ str::upper : str::lower }
+pub fn main() {
+    var n = 0
+    var akhir = len
+    var fs = []
+    for i in 0..3000 {
+        let f = i % 3 == 0 $ str::upper : str::reverse
+        let g = len
+        n = n + g(f("abc")) + len(str::upper("xy")) + (str::char_at("hé", i % 2) as int)
+        n = n + terap(len, [1, 2, 3]) + len(pilih(i)("Ab"))
+        if i % 1000 == 0 { fs = arr::push(fs, f) }
+        akhir = i % 2 == 0 $ len : typeof
+        n = n + (math::wrap_mul(i as uint, 3) as int) + (math::abs(-i) % 7)
+        let k = [str::upper, str::lower][i % 2]
+        n = n + len(k("q"))
+    }
+    wok(n, fs, akhir, akhir([1]), typeof(str::upper))
+    wok(len == len, arr::map(["a", "b"], str::upper))
+}
+"#;
+
+#[test]
+fn konstanta_maya() {
+    let i = jalankan(KONSTANTA_MAYA, &[], &[]);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(KONSTANTA_MAYA, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    assert!(i.stdout.starts_with("14042994 [<native fn>") && i.stderr.contains("native_fn"), "{}", i.stdout);
+}

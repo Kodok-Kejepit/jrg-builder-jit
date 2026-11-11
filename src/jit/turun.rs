@@ -108,6 +108,23 @@ fn kembali_status(b: &mut FunctionBuilder, st: i64) {
 struct Keluar {
     catat: FuncRef, fid: i64, ptr: Type, slot: StackSlot, bendera: std::cell::Cell<i64>, v128: Vec<Variable>, lebar: FuncRef,
     buka_lebar: FuncRef, wadah16: StackSlot,
+    /// Alamat konstanta chunk yang dikompilasi (tetap selama fungsinya hidup): sumber fungsi bawaan maya.
+    konstanta: *const crate::vm::value::VmValue,
+}
+
+impl Keluar {
+    /// Alamat konstanta asal posisi maya (`Jenis::konstanta`).
+    fn alamat_konstanta(&self, j: Jenis) -> Option<i64> {
+        j.konstanta().map(|i| unsafe { self.konstanta.add(i as usize) } as i64)
+    }
+}
+
+/// Alamat fungsi bawaan maya `j` (`Jenis::Bawaan`/`Bungkus`) dari konstanta `f`.
+fn fungsi_bawaan(f: &VmFunction, j: Jenis) -> i64 {
+    match f.chunk.constants.get(j.konstanta().expect("callee bawaan maya") as usize) {
+        Some(crate::vm::value::VmValue::NativeFn(g)) => *g as usize as i64,
+        _ => unreachable!("dijamin layak.rs: konstanta fungsi bawaan"),
+    }
 }
 
 /// Posisi `p` milik VM dibuka jadi `Jenis::Lebar` (`lambat::buka_lebar`): status (bukan 0 = bukan bulat).
@@ -252,6 +269,10 @@ fn isi_tepi(
                     let kv = b.ins().iconst(types::I64, &r.callee_nilai[*c] as *const _ as i64);
                     b.ins().call(taruh, &[p, kv]);
                 }
+                Jenis::Bawaan(_) | Jenis::Bungkus(..) => {
+                    let kv = b.ins().iconst(types::I64, k.alamat_konstanta(*a).expect("maya"));
+                    b.ins().call(taruh, &[p, kv]);
+                }
                 j => {
                     let kode = j.kode();
                     let v = if j.skalar() { b.use_var(var[i]) } else { b.ins().iconst(types::I64, 0) };
@@ -358,7 +379,7 @@ fn turun_lebar(
         }
         // `math::wrap_*`: 64 bit bawah kedua operand, hasil tak bertanda 0..2^64-1 (aturan `MathWrap*`).
         OpCode::Call if t >= 3 && s[t - 3].wrap() => {
-            let Bungkus(jenis) = s[t - 3] else { return false };
+            let Bungkus(jenis, _) = s[t - 3] else { return false };
             let bawah = |b: &mut FunctionBuilder, i: usize| -> Value {
                 if s[i] == Lebar { let x = b.use_var(v128[i]); b.ins().ireduce(types::I64, x) } else { b.use_var(var[i]) }
             };
@@ -399,6 +420,11 @@ fn tumpahkan(
         if let Jenis::Fungsi(c) = s[i] {
             let ke = b.ins().iconst(types::I64, i as i64);
             let kv = b.ins().iconst(types::I64, &callee[c] as *const _ as i64);
+            b.ins().call(taruh, &[ke, kv]);
+            continue;
+        }
+        if let Some(alamat) = k.alamat_konstanta(s[i]) {
+            let (ke, kv) = (b.ins().iconst(types::I64, i as i64), b.ins().iconst(types::I64, alamat));
             b.ins().call(taruh, &[ke, kv]);
             continue;
         }
@@ -444,6 +470,7 @@ pub fn turunkan(
         v128: v128.clone(), lebar: m.declare_func_in_func(impor.lambat.tulis_lebar, b.func),
         buka_lebar: m.declare_func_in_func(impor.lambat.buka_lebar, b.func),
         wadah16: b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3)),
+        konstanta: f.chunk.constants.as_ptr(),
     };
     let undi = impor.undi.map(|u| m.declare_func_in_func(u, b.func));
     let (baca, tulis) = (m.declare_func_in_func(impor.baca, b.func), m.declare_func_in_func(impor.tulis, b.func));
@@ -646,6 +673,8 @@ pub fn turunkan(
                 b.ins().call(f_muat, &[d, ke]);
                 continue;
             }
+            // Fungsi bawaan maya: tidak ditulis ke stack VM (pembacanya mewujudkannya).
+            Cara::Konstanta if ins.op == OpCode::Const && matches!(f.chunk.constants[a], crate::vm::value::VmValue::NativeFn(_)) => continue,
             Cara::Konstanta => {
                 let k = if ins.op == OpCode::Const { &f.chunk.constants[a] as *const _ as i64 } else { 0 };
                 let (ke, kv) = (i64c(&mut b, t as i64), i64c(&mut b, k));
@@ -871,7 +900,7 @@ pub fn turunkan(
                 tumpahkan(&mut b, &k, &var, s, t - a..t, slot, ptr, f_taruh, &r.callee_nilai);
                 let args = [
                     i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
-                    i64c(&mut b, a as i64), b.ins().stack_addr(ptr, slot, 0),
+                    i64c(&mut b, a as i64), b.ins().stack_addr(ptr, slot, 0), i64c(&mut b, fungsi_bawaan(f, s[t - a - 1])),
                 ];
                 let c = b.ins().call(f_bawaan, &args);
                 let st = b.inst_results(c)[0];
@@ -1238,7 +1267,7 @@ pub fn turunkan(
                 terbuka = false;
             }
             // `str::char_at` (`layak`: hasil `Rune`): dijawab di tempat, atau jalur bawaan umum di blok dingin.
-            OpCode::Call if a == 2 && s[t - 3] == Jenis::Bungkus(super::layak::BUNGKUS_CHAR_AT) => {
+            OpCode::Call if a == 2 && s[t - 3].bungkus(super::layak::BUNGKUS_CHAR_AT) => {
                 let (pt, iv) = (i64c(&mut b, t as i64 - 2), b.use_var(var[t - 1]));
                 let c = b.ins().call(f_karakter, &[pt, iv]);
                 let h = b.inst_results(c)[0];
@@ -1251,7 +1280,7 @@ pub fn turunkan(
                 tumpahkan(&mut b, &k, &var, s, t - 2..t, slot, ptr, f_taruh, &r.callee_nilai);
                 let args = [
                     i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
-                    i64c(&mut b, 2), b.ins().stack_addr(ptr, slot, 0),
+                    i64c(&mut b, 2), b.ins().stack_addr(ptr, slot, 0), i64c(&mut b, fungsi_bawaan(f, s[t - 3])),
                 ];
                 let c = b.ins().call(f_bawaan, &args);
                 let st = b.inst_results(c)[0];
@@ -1274,7 +1303,7 @@ pub fn turunkan(
                 let h = b.block_params(gabung)[0];
                 b.def_var(var[t - 3], h);
             }
-            OpCode::Call if a == 1 && s[t - 2] == Jenis::Bungkus(super::layak::BUNGKUS_KE_BULAT) => {
+            OpCode::Call if a == 1 && s[t - 2].bungkus(super::layak::BUNGKUS_KE_BULAT) => {
                 let v = b.use_var(var[t - 1]);
                 b.def_var(var[t - 2], v);
             }

@@ -20,10 +20,12 @@ pub enum Jenis {
     Kosong,
     /// Nilai lain, milik bingkai VM: tetap di stack VM di indeks yang sama, cuma disentuh lewat `lambat`.
     Nilai,
-    /// `Nilai` yang pasti fungsi bawaan (`Const`), jadi `Call` atasnya tidak pernah mendorong bingkai.
-    Bawaan,
-    /// `Bawaan` yang dikenal sebagai `math::wrap_add`/`wrap_sub`/`wrap_mul` (`BUNGKUS_*`): dihitung native.
-    Bungkus(u8),
+    /// Fungsi bawaan dari konstanta ke-`i` (`Const`): maya — tidak ditulis ke stack VM, diwujudkan dari
+    /// konstantanya oleh pembacanya (tumpahan, tepi, deopt), seperti `Fungsi`. `Call` atasnya tidak pernah
+    /// mendorong bingkai.
+    Bawaan(u32),
+    /// `Bawaan` yang dikenal (`BUNGKUS_*`: `math::wrap_*`, `str::char_at`, `int`/`uint`): dihitung native.
+    Bungkus(u8, u32),
     /// Bulat i128 di variabel `I128`; ditulis ke stack VM (`lambat::tulis_lebar`) cuma di batas.
     Lebar,
     /// Kode karakter (`u32` di variabel `i64`); cuma lahir dari intrinsik `str::char_at`, tidak pernah
@@ -40,10 +42,22 @@ pub const BUNGKUS_KE_BULAT: u8 = 4;
 
 impl Jenis {
     /// Isinya ada di stack VM, bukan di variabel native.
-    pub fn di_vm(self) -> bool { matches!(self, Jenis::Nilai | Jenis::Bawaan | Jenis::Bungkus(_)) }
+    pub fn di_vm(self) -> bool { self == Jenis::Nilai }
+
+    /// Nilainya tetap dan diketahui saat kompilasi (callee, fungsi bawaan): tidak ada di stack VM, jadi
+    /// pembantu yang membaca stack VM tidak boleh menerimanya mentah.
+    pub fn tetap(self) -> bool { matches!(self, Jenis::Fungsi(_) | Jenis::Bawaan(_) | Jenis::Bungkus(..)) }
+
+    /// Indeks konstanta fungsi bawaan maya.
+    pub fn konstanta(self) -> Option<u32> {
+        match self { Jenis::Bawaan(i) | Jenis::Bungkus(_, i) => Some(i), _ => None }
+    }
 
     /// `math::wrap_*` (hasil `Lebar`).
-    pub fn wrap(self) -> bool { matches!(self, Jenis::Bungkus(k) if k <= BUNGKUS_KALI) }
+    pub fn wrap(self) -> bool { matches!(self, Jenis::Bungkus(k, _) if k <= BUNGKUS_KALI) }
+
+    /// Intrinsik bawaan `k` (`BUNGKUS_*`).
+    pub fn bungkus(self, k: u8) -> bool { matches!(self, Jenis::Bungkus(j, _) if j == k) }
 
     /// Kode jenis untuk pembantu dan titik masuk (`lambat::skalar_kode`); 4 = milik VM.
     pub fn kode(self) -> i64 {
@@ -54,7 +68,7 @@ impl Jenis {
             Jenis::Pecahan => 5,
             Jenis::Lebar => 6,
             Jenis::Rune => 7,
-            Jenis::Nilai | Jenis::Bawaan | Jenis::Bungkus(_) | Jenis::Fungsi(_) => 4,
+            Jenis::Nilai | Jenis::Bawaan(_) | Jenis::Bungkus(..) | Jenis::Fungsi(_) => 4,
         }
     }
 
@@ -575,14 +589,14 @@ fn langkah_lambat(
             s.push(r.spek[ip].unwrap_or(Nilai));
             return Some((Cara::MuatUpval, vec![(lanjut, s)]));
         }
-        OpCode::StoreUpval if t >= 1 && !matches!(puncak, Fungsi(_)) => return Some((Cara::SimpanUpval, vec![(lanjut, s)])),
+        OpCode::StoreUpval if t >= 1 && !puncak.tetap() => return Some((Cara::SimpanUpval, vec![(lanjut, s)])),
         OpCode::LoadGlobal => {
             r.spek[ip] = spek_hasil(f, ip);
             s.push(r.spek[ip].unwrap_or(Nilai));
             return Some((Cara::MuatGlobal, vec![(lanjut, s)]));
         }
-        OpCode::StoreGlobal if !matches!(puncak, Fungsi(_)) => return Some((Cara::SimpanGlobal, vec![(lanjut, s)])),
-        OpCode::GetIndex if t >= 2 && s[t - 2].di_vm() && !matches!(puncak, Fungsi(_)) => {
+        OpCode::StoreGlobal if !puncak.tetap() => return Some((Cara::SimpanGlobal, vec![(lanjut, s)])),
+        OpCode::GetIndex if t >= 2 && s[t - 2].di_vm() && !puncak.tetap() => {
             s.pop();
             r.spek[ip] = spek_hasil(f, ip);
             *s.last_mut()? = r.spek[ip].unwrap_or(Nilai);
@@ -666,7 +680,7 @@ fn langkah_lambat(
         }
         OpCode::Const | OpCode::Unit => {
             let j = match (ins.op, f.chunk.constants.get(a)?) {
-                (OpCode::Const, VmValue::NativeFn(g)) => bungkus(*g).map_or(Bawaan, Bungkus),
+                (OpCode::Const, VmValue::NativeFn(g)) => bungkus(*g).map_or(Bawaan(a as u32), |k| Bungkus(k, a as u32)),
                 _ => Nilai,
             };
             s.push(j);
@@ -679,7 +693,7 @@ fn langkah_lambat(
         }
         // Lokal milik VM bisa sel tangkapan: penulisannya menembus sel (`Vm::simpan_lokal`).
         OpCode::StoreLocal | OpCode::SimpanBuang
-            if a + 1 < t && (s[a].di_vm() || puncak.di_vm()) && !matches!(puncak, Fungsi(_)) => {
+            if a + 1 < t && (s[a].di_vm() || puncak.di_vm()) && !puncak.tetap() => {
             s[a] = Nilai;
             if ins.op == OpCode::SimpanBuang { s.pop(); }
             return Some((Cara::Simpan, vec![(lanjut, s)]));
@@ -690,14 +704,14 @@ fn langkah_lambat(
     if matches!(ins.op, OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::Pow
         | OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge | OpCode::BitAnd
         | OpCode::BitOr | OpCode::BitXor | OpCode::Shl | OpCode::Shr | OpCode::AndNot)
-        && t >= 2 && !s[t - 2..].iter().any(|j| matches!(j, Fungsi(_))) {
+        && t >= 2 && !s[t - 2..].iter().any(|j| j.tetap()) {
         let banding = matches!(ins.op, OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge);
         s.truncate(t - 2);
         s.push(if banding { Bool } else { Nilai });
         return Some((Cara::Biner, vec![(lanjut, s)]));
     }
     // Fungsi bawaan: tidak pernah mendorong bingkai, dipanggil langsung oleh pembantu.
-    if ins.op == OpCode::Call && a < t && matches!(s[t - a - 1], Bawaan | Bungkus(_)) && !s[t - a..].iter().any(|j| matches!(j, Fungsi(_))) {
+    if ins.op == OpCode::Call && a < t && matches!(s[t - a - 1], Bawaan(_) | Bungkus(..)) && !s[t - a..].iter().any(|j| j.tetap()) {
         s.truncate(t - a - 1);
         r.spek[ip] = spek_hasil(f, ip);
         s.push(r.spek[ip].unwrap_or(Nilai));
@@ -706,7 +720,7 @@ fn langkah_lambat(
     // Fungsi native-layak dengan argumen milik VM: bingkai VM-nya didorong, kodenya dipanggil langsung.
     if let (OpCode::Call, true) = (ins.op, a < t) {
         if let Fungsi(i) = s[t - a - 1] {
-            if r.callee[i].arity as usize == a && !s[t - a..].iter().any(|j| matches!(j, Fungsi(_))) {
+            if r.callee[i].arity as usize == a && !s[t - a..].iter().any(|j| j.tetap()) {
                 // `Lebar` tetap: isinya sudah di stack VM (tumpahan), callee membacanya di prolog.
                 // Rune tidak pernah jenis titik masuk: ditumpahkan sebagai nilai VM.
                 let jenis: Vec<Jenis> = s[t - a..].iter().map(|j| if j.di_vm() || *j == Rune { Nilai } else { *j }).collect();
@@ -791,7 +805,7 @@ fn efek_langkah(f: &VmFunction, ip: usize, s: &[Jenis]) -> Option<(usize, usize,
         OpCode::StoreGlobal => (1, 1, None),
         // Fungsi bawaan tidak pernah mendorong bingkai (`Vm::call_value`, cabang `NativeFn`).
         // Callee milik VM: bawaan dijalankan di tempat, fungsi/closure/method lewat bingkai VM sampai kembali.
-        OpCode::Call if a < t && (s[t - a - 1].di_vm() || matches!(s[t - a - 1], Jenis::Fungsi(_))) => (a + 1, 1, None),
+        OpCode::Call if a < t && (s[t - a - 1].di_vm() || s[t - a - 1].tetap()) => (a + 1, 1, None),
         OpCode::GetMethod if ada_vm(1) => (1, 1, None),
         OpCode::PeriksaArgMetode => { let n = (a >> 24) + 2; (n, n, None) }
         OpCode::LoadArgc | OpCode::LokalPolos | OpCode::LoadUpval | OpCode::PinjamUpval | OpCode::PinjamGlobal
@@ -1003,13 +1017,13 @@ fn langkah_asli(
             s.push(Lebar);
         }
         // `str::char_at(teks, i)`: kode karakter native (yang tak bisa dijawab di tempat lewat jalur umum).
-        OpCode::Call if a == 2 && s.len() >= 3 && s[s.len() - 3] == Bungkus(BUNGKUS_CHAR_AT)
+        OpCode::Call if a == 2 && s.len() >= 3 && s[s.len() - 3].bungkus(BUNGKUS_CHAR_AT)
             && s[s.len() - 2].di_vm() && s[s.len() - 1] == Bulat => {
             s.truncate(s.len() - 3);
             s.push(Rune);
         }
         // `int(rune)` / `rune as uint`: kodenya, tanpa panggilan.
-        OpCode::Call if a == 1 && s.len() >= 2 && s[s.len() - 2] == Bungkus(BUNGKUS_KE_BULAT) && s[s.len() - 1] == Rune => {
+        OpCode::Call if a == 1 && s.len() >= 2 && s[s.len() - 2].bungkus(BUNGKUS_KE_BULAT) && s[s.len() - 1] == Rune => {
             s.truncate(s.len() - 2);
             s.push(Bulat);
         }

@@ -129,7 +129,7 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
                 salin: impor("jrg_jit_salin", &[I64, I64], None)?,
                 tukar: impor("jrg_jit_tukar", &[I64, I64], None)?,
                 cek_metode: impor("jrg_jit_cek_metode", &[I64, p], Some(I32))?,
-                bawaan: impor("jrg_jit_bawaan", &[I64, p, I64, I64, p], Some(I32))?,
+                bawaan: impor("jrg_jit_bawaan", &[I64, p, I64, I64, p, I64], Some(I32))?,
                 biner: impor("jrg_jit_biner", &[I64, p, I64, p], Some(I32))?,
                 muat_upval: impor("jrg_jit_muat_upval", &[I64, I64], Some(I32))?,
                 simpan_upval: impor("jrg_jit_simpan_upval", &[I64, I64, I64, I32], Some(I32))?,

@@ -252,12 +252,14 @@ pub extern "C" fn keluar(st: i64, hasil: i64) -> i32 {
 
 /// `Call` atas fungsi bawaan di posisi `t - argc - 1` (milik VM): argumennya dari nilai native atau
 /// posisi VM (diambil), hasilnya di posisi fungsinya (`Vm::panggil_native`). 0 = selesai, 2 = galat.
-pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai: *const i64) -> i32 {
+pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai: *const i64, f: i64) -> i32 {
     let (vm, basis) = konteks();
     let (t, argc) = (t as usize, argc as usize);
     let jenis = unsafe { std::slice::from_raw_parts(jenis, t) };
     let nilai = unsafe { std::slice::from_raw_parts(nilai, t) };
-    if let Some(v) = bawaan_cepat(vm, basis, jenis, nilai, t, argc) {
+    // Callee-nya fungsi bawaan maya (`Jenis::Bawaan`): alamatnya dari konstanta, bukan dari stack VM.
+    let f: crate::vm::value::VmNativeFn = unsafe { std::mem::transmute(f as usize) };
+    if let Some(v) = bawaan_cepat(vm, basis, jenis, nilai, t, argc, f as usize) {
         vm.catat_hasil(&v);
         *sediakan(vm, basis, t - argc - 1) = v;
         return 0;
@@ -269,7 +271,6 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
             None => std::mem::replace(sediakan(vm, basis, i), VmValue::Nil),
         });
     }
-    let VmValue::NativeFn(f) = *sediakan(vm, basis, t - argc - 1) else { panic!("bug di jrgc: panggilan bawaan JIT bukan atas fungsi bawaan") };
     let fr = vm.frames.last_mut().expect("bingkai terluar");
     let sp = fr.func.chunk.code.get(ip as usize).and_then(|i| (i.span != 0).then(|| fr.func.chunk.spans.get(i.span as usize).copied()).flatten());
     fr.ip = ip as usize + 1;
@@ -288,15 +289,12 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
 
 /// Bawaan yang dijawab di tempat, tanpa larik argumen dan jembatan nilai; `None` = jalur umum (yang juga
 /// melapor galatnya). Posisi milik VM saja yang sah dibaca dari stack VM (posisi native bisa basi).
-fn bawaan_cepat(vm: &Vm, basis: usize, jenis: &[Jenis], nilai: &[i64], t: usize, argc: usize) -> Option<VmValue> {
+fn bawaan_cepat(vm: &Vm, basis: usize, jenis: &[Jenis], nilai: &[i64], t: usize, argc: usize, f: usize) -> Option<VmValue> {
     fn alamat(nama: &str) -> usize {
         match crate::vm::bawaan::bawaan(nama) { Some(VmValue::NativeFn(f)) => f as usize, _ => 0 }
     }
     static ALAMAT: std::sync::OnceLock<[usize; 3]> = std::sync::OnceLock::new();
     let [char_at, int, uint] = *ALAMAT.get_or_init(|| [alamat("str::char_at"), alamat("int"), alamat("uint")]);
-    if !jenis[t - argc - 1].di_vm() { return None; }
-    let Some(VmValue::NativeFn(f)) = vm.stack.get(basis + t - argc - 1) else { return None };
-    let f = *f as usize;
     match argc {
         // `str::char_at(s, i)`, `i` tak negatif yang ada: prefiks ASCII (per kata mesin) lewat indeks byte.
         2 if f == char_at && jenis[t - 1] == Jenis::Bulat && nilai[t - 1] >= 0 && jenis[t - 2].di_vm() => {
