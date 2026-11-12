@@ -261,6 +261,8 @@ fn spek_hasil(f: &VmFunction, ip: usize) -> Option<Jenis> {
     let bulat = b & !(bit::BULAT | bit::BESAR) == 0 && b != 0;
     match (f.chunk.kode_jit.spek_tingkat(ip), b) {
         (0, bit::BULAT) => Some(Jenis::Bulat),
+        // Payload di lengan `match` yang belum dijalankan VM sebelum kompilasi: bulat dicoba sekali.
+        (0, 0) if f.chunk.code[ip].op == OpCode::AmbilPayload => Some(Jenis::Bulat),
         (0 | 1, _) if bulat => Some(Jenis::Lebar),
         (0, bit::PECAHAN) => Some(Jenis::Pecahan),
         _ => None,

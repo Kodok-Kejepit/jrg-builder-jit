@@ -171,7 +171,10 @@ pub const PUNCAK_VM: i64 = 1 << 28;
 /// Blok saat ini menjadi keluar deopt: nilai stack `jenis` dicatat untuk dilanjutkan VM di `ip`.
 fn keluar_deopt(b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], ip: usize, jenis: &[Jenis]) {
     let slot = k.slot;
+    // `PUNCAK_VM`: puncaknya nilai milik VM (hasil yang bukaannya gagal) — `tulis_lebar` akan menimpanya.
+    let puncak_vm = k.bendera.get() & PUNCAK_VM != 0;
     for (i, j) in jenis.iter().enumerate() {
+        if puncak_vm && i + 1 == jenis.len() { continue; }
         // Fungsi, `nil` dan nilai milik VM tidak punya isi native; `deopt::pulihkan` membangunnya.
         if *j == Jenis::Lebar { tulis_lebar(b, k, i); continue; }
         if !j.skalar() { continue; }

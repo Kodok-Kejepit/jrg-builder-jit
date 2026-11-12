@@ -1118,3 +1118,62 @@ fn jenis_dan_panjang_nilai_vm() {
     }
     assert!(i.stdout.starts_with("2261000") && i.stderr.contains("tidak bisa ukur `int`"), "{}", i.stdout);
 }
+
+/// Deopt dari bukaan `Lebar` yang gagal (`PUNCAK_VM`): puncaknya nilai milik VM dan tidak boleh ditimpa
+/// isi 128 bit native. Dulu `b.uji(2)` menjawab `0` di ambang bawaan, bukan `bb` (jawaban salah tanpa suara).
+const DEOPT_LEBAR_PUNCAK: &str = r#"struct H { pub isi: []int }
+impl H {
+    fn bobot(self, x) { return x }
+    fn uji(self, i) { return self.bobot(self.isi[i]) }
+}
+pub fn main() {
+    let a = H { isi: [5, 3, 8] }
+    var t = 0
+    for j in 0..50 { t = t + a.uji(j % 3) }
+    wok(t)
+    let b = H { isi: ["ccc", "a", "bb"] }
+    wok(b.uji(1), b.uji(2), b.uji(0), b.uji(2))
+}
+"#;
+
+#[test]
+fn deopt_lebar_tidak_menimpa_puncak_vm() {
+    let i = jalankan(DEOPT_LEBAR_PUNCAK, &[], &[]);
+    assert_eq!(i.stdout, "264\na bb ccc bb");
+    for env in [&[][..], &[STRES][..], &[STRES, ACAK][..]] {
+        let j = jalankan(DEOPT_LEBAR_PUNCAK, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout), (j.sukses, &j.stdout), "{env:?}");
+    }
+}
+
+/// Cabang `match` yang belum dijalankan VM sebelum kompilasi (tanpa umpan): payload-nya dicoba bulat sekali,
+/// dan kalau ternyata bukan bulat dideopt lalu tidak diulang.
+const CABANG_TANPA_UMPAN: &str = r#"enum Op { P(int), A(int) }
+fn ex(o: Op, acc: int) -> int {
+    match o {
+        Op::P(k) => k,
+        Op::A(k) => acc + k,
+    }
+}
+pub fn main() {
+    var acc = 1
+    for i in 0..5000 {
+        let o = i % 2 == 0 $ Op::P(i % 97) : Op::A(i % 31)
+        acc = ex(o, acc) % 1000
+    }
+    wok(acc)
+}
+"#;
+
+#[test]
+fn cabang_tanpa_umpan_dispekulasikan_bulat() {
+    let i = jalankan(CABANG_TANPA_UMPAN, &[], &[]);
+    let v = jalankan(&CABANG_TANPA_UMPAN.replace("Op::A(i % 31)", "Op::A(i % 31)\n        if i == 4000 { wok(ex(Op::A(\"x\"), 1)) }"), &[], &[]);
+    assert_eq!(v.stdout, "1x\n59", "payload teks di cabang yang dispekulasikan bulat");
+    for env in [&[][..], &[STRES][..], &[STRES, ACAK][..]] {
+        let j = jalankan(CABANG_TANPA_UMPAN, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout), (j.sukses, &j.stdout), "{env:?}");
+        let w = jalankan(&CABANG_TANPA_UMPAN.replace("Op::A(i % 31)", "Op::A(i % 31)\n        if i == 4000 { wok(ex(Op::A(\"x\"), 1)) }"), &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (w.sukses, &w.stdout, &w.stderr), "{env:?}");
+    }
+}
