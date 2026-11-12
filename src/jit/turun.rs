@@ -83,7 +83,7 @@ pub fn tanda_tangan_umum(cc: CallConv, param: &[Type], hasil: Option<Type>) -> S
 pub struct ImporLambat {
     pub langkah: FuncId, pub muat: FuncId, pub buang: FuncId, pub benar: FuncId, pub buka: FuncId,
     pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
-    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub karakter: FuncId, pub bangun: FuncId,
+    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
@@ -493,7 +493,7 @@ pub fn turunkan(
     let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode, f_bawaan, f_biner] =
         [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode, il.bawaan, il.biner]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun] = [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun]
+    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun, f_baca_pecahan] = [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun, il.baca_pecahan]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -1165,7 +1165,8 @@ pub fn turunkan(
                 let Jenis::Salinan(l) = s[t - 2] else { unreachable!() };
                 let (rel, i) = (b.ins().iconst(types::I64, l as i64), atas(&mut b, 1));
                 let pk = b.ins().stack_addr(ptr, wadah, 0);
-                let c = b.ins().call(baca, &[rel, i, pk]);
+                let f_baca = if r.spek[ip] == Some(Jenis::Pecahan) { f_baca_pecahan } else { baca };
+                let c = b.ins().call(f_baca, &[rel, i, pk]);
                 let st = b.inst_results(c)[0];
                 jaga_spek(&mut b, &k, &var, st, ip, s);
                 let v = b.ins().stack_load(ptr, types::I64, wadah, 0);
@@ -1174,7 +1175,8 @@ pub fn turunkan(
             OpCode::IndeksLokal => {
                 let (rel, i) = (b.ins().iconst(types::I64, a as i64), atas(&mut b, 1));
                 let pk = b.ins().stack_addr(ptr, wadah, 0);
-                let c = b.ins().call(baca, &[rel, i, pk]);
+                let f_baca = if r.spek[ip] == Some(Jenis::Pecahan) { f_baca_pecahan } else { baca };
+                let c = b.ins().call(f_baca, &[rel, i, pk]);
                 let st = b.inst_results(c)[0];
                 jaga_spek(&mut b, &k, &var, st, ip, s);
                 let v = b.ins().stack_load(ptr, types::I64, wadah, 0);

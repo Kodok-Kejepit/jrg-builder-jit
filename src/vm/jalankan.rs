@@ -359,6 +359,8 @@ impl Vm {
                     if let (Some(v), VmValue::Int(i)) = (self.stack.get_mut(slot).and_then(larik_milik_tunggal), &idx) {
                         let i = norm_idx(*i, v.len(), "array", "elemen", sp)?;
                         let val = v[i].clone();
+                        // Umpan jenis elemen untuk JIT (`IndeksLokal` atas larik pecahan).
+                        if PROFIL { self.catat_hasil(&val); }
                         self.push(val);
                         continue;
                     }
@@ -370,6 +372,7 @@ impl Vm {
                         Some(wadah) => self.get_index(wadah, &idx, sp)?,
                         None => return Err(VmError::at(format!("local slot {} OOB", arg), sp)),
                     };
+                    if PROFIL { self.catat_hasil(&val); }
                     self.push(val);
                 }
                 OpCode::TulisIndexLokal => {

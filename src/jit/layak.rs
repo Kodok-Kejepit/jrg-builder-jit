@@ -483,6 +483,12 @@ fn langkah(
     Some(p)
 }
 
+/// Jenis elemen yang dispekulasikan untuk baca larik milik lokal (`lambat::baca`): pecahan bila umpannya cuma
+/// pecahan, selain itu bulat (yang meleset = `jaga_spek`, kompilasi berikutnya lewat VM).
+fn elemen_larik(f: &VmFunction, ip: usize) -> Jenis {
+    if spek_hasil(f, ip) == Some(Jenis::Pecahan) { Jenis::Pecahan } else { Jenis::Bulat }
+}
+
 /// Instruksi yang tidak menyentuh lokal, tidak melompat, dan tidak memakai salinan maya sebagai operand —
 /// kecuali `GetIndex` berindeks bulat yang memakainya sebagai wadah (`baca` atas lokal asalnya).
 fn boleh_lewat_salinan(f: &VmFunction, ip: usize, s: &[Jenis]) -> bool {
@@ -943,11 +949,15 @@ fn langkah_asli(
         // Wadahnya salinan maya lokal `l` (`boleh_lewat_salinan` sudah memeriksa spekulasinya): `baca` atas `l`.
         OpCode::GetIndex if s.len() >= 2 && matches!(s[s.len() - 2], Salinan(_)) => {
             if s.pop()? != Bulat { return None; }
-            *s.last_mut()? = Bulat;
+            let j = elemen_larik(f, ip);
+            r.spek[ip] = Some(j);
+            *s.last_mut()? = j;
         }
         OpCode::IndeksLokal => {
             if s.pop()? != Bulat || *s.get(a)? != Nilai { return None; }
-            s.push(Bulat);
+            let j = elemen_larik(f, ip);
+            r.spek[ip] = Some(j);
+            s.push(j);
         }
         OpCode::TulisIndexLokal => {
             let (i, v) = (s.pop()?, s.pop()?);

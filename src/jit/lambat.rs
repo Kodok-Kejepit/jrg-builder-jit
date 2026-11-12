@@ -765,6 +765,20 @@ pub extern "C" fn baca(rel: i64, i: i64, keluar: *mut i64) -> i32 {
         VmValue::Int(n) => i64::try_from(*n).ok(),
         _ => None,
     };
+    baca_dengan(rel, keluar, bulat)
+}
+
+/// `IndeksLokal` atas larik berelemen pecahan (umpan VM): bit `f64`-nya di `*keluar`.
+pub extern "C" fn baca_pecahan(rel: i64, i: i64, keluar: *mut i64) -> i32 {
+    let pecahan = |g: &[VmValue]| match g.get(norm_indeks(i, g.len())?)? {
+        VmValue::Float(x) => Some(x.to_bits() as i64),
+        _ => None,
+    };
+    baca_dengan(rel, keluar, pecahan)
+}
+
+#[inline(always)]
+fn baca_dengan(rel: i64, keluar: *mut i64, bulat: impl Fn(&[VmValue]) -> Option<i64>) -> i32 {
     let v = atas_larik(rel, |t| {
         // Milik tunggal: tanpa kunci (aturan `IndeksLokal` VM).
         if let Some(g) = crate::vm::larik_milik_tunggal(t) { return bulat(g); }

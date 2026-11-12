@@ -969,3 +969,38 @@ fn bendera_bukaan_tidak_terbawa_ke_rekaman_sesudahnya() {
     }
     assert_eq!(i.stdout.trim_end(), "1  1  1  1  1  1");
 }
+
+/// Elemen larik pecahan lewat `IndeksLokal` (umpan VM, `lambat::baca_pecahan`), larik yang elemennya
+/// berganti jenis di tengah jalan (spekulasi meleset → VM).
+const ELEMEN_PECAHAN: &str = r#"pub fn main() {
+    var s: [16]f64
+    var c: [16]int
+    for i in 0..16 { s[i] = 0.0; c[i] = 0 }
+    var total = 0.0
+    for r in 0..5000 {
+        let b = r % 16
+        s[b] = s[b] + (r as float) * 0.5
+        c[b] = c[b] + 1
+        total = total + s[(b + 1) % 16]
+    }
+    wok(total, s[3], c[3])
+    var m = [1.5, 2.5, 3.5]
+    var t = 0.0
+    for r in 0..3000 {
+        if r == 2000 { m[1] = 7 }
+        let v = m[r % 3]
+        t = t + v
+    }
+    wok(t, m)
+}
+"#;
+
+#[test]
+fn elemen_larik_pecahan() {
+    let i = jalankan(ELEMEN_PECAHAN, &[], &[]);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(ELEMEN_PECAHAN, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    assert!(i.stdout.ends_with("8998.5 [1.5, 7, 3.5]\n"), "{}", i.stdout);
+}
