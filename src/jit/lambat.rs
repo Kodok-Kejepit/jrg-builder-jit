@@ -38,16 +38,14 @@ fn konteks() -> (&'static mut Vm, usize) {
 #[inline(always)]
 fn sediakan(vm: &mut Vm, basis: usize, p: usize) -> &mut VmValue {
     let i = basis + p;
-    // Posisi baru di puncak (yang paling sering): satu `push`, bukan `resize`.
-    if vm.stack.len() <= i { tumbuh(vm, i); }
+    // Posisi baru di puncak (sering): satu `push`; lebih tinggi dari itu (jarang): `resize` terpisah.
+    if vm.stack.len() == i { vm.stack.push(VmValue::Nil); } else if vm.stack.len() < i { tumbuh(vm, i); }
     &mut vm.stack[i]
 }
 
 #[cold]
 #[inline(never)]
-fn tumbuh(vm: &mut Vm, i: usize) {
-    if vm.stack.len() == i { vm.stack.push(VmValue::Nil); } else { vm.stack.resize(i + 1, VmValue::Nil); }
-}
+fn tumbuh(vm: &mut Vm, i: usize) { vm.stack.resize(i + 1, VmValue::Nil); }
 
 fn nilai_skalar(j: Jenis, v: i64) -> Option<VmValue> {
     if j == Jenis::Lebar { return None; }
