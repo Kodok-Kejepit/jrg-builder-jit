@@ -66,6 +66,7 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
             jb.symbol("jrg_jit_field_lokal", lambat::field_lokal as *const u8);
             jb.symbol("jrg_jit_field_lokal_banyak", lambat::field_lokal_banyak as *const u8);
             jb.symbol("jrg_jit_metode_tukar", lambat::metode_tukar as *const u8);
+            jb.symbol("jrg_jit_metode_lokal", lambat::metode_lokal as *const u8);
             jb.symbol("jrg_jit_karakter", lambat::karakter as *const u8);
             jb.symbol("jrg_jit_bangun", lambat::bangun as *const u8);
             jb.symbol("jrg_jit_baca_pecahan", lambat::baca_pecahan as *const u8);
@@ -119,6 +120,7 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
                 field_lokal: impor("jrg_jit_field_lokal", &[I64, I64, I64, I64], Some(I32))?,
                 field_banyak: impor("jrg_jit_field_lokal_banyak", &[I64, I64, I64, I64], Some(I64))?,
                 metode_tukar: impor("jrg_jit_metode_tukar", &[I64, I64], Some(I32))?,
+                metode_lokal: impor("jrg_jit_metode_lokal", &[I64, I64, I64, I32], Some(I32))?,
                 karakter: impor("jrg_jit_karakter", &[I64, I64], Some(I64))?,
                 bangun: impor("jrg_jit_bangun", &[I64, I64, I64, I64, I64], None)?,
                 baca_pecahan: impor("jrg_jit_baca_pecahan", &[I64, I64, p], Some(I32))?,

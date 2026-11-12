@@ -1345,3 +1345,40 @@ fn metode_dan_penerima_dalam_satu_pembantu() {
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// `LoadLocal`/`AmbilLokal` + `Dup; GetMethod; Swap` (`lambat::metode_lokal`): lokal yang dipindah ke
+/// argumen, dibaca, dan yang tertangkap closure (sel tidak boleh dikosongkan).
+const METODE_LOKAL: &str = r#"struct A { pub n: int }
+struct B { pub n: int }
+impl A { fn m(self, k) -> A { return A { n: self.n + k } } fn v(self) -> int { return self.n } }
+impl B { fn m(self, k) -> B { return B { n: self.n * 2 + k } } fn v(self) -> int { return self.n + 1 } }
+fn tangkap() {
+    var a = A { n: 1 }
+    let f = || { a = A { n: a.n * 10 } }
+    for i in 0..5 { a = a.m(i); f() }
+    return a.v()
+}
+pub fn main() {
+    var x = A { n: 0 }
+    var t = 0
+    for i in 0..3000 {
+        x = x.m(1)
+        t = t + x.v()
+        if i == 2000 { wok(t) }
+    }
+    wok(t, tangkap())
+    var y = B { n: 1 }
+    for i in 0..10 { y = y.m(i) }
+    wok(y.v())
+}
+"#;
+
+#[test]
+fn penerima_lokal_langsung_ke_argumen() {
+    let i = jalankan(METODE_LOKAL, &[], &[]);
+    assert_eq!(i.stdout, "2003001\n4501500 112340\n2038");
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(METODE_LOKAL, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}

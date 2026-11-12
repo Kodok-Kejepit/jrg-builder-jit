@@ -83,7 +83,7 @@ pub fn tanda_tangan_umum(cc: CallConv, param: &[Type], hasil: Option<Type>) -> S
 pub struct ImporLambat {
     pub langkah: FuncId, pub muat: FuncId, pub buang: FuncId, pub benar: FuncId, pub buka: FuncId,
     pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
-    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub metode_tukar: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
+    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub metode_tukar: FuncId, pub metode_lokal: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
@@ -169,6 +169,30 @@ pub const GAGAL_SPEK: i64 = 1 << 29;
 pub const PUNCAK_VM: i64 = 1 << 28;
 
 /// Blok saat ini menjadi keluar deopt: nilai stack `jenis` dicatat untuk dilanjutkan VM di `ip`.
+/// `LoadLocal`/`AmbilLokal` di `ip` diikuti `Dup; GetMethod(Cara::Metode); Swap` tanpa sasaran lompat:
+/// nomor method-nya (`Rencana::metode`).
+fn metode_sesudah(r: &Rencana, ip: usize) -> Option<usize> {
+    let polos = |i: usize| !r.pemimpin[i] && r.keadaan[i].is_some() && !r.keluar[i] && r.wujud[i].is_empty();
+    match (r.cara.get(ip + 1)?, r.cara.get(ip + 2)?, r.cara.get(ip + 3)?) {
+        (Cara::Salin, Cara::Metode(n), Cara::Tukar) if (1..=3).all(|d| polos(ip + d)) => Some(*n),
+        _ => None,
+    }
+}
+
+/// Lowering `metode_sesudah`: lokal `a` langsung ke posisi argumen `t + 1`; gagal = deopt di `GetMethod`.
+#[allow(clippy::too_many_arguments)]
+fn metode_lokal(
+    b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], r: &Rencana, f: FuncRef, ip: usize, a: usize, t: usize,
+    n: usize, ambil: bool,
+) {
+    let (d, p) = (b.ins().iconst(types::I64, a as i64), b.ins().iconst(types::I64, t as i64));
+    let l = b.ins().iconst(types::I64, &r.metode[n] as *const String as i64);
+    let am = b.ins().iconst(types::I32, ambil as i64);
+    let c = b.ins().call(f, &[d, p, l, am]);
+    let c = b.inst_results(c)[0];
+    jaga_spek(b, k, var, c, ip + 2, r.keadaan[ip + 2].as_ref().expect("dijaga metode_sesudah"));
+}
+
 /// Bacaan field angka lain (bukan privat) atas lokal `a` sesudah `ip` di wilayah yang sama dengan tembolok
 /// `cse` (berhenti di awal blok atau instruksi di luar `cse_aman`), paling banyak delapan.
 fn field_sesudahnya(
@@ -536,8 +560,8 @@ pub fn turunkan(
     let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode, f_bawaan, f_biner] =
         [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode, il.bawaan, il.biner]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun, f_baca_pecahan, f_jenis_sama, f_panjang, f_field_banyak, f_metode_tukar] =
-        [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun, il.baca_pecahan, il.jenis_sama, il.panjang, il.field_banyak, il.metode_tukar]
+    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun, f_baca_pecahan, f_jenis_sama, f_panjang, f_field_banyak, f_metode_tukar, f_metode_lokal] =
+        [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun, il.baca_pecahan, il.jenis_sama, il.panjang, il.field_banyak, il.metode_tukar, il.metode_lokal]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -574,7 +598,8 @@ pub fn turunkan(
     let mut terbuka = false;
     // `LoadLocal` milik VM yang digabung dengan instruksi sesudahnya: yang sudah dikerjakan / bukaan
     // instruksi sesudahnya sudah dikerjakan.
-    let (mut lewati, mut dibuka, mut lewati_lagi) = (false, false, false);
+    // `lewati_lagi`: instruksi tambahan yang ikut dikerjakan bersama (sesudah yang pertama).
+    let (mut lewati, mut dibuka, mut lewati_lagi) = (false, false, 0usize);
     let mut tunda: Vec<(Block, usize, usize)> = Vec::new();
     // Field lokal yang sudah dibaca sebagai angka di blok ini: (lokal, nama, privat, jenis) → variabelnya.
     let mut cse: Vec<((usize, u32, bool, i32), Variable)> = Vec::new();
@@ -591,7 +616,10 @@ pub fn turunkan(
             b.switch_to_block(bl);
             terbuka = true;
         }
-        if std::mem::take(&mut lewati) { lewati = std::mem::take(&mut lewati_lagi); continue; }
+        if std::mem::take(&mut lewati) {
+            if lewati_lagi > 0 { lewati_lagi -= 1; lewati = true; }
+            continue;
+        }
         if blok[ip].is_some() || !r.wujud[ip].is_empty() || !cse_aman(kode[ip].op, &r.cara[ip]) { cse.clear(); tunggu.clear(); }
         k.bendera.set(0);
         // Salinan maya yang tidak boleh melewati instruksi ini ditulis dulu ke stack VM (`layak::boleh_lewat_salinan`).
@@ -668,6 +696,11 @@ pub fn turunkan(
                     && r.keadaan.get(ip + 1).is_some_and(|k| k.is_some()) && !r.keluar[ip + 1]
                     && r.wujud.get(ip + 1).is_some_and(|w| w.is_empty());
                 let d = i64c(&mut b, a as i64);
+                if let (true, Some(n)) = (gabung, metode_sesudah(r, ip)) {
+                    metode_lokal(&mut b, &k, &var, r, f_metode_lokal, ip, a, t, n, false);
+                    (lewati, lewati_lagi) = (true, 2);
+                    continue;
+                }
                 match r.cara.get(ip + 1) {
                     Some(Cara::Pola) if gabung => {
                         let situs = super::lambat::SitusPola::bocor(&f.chunk.constants[kode[ip + 1].arg as usize]);
@@ -807,6 +840,11 @@ pub fn turunkan(
                 continue;
             }
             Cara::Ambil => {
+                if let Some(n) = metode_sesudah(r, ip) {
+                    metode_lokal(&mut b, &k, &var, r, f_metode_lokal, ip, a, t, n, true);
+                    (lewati, lewati_lagi) = (true, 2);
+                    continue;
+                }
                 let (d, ke) = (i64c(&mut b, a as i64), i64c(&mut b, t as i64));
                 b.ins().call(f_ambil, &[d, ke]);
                 continue;
@@ -1114,7 +1152,7 @@ pub fn turunkan(
                         let c = b.inst_results(c)[0];
                         jaga_spek(&mut b, &k, &var, c, ip + 1, r.keadaan[ip + 1].as_ref().expect("dijaga polos"));
                         salin_pos(&mut b, &var, &v128, t, t - 1);
-                        (lewati, lewati_lagi) = (true, true);
+                        (lewati, lewati_lagi) = (true, 1);
                         continue;
                     }
                 }

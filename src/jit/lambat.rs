@@ -783,6 +783,25 @@ pub extern "C" fn metode_tukar(p: i64, label: *const String) -> i32 {
     0
 }
 
+/// `LoadLocal`/`AmbilLokal` lalu `metode_tukar`: lokal `slot` (dibaca, atau diambil kalau `ambil`) langsung
+/// ke `p + 1`. 1 = label lain: lokalnya di `p`, salinan `Dup` di `p + 1`, deopt di `GetMethod`.
+pub extern "C" fn metode_lokal(slot: i64, p: i64, label: *const String, ambil: i32) -> i32 {
+    let (vm, basis) = konteks();
+    let i = basis + slot as usize;
+    let v = if ambil != 0 { vm.ambil_lokal(i) } else { vm.baca_lokal(i) }.unwrap_or(VmValue::Nil);
+    if v.nama_tipe() != Some(unsafe { (*label).as_str() }) {
+        let salinan = v.clone();
+        *sediakan(vm, basis, p as usize) = v;
+        *sediakan(vm, basis, p as usize + 1) = salinan;
+        return 1;
+    }
+    *sediakan(vm, basis, p as usize) = VmValue::Nil;
+    *sediakan(vm, basis, p as usize + 1) = v;
+    let j = basis + p as usize;
+    if !vm.galat_metode.is_empty() { vm.galat_metode.retain(|(x, _)| *x < j); }
+    0
+}
+
 /// Tepi ke titik temu yang dilebarkan: angka native di posisi `p` jadi nilai VM (kode jenis `simpan`).
 pub extern "C" fn tulis_vm(p: i64, nilai: i64, jenis: i32) {
     let (vm, basis) = konteks();
