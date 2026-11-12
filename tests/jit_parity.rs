@@ -913,3 +913,59 @@ fn konstanta_maya() {
     }
     assert!(i.stdout.starts_with("14042994 [<native fn>") && i.stderr.contains("native_fn"), "{}", i.stdout);
 }
+
+/// Modul `std/` lewat JIT (mode stres) sama dengan `--vm`: korpus inilah yang menangkap salinan maya di tepi
+/// titik temu (panik "tepi menulis angka native") yang tidak dimiliki tabel PARITAS.
+#[test]
+fn uji_std_lewat_jit_sama_dengan_vm() {
+    let akar = env!("CARGO_MANIFEST_DIR");
+    let mut berkas: Vec<std::path::PathBuf> = std::fs::read_dir(std::path::Path::new(akar).join("stdlib/uji")).unwrap()
+        .filter_map(|e| e.ok()).map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jrg"))
+        .collect();
+    berkas.sort();
+    assert!(berkas.len() >= 23, "berkas uji std tinggal {}", berkas.len());
+    let jalan = |f: &std::path::Path, mode: &[(&str, &str)]| {
+        let mut c = Command::new(jrgc());
+        c.arg(f).arg("--uji").arg("--sopan").arg(if mode.is_empty() { "--vm" } else { "--jit" });
+        for (k, v) in mode { c.env(k, v); }
+        let o = c.env("JRG_SOPAN", "1").stdin(std::process::Stdio::null()).output().unwrap();
+        (o.status.code(), String::from_utf8_lossy(&o.stdout).to_string(), String::from_utf8_lossy(&o.stderr).to_string())
+    };
+    for f in &berkas {
+        let v = jalan(f, &[]);
+        // Deopt acak menemukan `BUKA_SUDAH` yang terbawa ke rekaman `ip + 1` (`uji_tanggal`: jawaban salah).
+        for mode in [&[STRES][..], &[STRES, ACAK][..]] {
+            assert_eq!(v, jalan(f, mode), "{} beda antara --vm dan --jit {mode:?}", f.display());
+        }
+    }
+}
+
+/// Callee native yang deopt di dalam panggilan berargumen bukaan (`Call` + `Buka`), dengan `Buka` lagi di
+/// instruksi sesudahnya: rekaman pemanggil di `ip + 1` dulu mewarisi `BUKA_SUDAH` dan deopt membaca posisi
+/// milik VM sebagai angka dari slot yang tak pernah ditulis (nilai mirip alamat memori).
+const BUKA_TERBAWA: &str = r#"struct W { pub tahun: int, pub bulan: int, pub hari: int }
+fn sipil(t0, b, h) {
+    let t = b <= 2 $ t0 - 1 : t0
+    let era = t / 400
+    let yoe = t - era * 400
+    let doy = (153 * (b > 2 $ b - 3 : b + 9) + 2) / 5 + h - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return era * 146097 + doe - 719468
+}
+fn hari_ke(w) { return sipil(w.tahun, w.bulan, w.hari) - sipil(w.tahun, 1, 1) + 1 }
+pub fn main() {
+    for i in 0..6 { wok_(hari_ke(W { tahun: 2023, bulan: 1, hari: 1 }), " ") }
+    wok("")
+}
+"#;
+
+#[test]
+fn bendera_bukaan_tidak_terbawa_ke_rekaman_sesudahnya() {
+    let i = jalankan(BUKA_TERBAWA, &[], &[]);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(BUKA_TERBAWA, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    assert_eq!(i.stdout.trim_end(), "1  1  1  1  1  1");
+}

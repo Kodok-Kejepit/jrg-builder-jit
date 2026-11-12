@@ -94,9 +94,18 @@ pub(crate) fn pulihkan(vm: &mut Vm, catatan: Catatan) {
         fr.ip = ip;
         let basis = fr.slot + 1;
         let mut lama = vm.stack.split_off(basis);
+        // Salinan maya: lokal asalnya belum berubah sejak dimuat; dibaca sebelum posisi-posisinya dipindah.
+        let mut salinan: Vec<Option<VmValue>> = jenis.iter().map(|j| match j {
+            Jenis::Salinan(l) => Some(match &lama[*l as usize] {
+                VmValue::Cell(c) => c.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+                v => v.clone(),
+            }),
+            _ => None,
+        }).collect();
         for (i, v) in r.nilai.into_iter().enumerate() {
             // `Lebar` sudah ditulis ke stack VM oleh blok deopt-nya (`turun::keluar_deopt`).
             let nilai = match jenis[i] {
+                Jenis::Salinan(_) => salinan[i].take().expect("dibaca di atas"),
                 j if j.di_vm() || j == Jenis::Lebar => std::mem::replace(&mut lama[i], VmValue::Nil),
                 j => nilai_dari(j, v, &rencana.callee, &f.chunk.constants),
             };
@@ -152,6 +161,6 @@ fn nilai_dari(j: Jenis, v: i64, callee: &[Arc<crate::vm::value::VmFunction>], ko
         Jenis::Fungsi(c) => VmValue::Function(Arc::clone(&callee[c])),
         Jenis::Kosong => VmValue::Nil,
         // Bingkai callee native tidak pernah memegang nilai milik VM (argumennya selalu bulat).
-        Jenis::Nilai | Jenis::Lebar => unreachable!("posisi Nilai cuma ada di bingkai terluar"),
+        Jenis::Nilai | Jenis::Lebar | Jenis::Salinan(_) => unreachable!("posisi Nilai cuma ada di bingkai terluar"),
     }
 }

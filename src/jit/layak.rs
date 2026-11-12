@@ -28,6 +28,9 @@ pub enum Jenis {
     Bungkus(u8, u32),
     /// Bulat i128 di variabel `I128`; ditulis ke stack VM (`lambat::tulis_lebar`) cuma di batas.
     Lebar,
+    /// Salinan lokal milik VM `a` (`LoadLocal`) yang belum ditulis ke stack VM: cuma hidup melewati instruksi
+    /// yang tidak menyentuh lokal (`boleh_lewat_salinan`), diwujudkan (`Rencana::wujud`, deopt) dari lokalnya.
+    Salinan(u32),
     /// Kode karakter (`u32` di variabel `i64`); cuma lahir dari intrinsik `str::char_at`, tidak pernah
     /// jenis titik masuk (rune milik VM tetap `Nilai`).
     Rune,
@@ -46,7 +49,7 @@ impl Jenis {
 
     /// Nilainya tetap dan diketahui saat kompilasi (callee, fungsi bawaan): tidak ada di stack VM, jadi
     /// pembantu yang membaca stack VM tidak boleh menerimanya mentah.
-    pub fn tetap(self) -> bool { matches!(self, Jenis::Fungsi(_) | Jenis::Bawaan(_) | Jenis::Bungkus(..)) }
+    pub fn tetap(self) -> bool { matches!(self, Jenis::Fungsi(_) | Jenis::Bawaan(_) | Jenis::Bungkus(..) | Jenis::Salinan(_)) }
 
     /// Indeks konstanta fungsi bawaan maya.
     pub fn konstanta(self) -> Option<u32> {
@@ -68,7 +71,7 @@ impl Jenis {
             Jenis::Pecahan => 5,
             Jenis::Lebar => 6,
             Jenis::Rune => 7,
-            Jenis::Nilai | Jenis::Bawaan(_) | Jenis::Bungkus(..) | Jenis::Fungsi(_) => 4,
+            Jenis::Nilai | Jenis::Bawaan(_) | Jenis::Bungkus(..) | Jenis::Fungsi(_) | Jenis::Salinan(_) => 4,
         }
     }
 
@@ -106,6 +109,8 @@ pub enum Cara {
     Cabang { tumpah: usize, hasil_bool: bool, tujuan: [usize; 2] },
     /// `Typeof; Const "<nama>"; Eq` atas jenis native yang pasti: bool tetap, lanjut di `ip + 3`.
     TipeLipat(bool),
+    /// `LoadLocal` yang hasilnya `Jenis::Salinan`: tidak ada yang ditulis.
+    Salinan,
     /// `BuildStruct`/`BuildArray`/`BuildTuple` atas `n` posisi teratas (`lambat::bangun`): angka native
     /// diambil dari tumpahan, tanpa lewat stack VM.
     Bangun(usize),
@@ -222,6 +227,8 @@ pub struct Rencana {
     /// Hasil instruksi yang dispekulasikan angka menurut umpan profilnya (`spek_hasil`): sesudah
     /// pembantunya, puncak dibuka berjaga; gagal = deopt di instruksi berikutnya (`PUNCAK_VM`).
     pub spek: Vec<Option<Jenis>>,
+    /// Salinan lokal maya yang diwujudkan sebelum instruksi `ip` (posisi, lokal): `lambat::muat`.
+    pub wujud: Vec<Vec<(usize, u32)>>,
 }
 
 impl Rencana {
@@ -317,7 +324,7 @@ fn analisis_sekali(
         masuk, jenis_masuk: jenis_masuk.clone(), kembali,
         keadaan: vec![None; n], keluar: vec![false; n], callee: Vec::new(),
         pemimpin: vec![false; n], maks: jenis_masuk.len(), konstanta: vec![None; n], konstanta128: vec![None; n],
-        cara: vec![Cara::Asli; n], callee_nilai: Vec::new(),
+        cara: vec![Cara::Asli; n], callee_nilai: Vec::new(), wujud: vec![Vec::new(); n],
         ada_defer: kode.iter().any(|i| i.op == OpCode::DeferPush),
         langsung: Vec::new(),
         argc_call: kode.iter().map(|i| (i.op == OpCode::Call).then_some(i.arg as usize)).collect(),
@@ -371,6 +378,13 @@ fn analisis_sekali(
                 r.keadaan[t] = Some(w);
                 kerja.push(t);
             }
+        }
+    }
+    // Instruksi yang mewujudkan salinan maya bekerja (dan deopt) atas posisi yang sudah milik VM.
+    for ip in 0..n {
+        if r.wujud[ip].is_empty() { continue; }
+        if let Some(st) = r.keadaan[ip].as_mut() {
+            for &(p, _) in &r.wujud[ip] { st[p] = Jenis::Nilai; }
         }
     }
     if r.keluar[masuk] {
@@ -447,6 +461,14 @@ fn langkah(
     f: &VmFunction, cari: &dyn Fn(&str) -> Option<Arc<VmFunction>>,
     r: &mut Rencana, ip: usize, s: Vec<Jenis>,
 ) -> Option<Vec<(usize, Vec<Jenis>)>> {
+    let mut s = s;
+    // Salinan maya yang tidak boleh melewati instruksi ini diwujudkan dulu (lalu jadi milik VM).
+    r.wujud[ip].clear();
+    if s.iter().any(|j| matches!(j, Jenis::Salinan(_))) && !boleh_lewat_salinan(f, ip, &s) {
+        for (p, j) in s.iter_mut().enumerate() {
+            if let Jenis::Salinan(l) = *j { r.wujud[ip].push((p, l)); *j = Jenis::Nilai; }
+        }
+    }
     if let Some((b, s2)) = tipe_lipat(f, ip, &s) {
         r.cara[ip] = Cara::TipeLipat(b);
         return Some(vec![(ip + 3, s2)]);
@@ -459,6 +481,40 @@ fn langkah(
     let (cara, p) = langkah_lambat(f, cari, r, ip, s)?;
     r.cara[ip] = cara;
     Some(p)
+}
+
+/// Instruksi yang tidak menyentuh lokal, tidak melompat, dan tidak memakai salinan maya sebagai operand —
+/// kecuali `GetIndex` berindeks bulat yang memakainya sebagai wadah (`baca` atas lokal asalnya).
+fn boleh_lewat_salinan(f: &VmFunction, ip: usize, s: &[Jenis]) -> bool {
+    let t = s.len();
+    let bebas = |k: usize| k <= t && !s[t - k..].iter().any(|j| matches!(j, Jenis::Salinan(_)));
+    match f.chunk.code[ip].op {
+        OpCode::LoadLocal | OpCode::LokalHitung | OpCode::IntImm | OpCode::Const => true,
+        OpCode::Add | OpCode::Sub | OpCode::Mul => bebas(2),
+        OpCode::GetIndex => t >= 2 && matches!(s[t - 2], Jenis::Salinan(_)) && s[t - 1] == Jenis::Bulat
+            && !f.chunk.kode_jit.spek_gagal_di(ip),
+        _ => false,
+    }
+}
+
+/// `LoadLocal` di `ip` yang hasilnya cuma dipakai sebagai wadah `GetIndex` sesudah deret instruksi yang
+/// boleh dilewati salinan (tanpa sasaran lompat di dalamnya): jadi `Jenis::Salinan`.
+fn salinan_ke_indeks(f: &VmFunction, ip: usize) -> bool {
+    let kode = &f.chunk.code;
+    let sasaran = |k: usize| kode.iter().any(|i| matches!(i.op, OpCode::Jump | OpCode::JumpFalse | OpCode::JumpTrue
+        | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep) && i.arg as usize == k);
+    // `tinggi`: posisi di atas salinan ini; operand sebuah biner = dua teratas.
+    let mut tinggi = 0usize;
+    for k in ip + 1..(ip + 16).min(kode.len()) {
+        if sasaran(k) { return false; }
+        match kode[k].op {
+            OpCode::LoadLocal | OpCode::LokalHitung | OpCode::IntImm | OpCode::Const => tinggi += 1,
+            OpCode::Add | OpCode::Sub | OpCode::Mul if tinggi >= 2 => tinggi -= 1,
+            OpCode::GetIndex => return tinggi == 1,
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// Pemeriksaan jenis pola (`emit_pattern_type_check`) atas angka/bool native: jawabannya sudah pasti. Yang
@@ -532,6 +588,10 @@ fn langkah_lambat(
     // Bingkai tanpa posisi apa pun (`SelectEnd` di `main` kosong) tetap boleh dilangkahkan.
     let puncak = s.last().copied().unwrap_or(Kosong);
     match ins.op {
+        OpCode::LoadLocal if s.get(a)?.di_vm() && salinan_ke_indeks(f, ip) => {
+            s.push(Salinan(a as u32));
+            return Some((Cara::Salinan, vec![(lanjut, s)]));
+        }
         OpCode::LoadLocal | OpCode::LokalHitung if s.get(a)?.di_vm() => {
             s.push(Nilai);
             return Some((Cara::Muat, vec![(lanjut, s)]));
@@ -880,6 +940,11 @@ fn langkah_asli(
         }
         // Larik milik VM di lokal `a`, lewat `lambat::baca`/`tulis` (bukan larik bulat = titik keluar saat jalan).
         OpCode::IndeksLokal | OpCode::TulisIndexLokal if f.chunk.kode_jit.spek_gagal_di(ip) => return None,
+        // Wadahnya salinan maya lokal `l` (`boleh_lewat_salinan` sudah memeriksa spekulasinya): `baca` atas `l`.
+        OpCode::GetIndex if s.len() >= 2 && matches!(s[s.len() - 2], Salinan(_)) => {
+            if s.pop()? != Bulat { return None; }
+            *s.last_mut()? = Bulat;
+        }
         OpCode::IndeksLokal => {
             if s.pop()? != Bulat || *s.get(a)? != Nilai { return None; }
             s.push(Bulat);

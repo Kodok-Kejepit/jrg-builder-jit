@@ -110,6 +110,8 @@ struct Keluar {
     buka_lebar: FuncRef, wadah16: StackSlot,
     /// Alamat konstanta chunk yang dikompilasi (tetap selama fungsinya hidup): sumber fungsi bawaan maya.
     konstanta: *const crate::vm::value::VmValue,
+    /// `lambat::muat`: salinan maya diwujudkan dari lokalnya (tepi titik temu).
+    muat: FuncRef,
 }
 
 impl Keluar {
@@ -272,6 +274,11 @@ fn isi_tepi(
                 Jenis::Bawaan(_) | Jenis::Bungkus(..) => {
                     let kv = b.ins().iconst(types::I64, k.alamat_konstanta(*a).expect("maya"));
                     b.ins().call(taruh, &[p, kv]);
+                }
+                // Lokal asalnya belum ditulis sejak salinan ini dimuat (`layak::boleh_lewat_salinan`).
+                Jenis::Salinan(l) => {
+                    let d = b.ins().iconst(types::I64, *l as i64);
+                    b.ins().call(k.muat, &[d, p]);
                 }
                 j => {
                     let kode = j.kode();
@@ -471,6 +478,7 @@ pub fn turunkan(
         buka_lebar: m.declare_func_in_func(impor.lambat.buka_lebar, b.func),
         wadah16: b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3)),
         konstanta: f.chunk.constants.as_ptr(),
+        muat: m.declare_func_in_func(impor.lambat.muat, b.func),
     };
     let undi = impor.undi.map(|u| m.declare_func_in_func(u, b.func));
     let (baca, tulis) = (m.declare_func_in_func(impor.baca, b.func), m.declare_func_in_func(impor.tulis, b.func));
@@ -537,6 +545,11 @@ pub fn turunkan(
         }
         if std::mem::take(&mut lewati) { continue; }
         k.bendera.set(0);
+        // Salinan maya yang tidak boleh melewati instruksi ini ditulis dulu ke stack VM (`layak::boleh_lewat_salinan`).
+        for &(p, l) in &r.wujud[ip] {
+            let (d, ke) = (b.ins().iconst(types::I64, l as i64), b.ins().iconst(types::I64, p as i64));
+            b.ins().call(f_muat, &[d, ke]);
+        }
         // Sesudah bukaan gabungan, posisinya belum ada di stack VM: deopt acak cuma di instruksi pertamanya.
         if let (Some(u), false) = (undi, dibuka) {
             let c = b.ins().call(u, &[]);
@@ -556,6 +569,7 @@ pub fn turunkan(
         let mut buka_s;
         let s: &Vec<Jenis> = match &r.cara[ip] {
             Cara::Asli => s,
+            Cara::Salinan => continue,
             Cara::Buka(daftar) => {
                 // Nilai milik VM yang dipakai sebagai angka: jaga jenisnya, lalu instruksinya asli.
                 buka_s = s.clone();
@@ -602,7 +616,8 @@ pub fn turunkan(
                 // Dipakai langsung oleh instruksi sesudahnya (bukan sasaran lompat): lokalnya dibaca di
                 // tempat; gagal = deopt di sini, sebelum keduanya.
                 let gabung = !r.pemimpin.get(ip + 1).copied().unwrap_or(true)
-                    && r.keadaan.get(ip + 1).is_some_and(|k| k.is_some()) && !r.keluar[ip + 1];
+                    && r.keadaan.get(ip + 1).is_some_and(|k| k.is_some()) && !r.keluar[ip + 1]
+                    && r.wujud.get(ip + 1).is_some_and(|w| w.is_empty());
                 let d = i64c(&mut b, a as i64);
                 match r.cara.get(ip + 1) {
                     Some(Cara::Pola) if gabung => {
@@ -1145,6 +1160,17 @@ pub fn turunkan(
                 b.def_var(var[t - 2], h);
             }
             OpCode::AmbilLokal => salin_pos(&mut b, &var, &v128, a, t),
+            // Wadahnya salinan maya lokal `l`: dibaca langsung dari lokal itu (`layak`: hasil bulat dispekulasikan).
+            OpCode::GetIndex if matches!(s[t - 2], Jenis::Salinan(_)) => {
+                let Jenis::Salinan(l) = s[t - 2] else { unreachable!() };
+                let (rel, i) = (b.ins().iconst(types::I64, l as i64), atas(&mut b, 1));
+                let pk = b.ins().stack_addr(ptr, wadah, 0);
+                let c = b.ins().call(baca, &[rel, i, pk]);
+                let st = b.inst_results(c)[0];
+                jaga_spek(&mut b, &k, &var, st, ip, s);
+                let v = b.ins().stack_load(ptr, types::I64, wadah, 0);
+                b.def_var(var[t - 2], v);
+            }
             OpCode::IndeksLokal => {
                 let (rel, i) = (b.ins().iconst(types::I64, a as i64), atas(&mut b, 1));
                 let pk = b.ins().stack_addr(ptr, wadah, 0);
@@ -1334,7 +1360,11 @@ pub fn turunkan(
                 b.switch_to_block(bu);
                 keluar_deopt(&mut b, &k, &var, ip, s);
                 b.switch_to_block(bb);
+                // Rekaman di `ip + 1`: bendera instruksi ini (`BUKA_SUDAH` dari bukaan argumennya) bukan miliknya —
+                // dulu `Buka` di `ip + 1` membuat deopt membaca posisi milik VM sebagai angka dari slot kosong.
+                let lama = k.bendera.replace(0);
                 keluar_deopt(&mut b, &k, &var, ip + 1, &s[..t - a - 1]);
+                k.bendera.set(lama);
                 b.switch_to_block(terus);
                 let v = b.ins().stack_load(ptr, types::I64, hasil, 0);
                 b.def_var(var[t - a - 1], v);
