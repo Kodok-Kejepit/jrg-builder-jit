@@ -1501,3 +1501,38 @@ fn field_struct_baru_dari_angka_pembangunnya() {
         }
     }
 }
+
+/// `str::char_at` atas teks lokal tanpa menyalinnya (salinan maya, `lambat::karakter_lokal`): huruf lebar,
+/// lokal tertangkap closure, bukan teks dan di luar batas (jalur bawaan umum, galatnya dari VM).
+const KARAKTER_LOKAL: &str = r#"fn hitung(s: string) -> int {
+    var n = 0
+    for i in 0..len(s) { n = n + (str::char_at(s, i) as int) % 7 }
+    return n
+}
+fn luar(s: string) -> int { return int(str::char_at(s, 99)) }
+fn tangkap(s: string) -> int {
+    var t = s
+    let f = || { t = "zz" }
+    var n = 0
+    for i in 0..2 { n = n + int(str::char_at(t, i)); f() }
+    return n
+}
+fn bukan(x) { return str::char_at(x, 0) }
+pub fn main() {
+    var t = 0
+    for i in 0..2000 { t = t + hitung("héllo wörld " + str(i)) }
+    wok(t, tangkap("ab"), bukan("q"))
+    wok(bukan([1, 2]))
+    wok(luar("abc"))
+}
+"#;
+
+#[test]
+fn karakter_dari_teks_lokal() {
+    let i = jalankan(KARAKTER_LOKAL, &[], &[]);
+    assert!(i.stdout.starts_with("88140 219 q") && i.stderr.contains("argumen pertama harus string"), "{}", i.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(KARAKTER_LOKAL, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}

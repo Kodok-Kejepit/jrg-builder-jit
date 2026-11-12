@@ -129,6 +129,17 @@ pub extern "C" fn karakter(p: i64, i: i64) -> i64 {
     s.chars().nth(i).map_or(-1, |c| c as i64)
 }
 
+/// `karakter` atas teks di lokal `slot` (salinan maya, `Jenis::Salinan`), dibaca di tempat.
+pub extern "C" fn karakter_lokal(slot: i64, i: i64) -> i64 {
+    if i < 0 { return -1; }
+    lihat_lokal(slot, |v| {
+        let VmValue::Str(s) = v else { return -1 };
+        let (b, i) = (s.as_bytes(), i as usize);
+        if i < b.len() && b[..=i].is_ascii() { return b[i] as i64; }
+        s.chars().nth(i).map_or(-1, |c| c as i64)
+    }).unwrap_or(-1)
+}
+
 /// VM menjalankan instruksi `ip` bingkai terluar. Stack VM dipotong ke `t` posisi dan `tumpah` posisi
 /// teratas diisi dari `nilai` (posisi `Nilai` sudah di sana). `Some(sesudah)`: tinggi yang diharapkan,
 /// juga untuk melengkapi `ReturnNil` bersarang. Hasilnya kedalaman bingkai; galat disimpan (`ambil_galat`).

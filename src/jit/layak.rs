@@ -528,13 +528,17 @@ fn boleh_lewat_salinan(f: &VmFunction, ip: usize, s: &[Jenis]) -> bool {
         OpCode::Add | OpCode::Sub | OpCode::Mul => bebas(2),
         OpCode::GetIndex => t >= 2 && matches!(s[t - 2], Jenis::Salinan(_)) && s[t - 1] == Jenis::Bulat
             && !f.chunk.kode_jit.spek_gagal_di(ip),
+        // `str::char_at(teks, i)` atas teks lokal (`lambat::karakter_lokal`).
+        OpCode::Call => f.chunk.code[ip].arg == 2 && t >= 3 && s[t - 3].bungkus(BUNGKUS_CHAR_AT)
+            && matches!(s[t - 2], Jenis::Salinan(_)) && s[t - 1] == Jenis::Bulat,
         _ => false,
     }
 }
 
-/// `LoadLocal` di `ip` yang hasilnya cuma dipakai sebagai wadah `GetIndex` sesudah deret instruksi yang
-/// boleh dilewati salinan (tanpa sasaran lompat di dalamnya): jadi `Jenis::Salinan`.
-fn salinan_ke_indeks(f: &VmFunction, ip: usize) -> bool {
+/// `LoadLocal` di `ip` yang hasilnya cuma dipakai sebagai wadah `GetIndex` (atau teks `str::char_at`, kalau
+/// `char_at` di bawahnya) sesudah deret instruksi yang boleh dilewati salinan (tanpa sasaran lompat di
+/// dalamnya): jadi `Jenis::Salinan`.
+fn salinan_ke_indeks(f: &VmFunction, ip: usize, char_at: bool) -> bool {
     let kode = &f.chunk.code;
     let sasaran = |k: usize| kode.iter().any(|i| matches!(i.op, OpCode::Jump | OpCode::JumpFalse | OpCode::JumpTrue
         | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep) && i.arg as usize == k);
@@ -546,6 +550,7 @@ fn salinan_ke_indeks(f: &VmFunction, ip: usize) -> bool {
             OpCode::LoadLocal | OpCode::LokalHitung | OpCode::IntImm | OpCode::Const => tinggi += 1,
             OpCode::Add | OpCode::Sub | OpCode::Mul if tinggi >= 2 => tinggi -= 1,
             OpCode::GetIndex => return tinggi == 1,
+            OpCode::Call if char_at && kode[k].arg == 2 => return tinggi == 1,
             _ => return false,
         }
     }
@@ -623,7 +628,7 @@ fn langkah_lambat(
     // Bingkai tanpa posisi apa pun (`SelectEnd` di `main` kosong) tetap boleh dilangkahkan.
     let puncak = s.last().copied().unwrap_or(Kosong);
     match ins.op {
-        OpCode::LoadLocal if s.get(a)?.di_vm() && salinan_ke_indeks(f, ip) => {
+        OpCode::LoadLocal if s.get(a)?.di_vm() && salinan_ke_indeks(f, ip, s.last().is_some_and(|j| j.bungkus(BUNGKUS_CHAR_AT))) => {
             s.push(Salinan(a as u32));
             return Some((Cara::Salinan, vec![(lanjut, s)]));
         }
@@ -1139,7 +1144,7 @@ fn langkah_asli(
         }
         // `str::char_at(teks, i)`: kode karakter native (yang tak bisa dijawab di tempat lewat jalur umum).
         OpCode::Call if a == 2 && s.len() >= 3 && s[s.len() - 3].bungkus(BUNGKUS_CHAR_AT)
-            && s[s.len() - 2].di_vm() && s[s.len() - 1] == Bulat => {
+            && (s[s.len() - 2].di_vm() || matches!(s[s.len() - 2], Salinan(_))) && s[s.len() - 1] == Bulat => {
             s.truncate(s.len() - 3);
             s.push(Rune);
         }
