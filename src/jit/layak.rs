@@ -42,6 +42,8 @@ pub const BUNGKUS_KALI: u8 = 2;
 /// `str::char_at` dan `int`/`uint`: intrinsik rune (`Jenis::Rune`), bukan `math::wrap_*`.
 pub const BUNGKUS_CHAR_AT: u8 = 3;
 pub const BUNGKUS_KE_BULAT: u8 = 4;
+/// `float`: bulat jadi pecahan (`n as f64`), pecahan apa adanya.
+pub const BUNGKUS_KE_PECAHAN: u8 = 5;
 
 impl Jenis {
     /// Isinya ada di stack VM, bukan di variabel native.
@@ -87,6 +89,7 @@ fn bungkus(f: crate::vm::value::VmNativeFn) -> Option<u8> {
         "math::wrap_mul" => Some(BUNGKUS_KALI),
         "str::char_at" => Some(BUNGKUS_CHAR_AT),
         "int" | "uint" => Some(BUNGKUS_KE_BULAT),
+        "float" => Some(BUNGKUS_KE_PECAHAN),
         _ => None,
     }
 }
@@ -1028,6 +1031,11 @@ fn langkah_asli(
             s.truncate(s.len() - 2);
             s.push(Lebar)
         }
+        // `%`/`/` dengan `Lebar` yang isinya muat 64 bit (dijaga spekulatif, `turun_lebar`): hasilnya bulat.
+        OpCode::Mod | OpCode::Div if s.len() >= 2 && lebar2(s[s.len() - 2], s[s.len() - 1]) && !f.chunk.kode_jit.spek_gagal_di(ip) => {
+            s.truncate(s.len() - 2);
+            s.push(Bulat)
+        }
         OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div => { let j = angka2(&mut s)?; s.push(j) }
         // `%` pecahan adalah `fmod`, yang tidak punya instruksi mesin: VM yang menghitungnya.
         OpCode::Mod => { bulat2(&mut s)?; s.push(Bulat) }
@@ -1136,9 +1144,13 @@ fn langkah_asli(
             s.push(Rune);
         }
         // `int(rune)` / `rune as uint`: kodenya, tanpa panggilan.
-        OpCode::Call if a == 1 && s.len() >= 2 && s[s.len() - 2].bungkus(BUNGKUS_KE_BULAT) && s[s.len() - 1] == Rune => {
+        OpCode::Call if a == 1 && s.len() >= 2 && s[s.len() - 2].bungkus(BUNGKUS_KE_BULAT) && matches!(s[s.len() - 1], Rune | Bulat) => {
             s.truncate(s.len() - 2);
             s.push(Bulat);
+        }
+        OpCode::Call if a == 1 && s.len() >= 2 && s[s.len() - 2].bungkus(BUNGKUS_KE_PECAHAN) && matches!(s[s.len() - 1], Bulat | Pecahan) => {
+            s.truncate(s.len() - 2);
+            s.push(Pecahan);
         }
         OpCode::Call => {
             if s.len() < a + 1 { return None; }

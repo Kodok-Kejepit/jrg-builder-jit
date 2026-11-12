@@ -122,6 +122,14 @@ impl Keluar {
 }
 
 /// Alamat fungsi bawaan maya `j` (`Jenis::Bawaan`/`Bungkus`) dari konstanta `f`.
+/// Nama kanonik fungsi bawaan maya `j` (konstanta chunk).
+fn nama_bawaan(f: &VmFunction, j: Jenis) -> Option<&'static str> {
+    match f.chunk.constants.get(j.konstanta()? as usize)? {
+        crate::vm::value::VmValue::NativeFn(g) => crate::vm::info_native::info(*g).map(|i| i.kanonik.as_str()),
+        _ => None,
+    }
+}
+
 fn fungsi_bawaan(f: &VmFunction, j: Jenis) -> i64 {
     match f.chunk.constants.get(j.konstanta().expect("callee bawaan maya") as usize) {
         Some(crate::vm::value::VmValue::NativeFn(g)) => *g as usize as i64,
@@ -413,6 +421,22 @@ fn turun_lebar(
             }
             b.def_var(v128[t - 2], h);
         }
+        // `%`/`/` dengan `Lebar` (`layak`): kalau kedua isinya muat 64 bit dihitung seperti `int_biner`; yang
+        // tidak muat = spekulasi gagal, pembagi 0/-1 = VM yang melapor.
+        OpCode::Mod | OpCode::Div if dua => {
+            let (x, y) = (ke128(b, t - 2), ke128(b, t - 1));
+            let (x64, y64) = (b.ins().ireduce(types::I64, x), b.ins().ireduce(types::I64, y));
+            let (xe, ye) = (b.ins().sextend(types::I128, x64), b.ins().sextend(types::I128, y64));
+            let (bx, by) = (b.ins().icmp(IntCC::NotEqual, xe, x), b.ins().icmp(IntCC::NotEqual, ye, y));
+            let tak_muat = b.ins().bor(bx, by);
+            jaga_spek(b, k, var, tak_muat, ip, s);
+            let nol = b.ins().icmp_imm_s(IntCC::Equal, y64, 0);
+            let min1 = b.ins().icmp_imm_s(IntCC::Equal, y64, -1);
+            let tolak = b.ins().bor(nol, min1);
+            jaga(b, k, var, tolak, ip, s);
+            let h = if op == OpCode::Mod { b.ins().srem(x64, y64) } else { b.ins().sdiv(x64, y64) };
+            b.def_var(var[t - 2], h);
+        }
         OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::AndNot if dua => {
             let (x, y) = (ke128(b, t - 2), ke128(b, t - 1));
             let h = match op {
@@ -451,7 +475,8 @@ fn turun_lebar(
             isi_tepi(b, k, r, blok, var, tunda, tulis, taruh);
         }
         // `math::wrap_*`: 64 bit bawah kedua operand, hasil tak bertanda 0..2^64-1 (aturan `MathWrap*`).
-        OpCode::Call if t >= 3 && s[t - 3].wrap() => {
+        // Cuma panggilan `wrap_*` itu sendiri (dua argumen): `int(..)` di atasnya juga punya `wrap` di `t - 3`.
+        OpCode::Call if a == 2 && t >= 3 && s[t - 3].wrap() => {
             let Bungkus(jenis, _) = s[t - 3] else { return false };
             let bawah = |b: &mut FunctionBuilder, i: usize| -> Value {
                 if s[i] == Lebar { let x = b.use_var(v128[i]); b.ins().ireduce(types::I64, x) } else { b.use_var(var[i]) }
@@ -1525,6 +1550,16 @@ pub fn turunkan(
             }
             OpCode::Call if a == 1 && s[t - 2].bungkus(super::layak::BUNGKUS_KE_BULAT) => {
                 let v = b.use_var(var[t - 1]);
+                // `uint` atas bulat negatif: VM yang melaporkannya.
+                if s[t - 1] == Jenis::Bulat && nama_bawaan(f, s[t - 2]) == Some("uint") {
+                    let neg = b.ins().icmp_imm_s(IntCC::SignedLessThan, v, 0);
+                    jaga(&mut b, &k, &var, neg, ip, s);
+                }
+                b.def_var(var[t - 2], v);
+            }
+            OpCode::Call if a == 1 && s[t - 2].bungkus(super::layak::BUNGKUS_KE_PECAHAN) => {
+                let v = b.use_var(var[t - 1]);
+                let v = if s[t - 1] == Jenis::Bulat { let x = b.ins().fcvt_from_sint(types::F64, v); dari_f64(&mut b, x) } else { v };
                 b.def_var(var[t - 2], v);
             }
             OpCode::Call => {

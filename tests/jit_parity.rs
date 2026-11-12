@@ -1382,3 +1382,64 @@ fn penerima_lokal_langsung_ke_argumen() {
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// `int`/`uint`/`float` atas bulat native tanpa panggilan, `%`/`/` dengan `Lebar` yang isinya muat 64 bit:
+/// `uint` negatif ditolak VM, `Lebar` di atas 2^63 (spekulasi gagal), pecahan yang tidak eksak.
+const KONVERSI_LEBAR: &str = r#"fn sisa(s: uint, m: int) -> int { return ((s >> 3) % m) as int }
+fn bagi(s: uint, m: int) -> int { return ((s >> 3) / m) as int }
+fn besar(s: uint) -> uint { return s % 1000 }
+fn pecah(n: int) -> f64 { return n as f64 * 0.5 + (n as float) }
+fn tak(n: int) -> uint { return n as uint }
+pub fn main() {
+    var seed: uint = 88172645463325252
+    var t = 0
+    var u = 0.0
+    for i in 0..3000 {
+        seed = math::wrap_add(math::wrap_mul(seed, 6364136223846793005), 1442695040888963407)
+        t = t + sisa(seed >> 30, 97) + bagi(seed >> 33, 13) + (besar(seed) as int)
+        u = u + pecah(i - 1500) + pecah(9007199254740993)
+    }
+    wok(t, u)
+    wok(besar(18446744073709551615), sisa(18446744073709551615, 7), bagi(18446744073709551615, 3))
+    wok(tak(5), pecah(-3))
+    wok(tak(-1))
+}
+"#;
+
+#[test]
+fn konversi_dan_sisa_lebar_native() {
+    let i = jalankan(KONVERSI_LEBAR, &[], &[]);
+    assert!(i.stdout.starts_with("30786593624 40532396646333005824.0\n615 1 768614336404564650\n5 -4.5"), "{}", i.stdout);
+    assert!(i.stderr.contains("tidak muat di `uint`"), "{}", i.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(KONVERSI_LEBAR, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}
+
+/// Panggilan satu argumen (`int(..)`) tepat di atas `math::wrap_*` bukan `wrap_*` itu sendiri: dulu lengan
+/// `wrap` di `turun_lebar` cuma melihat `t - 3` dan menghitung `wrap` atas operand yang salah.
+const BUNGKUS_BERSARANG: &str = r#"fn h(s: string) -> uint {
+    var a: uint = 7
+    for i in 0..len(s) { a = math::wrap_mul(int(str::char_at(s, i)), 31) + a % 1000 }
+    return a
+}
+pub fn main() {
+    var t: uint = 0
+    for i in 0..2000 {
+        t = math::wrap_add(t, math::wrap_mul(i as uint, 11400714819323198485))
+        t = math::wrap_add(t, math::wrap_mul(int(i % 50), 3))
+    }
+    wok(t, h("héllo dunia"), h("abc"))
+}
+"#;
+
+#[test]
+fn intrinsik_di_dalam_argumen_wrap() {
+    let i = jalankan(BUNGKUS_BERSARANG, &[], &[]);
+    assert_eq!(i.stdout, "17404706681937226416 3982 3121");
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(BUNGKUS_BERSARANG, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}
