@@ -83,7 +83,7 @@ pub fn tanda_tangan_umum(cc: CallConv, param: &[Type], hasil: Option<Type>) -> S
 pub struct ImporLambat {
     pub langkah: FuncId, pub muat: FuncId, pub buang: FuncId, pub benar: FuncId, pub buka: FuncId,
     pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
-    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
+    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub metode_tukar: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
@@ -536,8 +536,8 @@ pub fn turunkan(
     let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode, f_bawaan, f_biner] =
         [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode, il.bawaan, il.biner]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun, f_baca_pecahan, f_jenis_sama, f_panjang, f_field_banyak] =
-        [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun, il.baca_pecahan, il.jenis_sama, il.panjang, il.field_banyak]
+    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun, f_baca_pecahan, f_jenis_sama, f_panjang, f_field_banyak, f_metode_tukar] =
+        [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun, il.baca_pecahan, il.jenis_sama, il.panjang, il.field_banyak, il.metode_tukar]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -574,7 +574,7 @@ pub fn turunkan(
     let mut terbuka = false;
     // `LoadLocal` milik VM yang digabung dengan instruksi sesudahnya: yang sudah dikerjakan / bukaan
     // instruksi sesudahnya sudah dikerjakan.
-    let (mut lewati, mut dibuka) = (false, false);
+    let (mut lewati, mut dibuka, mut lewati_lagi) = (false, false, false);
     let mut tunda: Vec<(Block, usize, usize)> = Vec::new();
     // Field lokal yang sudah dibaca sebagai angka di blok ini: (lokal, nama, privat, jenis) → variabelnya.
     let mut cse: Vec<((usize, u32, bool, i32), Variable)> = Vec::new();
@@ -591,7 +591,7 @@ pub fn turunkan(
             b.switch_to_block(bl);
             terbuka = true;
         }
-        if std::mem::take(&mut lewati) { continue; }
+        if std::mem::take(&mut lewati) { lewati = std::mem::take(&mut lewati_lagi); continue; }
         if blok[ip].is_some() || !r.wujud[ip].is_empty() || !cse_aman(kode[ip].op, &r.cara[ip]) { cse.clear(); tunggu.clear(); }
         k.bendera.set(0);
         // Salinan maya yang tidak boleh melewati instruksi ini ditulis dulu ke stack VM (`layak::boleh_lewat_salinan`).
@@ -1105,6 +1105,19 @@ pub fn turunkan(
                 continue;
             }
             Cara::Salin => {
+                // `Dup; GetMethod; Swap` atas penerima milik VM dengan method yang diketahui: satu pembantu.
+                let polos = |i: usize| !r.pemimpin[i] && r.keadaan[i].is_some() && !r.keluar[i] && r.wujud[i].is_empty();
+                if let (Some(Cara::Metode(n)), Some(Cara::Tukar)) = (r.cara.get(ip + 1), r.cara.get(ip + 2)) {
+                    if s[t - 1].di_vm() && polos(ip + 1) && polos(ip + 2) {
+                        let (p, l) = (i64c(&mut b, t as i64 - 1), i64c(&mut b, &r.metode[*n] as *const String as i64));
+                        let c = b.ins().call(f_metode_tukar, &[p, l]);
+                        let c = b.inst_results(c)[0];
+                        jaga_spek(&mut b, &k, &var, c, ip + 1, r.keadaan[ip + 1].as_ref().expect("dijaga polos"));
+                        salin_pos(&mut b, &var, &v128, t, t - 1);
+                        (lewati, lewati_lagi) = (true, true);
+                        continue;
+                    }
+                }
                 let (dari, ke) = (i64c(&mut b, t as i64 - 1), i64c(&mut b, t as i64));
                 b.ins().call(f_salin, &[dari, ke]);
                 continue;

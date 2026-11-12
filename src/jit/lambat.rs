@@ -765,6 +765,24 @@ pub extern "C" fn cek_metode(p: i64, label: *const String) -> i32 {
     0
 }
 
+/// `Dup; GetMethod; Swap` atas penerima milik VM di posisi `p` dengan method yang sudah diketahui: label
+/// dijaga di tempat, penerimanya pindah ke `p + 1` (seperti `cek_metode` lalu `Swap`). 1 = label lain:
+/// salinan `Dup` ditaruh di `p + 1` dan deopt di `GetMethod`.
+pub extern "C" fn metode_tukar(p: i64, label: *const String) -> i32 {
+    let (vm, basis) = konteks();
+    let i = basis + p as usize;
+    let v = sediakan(vm, basis, p as usize);
+    if v.nama_tipe() != Some(unsafe { (*label).as_str() }) {
+        let salinan = v.clone();
+        *sediakan(vm, basis, p as usize + 1) = salinan;
+        return 1;
+    }
+    let v = std::mem::replace(v, VmValue::Nil);
+    *sediakan(vm, basis, p as usize + 1) = v;
+    if !vm.galat_metode.is_empty() { vm.galat_metode.retain(|(j, _)| *j < i); }
+    0
+}
+
 /// Tepi ke titik temu yang dilebarkan: angka native di posisi `p` jadi nilai VM (kode jenis `simpan`).
 pub extern "C" fn tulis_vm(p: i64, nilai: i64, jenis: i32) {
     let (vm, basis) = konteks();

@@ -1315,3 +1315,33 @@ fn field_lokal_dibaca_bersama() {
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// `Dup; GetMethod; Swap` atas penerima milik VM lewat satu pembantu (`lambat::metode_tukar`): situs yang
+/// berganti tipe penerima (deopt di `GetMethod`), dan penerima tanpa method itu (galat dari VM).
+const METODE_TUKAR: &str = r#"struct A { pub n: int }
+struct B { pub n: int }
+impl A { fn m(self, k) -> A { return A { n: self.n + k } } fn v(self) -> int { return self.n } }
+impl B { fn m(self, k) -> B { return B { n: self.n * 2 + k } } fn v(self) -> int { return self.n + 1 } }
+fn jalan(x, k) { var y = x
+    for i in 0..k { y = y.m(i) }
+    return y.v() }
+pub fn main() {
+    wok(jalan(A { n: 1 }, 100), jalan(A { n: 2 }, 50))
+    wok(jalan(B { n: 1 }, 20), jalan(A { n: 3 }, 10))
+    var a = A { n: 0 }
+    for i in 0..2000 { a = a.m(1) }
+    wok(a.v())
+    let d = dict { n: 4 }
+    wok(jalan(d, 3))
+}
+"#;
+
+#[test]
+fn metode_dan_penerima_dalam_satu_pembantu() {
+    let i = jalankan(METODE_TUKAR, &[], &[]);
+    assert!(i.stdout.starts_with("4951 1227\n2097132 48\n2000") && i.stderr.contains("bernama `m`"), "{}", i.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(METODE_TUKAR, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}
