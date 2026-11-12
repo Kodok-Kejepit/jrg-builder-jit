@@ -201,6 +201,26 @@ fn metode_lokal(
     jaga_spek(b, k, var, c, ip + 2, r.keadaan[ip + 2].as_ref().expect("dijaga metode_sesudah"));
 }
 
+/// Field angka native (bulat/pecahan) dari `BuildStruct` di `ip` yang namanya ada di tabel nama chunk
+/// (bacaan `GetField`), masing-masing di variabelnya sendiri.
+#[allow(clippy::too_many_arguments)]
+fn benih_struct(
+    b: &mut FunctionBuilder, f: &VmFunction, var: &[Variable], s: &[Jenis], t: usize, n: usize, ip: usize,
+    bentuk: &crate::vm::peta::Bentuk,
+) -> Option<(usize, Vec<(u32, i32, Variable)>)> {
+    if !bentuk.unik || bentuk.nama.len() != n { return None; }
+    let mut daftar = Vec::new();
+    for (i, nama) in bentuk.nama.iter().enumerate() {
+        let j = match s[t - n + i] { Jenis::Bulat => 1, Jenis::Pecahan => 5, _ => continue };
+        let Some(idx) = f.chunk.names.iter().position(|x| x == nama.as_str()) else { continue };
+        let cv = b.declare_var(types::I64);
+        let v = b.use_var(var[t - n + i]);
+        b.def_var(cv, v);
+        daftar.push((idx as u32, j, cv));
+    }
+    Some((ip, daftar))
+}
+
 /// Bacaan field angka lain (bukan privat) atas lokal `a` sesudah `ip` di wilayah yang sama dengan tembolok
 /// `cse` (berhenti di awal blok atau instruksi di luar `cse_aman`), paling banyak delapan.
 fn field_sesudahnya(
@@ -630,6 +650,8 @@ pub fn turunkan(
     let mut cse: Vec<((usize, u32, bool, i32), Variable)> = Vec::new();
     // Bacaan yang sudah diambil `field_lokal_banyak` di blok ini: kunci → (berhasil, isi).
     let mut tunggu: Vec<((usize, u32, bool, i32), Variable, Variable)> = Vec::new();
+    // `BuildStruct` di `ip` dari angka native yang langsung disimpan ke lokal: field-nya mengisi `cse`.
+    let mut benih: Option<(usize, Vec<(u32, i32, Variable)>)> = None;
     for ip in 0..kode.len() {
         let Some(s) = &r.keadaan[ip] else { terbuka = false; continue };
         if let Some(bl) = blok[ip] {
@@ -646,6 +668,13 @@ pub fn turunkan(
             continue;
         }
         if blok[ip].is_some() || !r.wujud[ip].is_empty() || !cse_aman(kode[ip].op, &r.cara[ip]) { cse.clear(); tunggu.clear(); }
+        if benih.as_ref().is_some_and(|(bi, _)| bi + 1 != ip || blok[ip].is_some()) { benih = None; }
+        // Posisi yang ditulis instruksi ini (puncak sesudahnya dan di atasnya) bukan lagi lokal yang ditembolok.
+        if let Some(Some(nx)) = r.keadaan.get(ip + 1) {
+            let h = nx.len();
+            cse.retain(|(k, _)| k.0 + 1 < h);
+            tunggu.retain(|(k, _, _)| k.0 + 1 < h);
+        }
         k.bendera.set(0);
         // Salinan maya yang tidak boleh melewati instruksi ini ditulis dulu ke stack VM (`layak::boleh_lewat_salinan`).
         for &(p, l) in &r.wujud[ip] {
@@ -884,6 +913,10 @@ pub fn turunkan(
                     b.ins().iconst(types::I32, kode), b.ins().iconst(types::I32, (ins.op == OpCode::SimpanBuang) as i64),
                 ];
                 b.ins().call(f_simpan, &args);
+                // Lokal ini sekarang struct yang baru dibangun: isi field-nya = angka yang membangunnya.
+                if let Some((_, daftar)) = benih.take() {
+                    for (nama, j, cv) in daftar { cse.push(((a, nama, false, j), cv)); }
+                }
                 continue;
             }
             Cara::Buang => {
@@ -937,12 +970,19 @@ pub fn turunkan(
                     },
                     _ => SitusBangun::Larik,
                 });
+                if let (OpCode::BuildStruct, super::lambat::SitusBangun::Struktur(_, bentuk)) = (ins.op, situs) {
+                    benih = benih_struct(&mut b, f, &var, s, t, *n, ip, bentuk);
+                }
                 tumpahkan(&mut b, &k, &var, s, t - n..t, slot, ptr, f_taruh, &r.callee_nilai);
                 let args = [
                     i64c(&mut b, situs as *const _ as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
                     i64c(&mut b, *n as i64), b.ins().stack_addr(ptr, slot, 0),
                 ];
                 b.ins().call(f_bangun, &args);
+                // Hasilnya tinggal di posisinya sebagai lokal (`let`): field-nya = angka yang membangunnya.
+                if let Some((_, daftar)) = &benih {
+                    for &(nama, j, cv) in daftar { cse.push(((t - n, nama, false, j), cv)); }
+                }
                 continue;
             }
             Cara::TipeSama(ci) => {

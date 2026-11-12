@@ -1443,3 +1443,61 @@ fn intrinsik_di_dalam_argumen_wrap() {
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// Struct yang baru dibangun dari angka native lalu jadi lokal (`let`) atau disimpan: bacaan field-nya memakai
+/// angka itu. Struct sementara yang langsung dibaca (`R { .. }.id`), struct di dalam struct, tulis field,
+/// struct dari panggilan, dan field privat dari luar (galat VM).
+const BENIH_STRUCT: &str = r#"struct R { pub id: int, pub v: float, pub s: string }
+struct S { pub id: int, pub w: R }
+fn ambil(i) { return R { id: i * 2, v: 0.5, s: "x" } }
+pub fn main() {
+    var t = 0
+    var u = 0.0
+    for i in 0..3000 {
+        let r = R { id: i, v: i as float * 0.25, s: "a" }
+        let a = R { id: i + 5, v: 1.0, s: "b" }.id
+        let q = ambil(i)
+        let w = S { id: 9, w: r }
+        t = t + r.id + a + q.id + w.id + w.w.id + r.id
+        u = u + r.v + q.v
+        let z = R { id: 1, v: 2.0, s: "c" }
+        let y = z.id
+        t = t + y + z.id
+    }
+    wok(t, u)
+}
+"#;
+const BENIH_STRUCT_PRIVAT: &str = r#"struct R { pub id: int, pub v: float, pub s: string, k: int }
+impl R { fn kk(self) -> int { return self.k * 2 } }
+fn ubah(r: R) -> R { var q = r
+    q.id = q.id + 100
+    return q }
+pub fn main() {
+    var t = 0
+    var u = 0.0
+    for i in 0..3000 {
+        var r = R { id: i, v: i as float * 0.25, s: "a", k: 3 }
+        t = t + r.id + r.kk()
+        u = u + r.v
+        r.id = r.id + 1
+        t = t + r.id
+        r = ubah(r)
+        t = t + r.id
+        let q = R { id: 7, v: 1.5, s: "b", k: 1 }
+        t = t + q.id + q.k * 0
+    }
+    wok(t, u)
+}
+"#;
+
+#[test]
+fn field_struct_baru_dari_angka_pembangunnya() {
+    for (src, awal) in [(BENIH_STRUCT, "27039000 1126125.0"), (BENIH_STRUCT_PRIVAT, "")] {
+        let i = jalankan(src, &[], &[]);
+        assert!(i.stdout.starts_with(awal), "{}", i.stdout);
+        for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+            let j = jalankan(src, &["--jit"], env);
+            assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+        }
+    }
+}
