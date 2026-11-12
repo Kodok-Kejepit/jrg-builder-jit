@@ -1590,3 +1590,27 @@ fn inti_teks_tanpa_jembatan() {
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{m} {env:?}");
     }
 }
+
+/// `math::` pecahan satu argumen atas angka lewat tabel `Interpreter::unary_f64` yang sama dengan acuan,
+/// tanpa jembatan nilai di VM: NaN, `-inf`, pembulatan .5, bulat sebagai argumen, nama telanjang, bukan angka.
+const MATH_PECAHAN: &str = r#"pub fn main() {
+    var t = 0.0
+    for i in 0..20000 {
+        let x = i as float * 0.001 + 0.5
+        t = t + math::sqrt(x) + math::floor(x) + math::sin(x) + math::ln(x) + math::exp(x * 0.01)
+            + math::round(x) + math::trunc(-x) + math::ceil(x) + math::atan(x) + math::log2(x) + math::sqrt(i)
+    }
+    wok(t, math::sqrt(-1.0), math::ln(0), math::round(2.5), math::round(-2.5), sqrt(16), math::floor(7))
+    wok(math::sqrt(true))
+}
+"#;
+
+#[test]
+fn math_pecahan_tanpa_jembatan() {
+    let i = jalankan(MATH_PECAHAN, &[], &[]);
+    assert!(i.stdout.contains("NaN -inf 3.0 -3.0 4.0 7.0") && i.stderr.contains("math::sqrt: butuh angka"), "{}", i.stdout);
+    for (m, env) in [("--vm", &[][..]), ("--jit", &[STRES][..]), ("--jit", &[STRES, ACAK][..]), ("--jit", &[][..])] {
+        let j = jalankan(MATH_PECAHAN, &[m], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{m} {env:?}");
+    }
+}
