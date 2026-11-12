@@ -1221,3 +1221,59 @@ fn bangun_varian_dari_angka_native() {
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// Bacaan field lokal yang sama di satu blok dipakai ulang (`turun::cse_aman`): lokal yang ditulis lewat
+/// field, ditugasi ulang, diubah closure lewat panggilan, atau di loop harus dibaca lagi.
+const CSE_FIELD: &str = r#"struct P { pub x: int, pub y: float, z: int }
+impl P {
+    fn dua(self) -> int { return self.x + self.x + self.z + self.z }
+    fn geser(self) -> P { return P { x: self.x + 1, y: self.y * 2.0, z: self.z } }
+}
+fn ubah_tulis(p: P) -> int {
+    var q = p
+    let a = q.x
+    q.x = q.x + 10
+    let b = q.x
+    return a * 1000 + b + q.x
+}
+fn ganti(p: P) -> int {
+    var q = p
+    let a = q.x + q.x
+    q = P { x: 7, y: 1.0, z: 0 }
+    return a + q.x + q.x
+}
+fn lewat_closure(p: P) -> int {
+    var q = p
+    let f = || { q = P { x: 100, y: 0.0, z: 0 } }
+    let a = q.x
+    f()
+    return a + q.x
+}
+fn dalam_loop(p: P) -> int {
+    var q = p
+    var t = 0
+    for i in 0..5 { t = t + q.x; q.x = q.x + i }
+    return t + q.x
+}
+pub fn main() {
+    var t = 0
+    var u = 0.0
+    for i in 0..2000 {
+        let p = P { x: i, y: i as float, z: 3 }
+        t = t + p.dua() + ubah_tulis(p) + ganti(p) + lewat_closure(p) + dalam_loop(p)
+        u = u + p.geser().y + p.y + p.y
+    }
+    wok(t, u)
+    wok(ubah_tulis(P { x: 5, y: 0.0, z: 1 }), ganti(P { x: 5, y: 0.0, z: 1 }), lewat_closure(P { x: 5, y: 0.0, z: 1 }), dalam_loop(P { x: 5, y: 0.0, z: 1 }))
+}
+"#;
+
+#[test]
+fn bacaan_field_dipakai_ulang_cuma_kalau_lokalnya_tetap() {
+    let i = jalankan(CSE_FIELD, &[], &[]);
+    assert_eq!(i.stdout, "2025307000 7996000.0\n5030 24 105 50");
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(CSE_FIELD, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}

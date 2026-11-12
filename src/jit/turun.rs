@@ -169,6 +169,17 @@ pub const GAGAL_SPEK: i64 = 1 << 29;
 pub const PUNCAK_VM: i64 = 1 << 28;
 
 /// Blok saat ini menjadi keluar deopt: nilai stack `jenis` dicatat untuk dilanjutkan VM di `ip`.
+/// Instruksi yang tidak menulis lokal dan tidak memanggil kode lain: tembolok field lokal (`cse`) tetap sah.
+fn cse_aman(op: OpCode, cara: &Cara) -> bool {
+    use OpCode::*;
+    match cara {
+        Cara::Muat | Cara::Konstanta | Cara::Field => true,
+        Cara::Asli | Cara::Buka(_) => matches!(op, LoadLocal | LokalHitung | IntImm | Const | Add | Sub | Mul | Div | Mod
+            | Neg | Lt | Le | Gt | Ge | Eq | Ne | BitAnd | BitOr | BitXor | Shl | Shr),
+        _ => false,
+    }
+}
+
 fn keluar_deopt(b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], ip: usize, jenis: &[Jenis]) {
     let slot = k.slot;
     // `PUNCAK_VM`: puncaknya nilai milik VM (hasil yang bukaannya gagal) — `tulis_lebar` akan menimpanya.
@@ -536,6 +547,8 @@ pub fn turunkan(
     // instruksi sesudahnya sudah dikerjakan.
     let (mut lewati, mut dibuka) = (false, false);
     let mut tunda: Vec<(Block, usize, usize)> = Vec::new();
+    // Field lokal yang sudah dibaca sebagai angka di blok ini: (lokal, nama, privat, jenis) → variabelnya.
+    let mut cse: Vec<((usize, u32, bool, i32), Variable)> = Vec::new();
     for ip in 0..kode.len() {
         let Some(s) = &r.keadaan[ip] else { terbuka = false; continue };
         if let Some(bl) = blok[ip] {
@@ -548,6 +561,7 @@ pub fn turunkan(
             terbuka = true;
         }
         if std::mem::take(&mut lewati) { continue; }
+        if blok[ip].is_some() || !r.wujud[ip].is_empty() || !cse_aman(kode[ip].op, &r.cara[ip]) { cse.clear(); }
         k.bendera.set(0);
         // Salinan maya yang tidak boleh melewati instruksi ini ditulis dulu ke stack VM (`layak::boleh_lewat_salinan`).
         for &(p, l) in &r.wujud[ip] {
@@ -639,6 +653,15 @@ pub fn turunkan(
                     // Field lokal: angka yang dispekulasikan langsung ke register; gagal di field = deopt di
                     // `GetField` (lokalnya sudah di posisi VM), jenis lain = deopt spekulasi sesudahnya.
                     Some(Cara::Field) if gabung && matches!(r.spek[ip + 1], None | Some(Jenis::Bulat | Jenis::Pecahan)) => {
+                        let kunci = (a, kode[ip + 1].arg, kode[ip + 1].op == OpCode::GetFieldPrivat,
+                            match r.spek[ip + 1] { Some(Jenis::Bulat) => 1, Some(_) => 5, None => 0 });
+                        // Lokalnya tidak berubah sejak bacaan yang sama di blok ini (nilai tidak pernah beralias).
+                        if let Some(&(_, cv)) = cse.iter().find(|(k, _)| *k == kunci && k.3 != 0) {
+                            let v = b.use_var(cv);
+                            b.def_var(var[t], v);
+                            lewati = true;
+                            continue;
+                        }
                         let situs = super::lambat::SitusField::bocor(
                             &f.chunk.names[kode[ip + 1].arg as usize], kode[ip + 1].op == OpCode::GetFieldPrivat,
                             match r.spek[ip + 1] { Some(Jenis::Bulat) => 1, Some(_) => 5, None => 0 });
@@ -657,6 +680,9 @@ pub fn turunkan(
                             k.bendera.set(lama);
                             let v = b.ins().stack_load(k.ptr, types::I64, wadah, 0);
                             b.def_var(var[t], v);
+                            let cv = b.declare_var(types::I64);
+                            b.def_var(cv, v);
+                            cse.push((kunci, cv));
                         }
                         lewati = true;
                         continue;
