@@ -1084,3 +1084,37 @@ fn tembolok_pola_enum() {
     }
     assert!(i.stdout.starts_with("13836200") && i.stderr.contains("B::X(1)"), "{}", i.stdout);
 }
+
+/// Pemeriksaan jenis pola atas nilai milik VM (`Cara::TipeSama`) dan `len` atas nilai milik VM
+/// (`Cara::Panjang`): payload tuple/teks/struct, teks berhuruf lebar, larik, dict, galat `len` atas bulat.
+const JENIS_PANJANG_VM: &str = r#"struct T { pub a: int }
+enum E { P(int, int), Q(string), R(T), S }
+fn f(v) {
+    match v {
+        E::P(x, y) => x + y,
+        E::Q(s) => len(s),
+        E::R(t) => t.a,
+        E::S => 0,
+    }
+}
+fn ukur(x) { len(x) }
+pub fn main() {
+    var n = 0
+    for i in 0..3000 {
+        let v = i % 4 == 0 $ E::P(i, 1) : (i % 4 == 1 $ E::Q("héllo") : (i % 4 == 2 $ E::R(T { a: i }) : E::S))
+        n = n + f(v) + ukur(i % 3 == 0 $ "ab☃" : (i % 3 == 1 $ [1, 2, 3, 4] : dict { a: 1 }))
+    }
+    wok(n)
+    wok(ukur(5))
+}
+"#;
+
+#[test]
+fn jenis_dan_panjang_nilai_vm() {
+    let i = jalankan(JENIS_PANJANG_VM, &[], &[]);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(JENIS_PANJANG_VM, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    assert!(i.stdout.starts_with("2261000") && i.stderr.contains("tidak bisa ukur `int`"), "{}", i.stdout);
+}

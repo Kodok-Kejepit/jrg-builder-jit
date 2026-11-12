@@ -109,6 +109,10 @@ pub enum Cara {
     Cabang { tumpah: usize, hasil_bool: bool, tujuan: [usize; 2] },
     /// `Typeof; Const "<nama>"; Eq` atas jenis native yang pasti: bool tetap, lanjut di `ip + 3`.
     TipeLipat(bool),
+    /// `Typeof; Const "<nama>"; Eq` atas nilai milik VM (`lambat::jenis_sama`), lanjut di `ip + 3`.
+    TipeSama(usize),
+    /// `Len` atas nilai milik VM (`lambat::panjang`): bulat native; gagal = deopt, VM yang melapor.
+    Panjang,
     /// `LoadLocal` yang hasilnya `Jenis::Salinan`: tidak ada yang ditulis.
     Salinan,
     /// `BuildStruct`/`BuildArray`/`BuildTuple` atas `n` posisi teratas (`lambat::bangun`): angka native
@@ -403,7 +407,8 @@ fn analisis_sekali(
     // Satu langkah VM dari kode native berongkos ±10 instruksi VM biasa (masuk loop VM, menyalin
     // operand); kode yang kebanyakan langkah lebih lambat dari VM sendiri.
     let jalan = |ip: usize| r.keadaan[ip].is_some() && !r.keluar[ip];
-    let asli = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Asli | Cara::Buka(_) | Cara::TipeLipat(_))).count();
+    let asli = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Asli | Cara::Buka(_) | Cara::TipeLipat(_)
+        | Cara::TipeSama(_) | Cara::Panjang)).count();
     // Pintu masuk bingkai callee (`Call` ke fungsi VM) dibayar VM juga; yang ditambah cuma langkahnya.
     let langkah_vm = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Langkah { .. } | Cara::Cabang { .. })).count();
     // Mode stres memaksa jalur native sebanyak mungkin, untung atau tidak.
@@ -442,7 +447,7 @@ fn analisis_sekali(
         if let (true, Cara::Cabang { tujuan, .. }) = (jalan(ip), &r.cara[ip]) {
             for t in *tujuan { r.pemimpin[t] = true; }
         }
-        if let (true, Cara::TipeLipat(_)) = (jalan(ip), &r.cara[ip]) { r.pemimpin[ip + 3] = true; }
+        if let (true, Cara::TipeLipat(_) | Cara::TipeSama(_)) = (jalan(ip), &r.cara[ip]) { r.pemimpin[ip + 3] = true; }
     }
     // `JumpFalse` dkk. bercabang ke instruksi sesudahnya juga.
     for ip in 0..n.saturating_sub(1) {
@@ -473,6 +478,12 @@ fn langkah(
         r.cara[ip] = Cara::TipeLipat(b);
         return Some(vec![(ip + 3, s2)]);
     }
+    if r.kembali != KEMBALI_BULAT {
+        if let Some(s2) = tipe_sama(f, ip, &s) {
+            r.cara[ip] = Cara::TipeSama(f.chunk.code[ip + 1].arg as usize);
+            return Some(vec![(ip + 3, s2)]);
+        }
+    }
     // `langkah_asli` boleh memilih cara lain (`ReturnNil`).
     r.cara[ip] = Cara::Asli;
     if let Some(p) = langkah_asli(f, cari, r, ip, s.clone()) { return Some(p); }
@@ -481,6 +492,19 @@ fn langkah(
     let (cara, p) = langkah_lambat(f, cari, r, ip, s)?;
     r.cara[ip] = cara;
     Some(p)
+}
+
+/// Pemeriksaan jenis pola atas nilai milik VM (payload, field): satu pembantu, bukan tiga langkah VM.
+fn tipe_sama(f: &VmFunction, ip: usize, s: &[Jenis]) -> Option<Vec<Jenis>> {
+    let kode = &f.chunk.code;
+    if kode[ip].op != OpCode::Typeof || kode.get(ip + 2)?.op != OpCode::Eq || kode[ip + 1].op != OpCode::Const { return None; }
+    if !matches!(f.chunk.constants.get(kode[ip + 1].arg as usize)?, VmValue::Str(_)) || !s.last()?.di_vm() { return None; }
+    let sasaran = |i: &crate::vm::opcode::Instruction| matches!(i.op, OpCode::Jump | OpCode::JumpFalse | OpCode::JumpTrue
+        | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep) && matches!(i.arg as usize, x if x == ip + 1 || x == ip + 2);
+    if kode.iter().any(sasaran) { return None; }
+    let mut s2 = s.to_vec();
+    *s2.last_mut()? = Jenis::Bool;
+    Some(s2)
 }
 
 /// Jenis elemen yang dispekulasikan untuk baca larik milik lokal (`lambat::baca`): pecahan bila umpannya cuma
@@ -540,7 +564,7 @@ fn tipe_lipat(f: &VmFunction, ip: usize, s: &[Jenis]) -> Option<(bool, Vec<Jenis
     if kode.iter().any(sasaran) { return None; }
     let mut s2 = s.to_vec();
     *s2.last_mut()? = Jenis::Bool;
-    Some((contoh.type_name_penuh() == **nama, s2))
+    Some((contoh.type_name() == nama.as_str(), s2))
 }
 
 /// Jumlah operand teratas yang dibaca instruksi yang boleh dibuka (`Cara::Buka`).
@@ -724,6 +748,10 @@ fn langkah_lambat(
             return Some((Cara::Payload, vec![(lanjut, s)]));
         }
         // Iterator larik/teks/dict (`MakeIter` lewat langkah): ketiga posisinya milik VM.
+        OpCode::Len if puncak.di_vm() => {
+            *s.last_mut()? = Bulat;
+            return Some((Cara::Panjang, vec![(lanjut, s)]));
+        }
         OpCode::BuildStruct | OpCode::BuildArray | OpCode::BuildTuple => {
             let n = match ins.op {
                 OpCode::BuildStruct => match f.chunk.constants.get(a)? {

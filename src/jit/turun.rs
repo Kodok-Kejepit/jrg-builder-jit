@@ -83,7 +83,7 @@ pub fn tanda_tangan_umum(cc: CallConv, param: &[Type], hasil: Option<Type>) -> S
 pub struct ImporLambat {
     pub langkah: FuncId, pub muat: FuncId, pub buang: FuncId, pub benar: FuncId, pub buka: FuncId,
     pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
-    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId,
+    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
@@ -493,7 +493,8 @@ pub fn turunkan(
     let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode, f_bawaan, f_biner] =
         [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode, il.bawaan, il.biner]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun, f_baca_pecahan] = [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun, il.baca_pecahan]
+    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun, f_baca_pecahan, f_jenis_sama, f_panjang] =
+        [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun, il.baca_pecahan, il.jenis_sama, il.panjang]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -764,6 +765,27 @@ pub fn turunkan(
                     i64c(&mut b, *n as i64), b.ins().stack_addr(ptr, slot, 0),
                 ];
                 b.ins().call(f_bangun, &args);
+                continue;
+            }
+            Cara::TipeSama(ci) => {
+                let (p, kv) = (i64c(&mut b, t as i64 - 1), i64c(&mut b, &f.chunk.constants[*ci] as *const _ as i64));
+                let c = b.ins().call(f_jenis_sama, &[p, kv]);
+                let c = b.inst_results(c)[0];
+                let v = b.ins().uextend(types::I64, c);
+                b.def_var(var[t - 1], v);
+                let ke = tepi(&mut b, r, &blok, ip, ip + 3, &mut tunda);
+                b.ins().jump(ke, &[]);
+                isi_tepi(&mut b, &k, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
+                terbuka = false;
+                continue;
+            }
+            Cara::Panjang => {
+                let (p, pk) = (i64c(&mut b, t as i64 - 1), b.ins().stack_addr(ptr, wadah, 0));
+                let c = b.ins().call(f_panjang, &[p, pk]);
+                let st = b.inst_results(c)[0];
+                jaga(&mut b, &k, &var, st, ip, s);
+                let v = b.ins().stack_load(ptr, types::I64, wadah, 0);
+                b.def_var(var[t - 1], v);
                 continue;
             }
             Cara::TipeLipat(ya) => {

@@ -94,6 +94,26 @@ pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64,
     *sediakan(vm, basis, t - n) = v;
 }
 
+/// `Typeof; Const; Eq` atas posisi `p` milik VM: nama jenisnya (`VmValue::type_name`, sama dengan opcode
+/// `Typeof`) sama dengan teks konstanta `nama`. Posisinya dilepas.
+pub extern "C" fn jenis_sama(p: i64, nama: *const VmValue) -> i32 {
+    let (vm, basis) = konteks();
+    let v = std::mem::replace(sediakan(vm, basis, p as usize), VmValue::Nil);
+    matches!(unsafe { &*nama }, VmValue::Str(n) if v.type_name() == n.as_str()) as i32
+}
+
+/// `Len` atas posisi `p` milik VM (`Vm::vm_len`): panjangnya di `*keluar`, posisinya dilepas; 1 = galat,
+/// belum ada yang berubah (VM yang melaporkannya).
+pub extern "C" fn panjang(p: i64, keluar: *mut i64) -> i32 {
+    let (vm, basis) = konteks();
+    let i = basis + p as usize;
+    let Some(v) = vm.stack.get(i) else { return 1 };
+    match vm.vm_len(v, None) {
+        Ok(n) => { unsafe { *keluar = n as i64 }; vm.stack[i] = VmValue::Nil; 0 }
+        Err(_) => 1,
+    }
+}
+
 /// `str::char_at(teks, i)` atas posisi `p` milik VM: kode karakternya; −1 = jalur bawaan umum (indeks negatif
 /// atau di luar batas, bukan teks — yang juga melapor galatnya). Prefiks ASCII lewat indeks byte.
 pub extern "C" fn karakter(p: i64, i: i64) -> i64 {
