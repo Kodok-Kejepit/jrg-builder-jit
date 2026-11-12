@@ -39,7 +39,7 @@ fn paritas_lewat_jit() {
     let mut gagal = Vec::new();
     for (nama, src) in PARITAS {
         let i = jalankan(src, &[], &[]);
-        let j = jalankan(src, &["--jit"], &[]);
+        let j = jit_sama(src, &i, &[]);
         if i.sukses != j.sukses || i.stdout != j.stdout {
             gagal.push(format!("  {nama}\n     interpreter ({}): {:?}\n     jit         ({}): {:?}",
                 i.sukses, i.stdout, j.sukses, j.stdout));
@@ -75,6 +75,20 @@ fn profil_tidak_menyentuh_stdout() {
 
 // ── J2: fungsi bulat murni sebagai kode mesin (`dokumentasi/jit/j2-rencana.md`) ──────────────
 
+/// Kasus berwaktu (`sleep` bersama goroutine/`Future`/`Task`): JIT tidak menjanjikan waktu, dan kompilasi mode
+/// stres di runner sibuk pernah membalik urutan dua baris. Yang beda diulang paling banyak dua kali (dicetak);
+/// cacat yang konsisten tetap merah.
+fn jit_sama(src: &str, acuan: &Hasil, env: &[(&str, &str)]) -> Hasil {
+    let berwaktu = src.contains("sleep") && ["spawn", "Future", "Task", "go "].iter().any(|k| src.contains(k));
+    let mut j = jalankan(src, &["--jit"], env);
+    for ulang in 1..=2 {
+        if !berwaktu || (j.sukses == acuan.sukses && j.stdout == acuan.stdout) { break; }
+        eprintln!("catatan: kasus berwaktu diulang ({ulang}) di --jit {env:?}");
+        j = jalankan(src, &["--jit"], env);
+    }
+    j
+}
+
 const STRES: (&str, &str) = ("JRG_JIT_AMBANG", "0");
 
 #[test]
@@ -82,7 +96,7 @@ fn paritas_lewat_jit_stres() {
     let mut gagal = Vec::new();
     for (nama, src) in PARITAS {
         let i = jalankan(src, &[], &[]);
-        let j = jalankan(src, &["--jit"], &[STRES]);
+        let j = jit_sama(src, &i, &[STRES]);
         if i.sukses != j.sukses || i.stdout != j.stdout {
             gagal.push(format!("  {nama}\n     interpreter ({}): {:?}\n     jit stres   ({}): {:?}",
                 i.sukses, i.stdout, j.sukses, j.stdout));
@@ -134,7 +148,7 @@ fn paritas_lewat_jit_deopt_acak() {
     let mut gagal = Vec::new();
     for (nama, src) in PARITAS {
         let i = jalankan(src, &[], &[]);
-        let j = jalankan(src, &["--jit"], &[STRES, ACAK]);
+        let j = jit_sama(src, &i, &[STRES, ACAK]);
         if i.sukses != j.sukses || i.stdout != j.stdout {
             gagal.push(format!("  {nama}\n     interpreter ({}): {:?}\n     deopt acak  ({}): {:?}",
                 i.sukses, i.stdout, j.sukses, j.stdout));
