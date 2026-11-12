@@ -1563,3 +1563,30 @@ fn str_dan_len_di_tempat() {
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// `str::upper`/`lower`/`trim`/`reverse`/`replace`/`contains`/`starts_with`/`ends_with` atas teks lewat inti
+/// yang sama dengan interpreter (`str_ops::inti`), tanpa jembatan nilai; rune dan bukan teks lewat jembatan.
+const INTI_TEKS: &str = r#"pub fn main() {
+    let r = str::char_at("ab", 0)
+    var t = ""
+    for i in 0..500 {
+        let s = "Straße İz ünï " + str(i % 7) + "  "
+        t = str::upper(s) + str::lower(s) + str::trim(s) + str::reverse(s) + str::replace(s, "ß", "ss")
+            + str::replace(s, "", "-") + str(str::contains(s, "ünï")) + str(str::starts_with(s, "Str"))
+            + str(str::ends_with(s, " ")) + str(str::contains(s, ""))
+    }
+    wok(t)
+    wok(str::upper(r), str::replace("aXa", "X", r), str::contains("abc", r), str::replace("a1", "1", 2))
+    wok(str::upper(5))
+}
+"#;
+
+#[test]
+fn inti_teks_tanpa_jembatan() {
+    let i = jalankan(INTI_TEKS, &[], &[]);
+    assert!(i.stderr.contains("str::upper"), "{}", i.stderr);
+    for (m, env) in [("--vm", &[][..]), ("--jit", &[STRES][..]), ("--jit", &[STRES, ACAK][..]), ("--jit", &[][..])] {
+        let j = jalankan(INTI_TEKS, &[m], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{m} {env:?}");
+    }
+}
