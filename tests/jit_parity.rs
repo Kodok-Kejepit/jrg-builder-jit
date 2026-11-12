@@ -1054,3 +1054,33 @@ fn tumbuh_index_atas_angka() {
     }
     assert!(i.stdout.contains("[1000, 1000, 1000] [375.5, 375.5] [axxxxxx, b777777]"), "{}", i.stdout);
 }
+
+/// Tembolok pola enum per situs (`lambat::SitusPola`): varian bernama sama dari dua enum, varian unit lawan
+/// berpayload, `Option`/`Result` bawaan, nilai enum lain di situs yang tidak mengenalnya.
+const POLA_ENUM: &str = r#"enum A { X(int), Y, Z(int, int) }
+enum B { X(int), Y }
+fn a(v) { match v { A::X(n) => n, A::Y => 100, A::Z(p, q) => p * q } }
+fn b(v) { match v { B::X(n) => n + 1, B::Y => 7 } }
+fn o(v) { match v { Some(n) => n, None => 0 } }
+fn r(v) { match v { Ok(n) => n, Err(e) => len(e) } }
+pub fn main() {
+    var t = 0
+    for i in 0..3000 {
+        let va = i % 3 == 0 $ A::X(i) : (i % 3 == 1 $ A::Y : A::Z(i, 2))
+        t = t + a(va) + b(i % 2 == 0 $ B::X(i) : B::Y)
+        t = t + o(i % 4 == 0 $ None : Some(i)) + r(i % 5 == 0 $ Err("ab") : Ok(i))
+    }
+    wok(t)
+    wok(a(B::X(1)))
+}
+"#;
+
+#[test]
+fn tembolok_pola_enum() {
+    let i = jalankan(POLA_ENUM, &[], &[]);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(POLA_ENUM, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    assert!(i.stdout.starts_with("13836200") && i.stderr.contains("B::X(1)"), "{}", i.stdout);
+}

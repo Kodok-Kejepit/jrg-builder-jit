@@ -407,12 +407,55 @@ pub extern "C" fn simpan(ke: i64, dari: i64, nilai: i64, jenis: i32, pindah: i32
 
 /// `CekEnum` atas posisi `p` milik VM dengan pola `desc` (konstanta chunk): 0/1 = hasilnya, posisinya
 /// dilepas; 2 = jumlah sub-polanya salah, belum ada yang berubah (VM yang melaporkannya).
-pub extern "C" fn pola(p: i64, desc: *const VmValue) -> i32 {
+pub extern "C" fn pola(p: i64, situs: *const SitusPola) -> i32 {
     let (vm, basis) = konteks();
     let v = sediakan(vm, basis, p as usize);
-    match crate::vm::cocok_enum(v, unsafe { &*desc }) {
+    match unsafe { &*situs }.cocok(v) {
         Ok(b) => { *v = VmValue::Nil; b as i32 }
         Err(_) => 2,
+    }
+}
+
+/// Satu situs pola enum (`CekEnum`): deskriptornya dan tembolok hasil per varian. Kunci = alamat nama varian
+/// milik nilainya (satu `Arc` cuma dimiliki satu tipe+varian; referensi kuatnya dibocorkan, jadi alamatnya
+/// tidak dipakai ulang) | bit payload, isi = hasilnya; `Err` (sub-pola salah jumlah) tidak pernah ditembolok.
+pub struct SitusPola {
+    desc: *const VmValue,
+    tembolok: [std::sync::atomic::AtomicUsize; 4],
+}
+
+impl SitusPola {
+    /// Hidup selama kode yang memakainya (kode JIT tidak pernah dibebaskan).
+    pub fn bocor(desc: &VmValue) -> &'static SitusPola {
+        Box::leak(Box::new(SitusPola { desc, tembolok: Default::default() }))
+    }
+
+    #[inline]
+    fn cocok(&self, v: &VmValue) -> Result<bool, String> {
+        use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
+        let kunci = match v {
+            VmValue::Map(m) => match &m.label {
+                crate::vm::value::Label::Enum { varian, payload, .. } =>
+                    Some((Arc::as_ptr(varian) as *const u8 as usize | (payload.is_some() as usize) << 1, varian)),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((k, _)) = kunci {
+            for e in &self.tembolok {
+                let isi = e.load(Acquire);
+                if isi & !1 == k { return Ok(isi & 1 == 1); }
+            }
+        }
+        let hasil = crate::vm::cocok_enum(v, unsafe { &*self.desc })?;
+        if let Some((k, varian)) = kunci {
+            if let Some(e) = self.tembolok.iter().find(|e| e.load(Relaxed) == 0) {
+                if e.compare_exchange(0, k | hasil as usize, Release, Relaxed).is_ok() {
+                    std::mem::forget(Arc::clone(varian));
+                }
+            }
+        }
+        Ok(hasil)
     }
 }
 
@@ -435,8 +478,8 @@ fn lihat_lokal<T>(slot: i64, f: impl FnOnce(&VmValue) -> T) -> Option<T> {
 }
 
 /// `LoadLocal` + `CekEnum` tanpa menyalin lokalnya: 0/1 = hasil; 2 = VM yang menjalankan keduanya.
-pub extern "C" fn pola_lokal(slot: i64, desc: *const VmValue) -> i32 {
-    lihat_lokal(slot, |v| crate::vm::cocok_enum(v, unsafe { &*desc }).map_or(2, |b| b as i32)).unwrap_or(2)
+pub extern "C" fn pola_lokal(slot: i64, situs: *const SitusPola) -> i32 {
+    lihat_lokal(slot, |v| unsafe { &*situs }.cocok(v).map_or(2, |b| b as i32)).unwrap_or(2)
 }
 
 /// `LoadLocal` + `AmbilPayload`: posisi `ke` = payload lokal `slot`; 1 = VM yang menjalankan keduanya.

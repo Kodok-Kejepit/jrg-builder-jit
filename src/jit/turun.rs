@@ -621,7 +621,8 @@ pub fn turunkan(
                 let d = i64c(&mut b, a as i64);
                 match r.cara.get(ip + 1) {
                     Some(Cara::Pola) if gabung => {
-                        let desc = i64c(&mut b, &f.chunk.constants[kode[ip + 1].arg as usize] as *const _ as i64);
+                        let situs = super::lambat::SitusPola::bocor(&f.chunk.constants[kode[ip + 1].arg as usize]);
+                        let desc = i64c(&mut b, situs as *const _ as i64);
                         let c = b.ins().call(f_pola_lokal, &[d, desc]);
                         let c = b.inst_results(c)[0];
                         let salah = b.ins().icmp_imm_u(IntCC::Equal, c, 2);
@@ -737,7 +738,8 @@ pub fn turunkan(
             }
             Cara::Pola => {
                 // Gagal (2) = deopt di sini dengan stack sebelum instruksinya; VM yang melapor.
-                let (p, d) = (i64c(&mut b, t as i64 - 1), i64c(&mut b, &f.chunk.constants[a] as *const _ as i64));
+                let situs = super::lambat::SitusPola::bocor(&f.chunk.constants[a]);
+                let (p, d) = (i64c(&mut b, t as i64 - 1), i64c(&mut b, situs as *const _ as i64));
                 let c = b.ins().call(f_pola, &[p, d]);
                 let c = b.inst_results(c)[0];
                 let salah = b.ins().icmp_imm_u(IntCC::Equal, c, 2);
