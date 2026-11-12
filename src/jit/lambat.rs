@@ -606,6 +606,26 @@ pub extern "C" fn field_lokal(slot: i64, situs: *const SitusField, keluar: *mut 
     0
 }
 
+/// Field angka lain milik lokal `slot` yang dibaca sesudahnya di blok yang sama, sekali kunci (`situs[j]`
+/// tidak privat). Bit `j` hasilnya = `keluar[j]` berisi angka berjenis `situs[j].jenis`; sisanya dibaca
+/// lewat `field_lokal` biasa di tempatnya.
+pub extern "C" fn field_lokal_banyak(slot: i64, situs: *const *const SitusField, n: i64, keluar: *mut i64) -> i64 {
+    let (vm, basis) = konteks();
+    let Some(VmValue::Map(m)) = vm.stack.get(basis + slot as usize) else { return 0 };
+    let g = m.lock().unwrap_or_else(|p| p.into_inner());
+    let mut bit = 0i64;
+    for j in 0..n as usize {
+        let s = unsafe { &**situs.add(j) };
+        let n = s.baca(&g, unsafe { &*s.nama }).and_then(|v| match (v, s.jenis) {
+            (VmValue::Int(n), 1) => i64::try_from(*n).ok(),
+            (VmValue::Float(x), 5) => Some(x.to_bits() as i64),
+            _ => None,
+        });
+        if let Some(n) = n { unsafe { *keluar.add(j) = n }; bit |= 1 << j; }
+    }
+    bit
+}
+
 /// `LoadLocal` yang langsung dibuka (`buka`) tanpa menyalin lokalnya ke stack VM.
 pub extern "C" fn buka_lokal(slot: i64, jenis: i32, keluar: *mut i64) -> i32 {
     let n = lihat_lokal(slot, |v| match (v, jenis) {

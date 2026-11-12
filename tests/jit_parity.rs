@@ -1277,3 +1277,41 @@ fn bacaan_field_dipakai_ulang_cuma_kalau_lokalnya_tetap() {
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// Field angka lain lokal yang sama dibaca sekali kunci (`lambat::field_lokal_banyak`): field yang bukan
+/// angka atau berganti jenis antar panggilan lewat jalur biasa, field privat, dict, field yang hilang.
+const FIELD_BANYAK: &str = r#"struct Q<T> { pub a: int, pub b: T, pub c: float, pub d: int, k: int }
+impl<T> Q<T> {
+    fn jumlah(self) -> int {
+        let x = self.a + self.d
+        let y = self.c * 2.0
+        return x + self.d + (y as int) + self.a + self.k
+    }
+    fn campur(self) -> string { return str(self.a) + str(self.b) + str(self.d) }
+}
+fn pakai(q) { return q.a * 3 + q.d + q.a }
+pub fn main() {
+    var t = 0
+    var s = ""
+    for i in 0..3000 {
+        let q = Q { a: i, b: i % 5, c: 1.5, d: 2, k: 1 }
+        t = t + q.jumlah() + pakai(q)
+        if i % 1000 == 999 { s = s + q.campur() }
+    }
+    let r = Q { a: 1, b: "teks", c: 2.5, d: 4, k: 0 }
+    wok(t, s, r.jumlah(), r.campur(), pakai(r))
+    let w = dict { a: 5, d: "x" }
+    wok(pakai(dict { a: 5, d: 7 }))
+    wok(pakai(w))
+}
+"#;
+
+#[test]
+fn field_lokal_dibaca_bersama() {
+    let i = jalankan(FIELD_BANYAK, &[], &[]);
+    assert!(i.stdout.starts_with("27021000 99942199942299942 15 1teks4 8\n27\n15x5"), "{}", i.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(FIELD_BANYAK, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}

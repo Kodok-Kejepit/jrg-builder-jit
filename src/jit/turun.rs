@@ -83,7 +83,7 @@ pub fn tanda_tangan_umum(cc: CallConv, param: &[Type], hasil: Option<Type>) -> S
 pub struct ImporLambat {
     pub langkah: FuncId, pub muat: FuncId, pub buang: FuncId, pub benar: FuncId, pub buka: FuncId,
     pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
-    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
+    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
@@ -169,6 +169,34 @@ pub const GAGAL_SPEK: i64 = 1 << 29;
 pub const PUNCAK_VM: i64 = 1 << 28;
 
 /// Blok saat ini menjadi keluar deopt: nilai stack `jenis` dicatat untuk dilanjutkan VM di `ip`.
+/// Bacaan field angka lain (bukan privat) atas lokal `a` sesudah `ip` di wilayah yang sama dengan tembolok
+/// `cse` (berhenti di awal blok atau instruksi di luar `cse_aman`), paling banyak delapan.
+fn field_sesudahnya(
+    f: &VmFunction, r: &Rencana, blok: &[Option<Block>], ip: usize, a: usize, kunci: (usize, u32, bool, i32),
+    cse: &[((usize, u32, bool, i32), Variable)],
+) -> Vec<(usize, u32, bool, i32)> {
+    let kode = &f.chunk.code;
+    let mut ekstra = Vec::new();
+    let mut k = ip + 2;
+    while k + 1 < kode.len() && ekstra.len() < 8 {
+        if blok[k].is_some() || !r.wujud[k].is_empty() || r.keadaan[k].is_none() || r.keluar[k] { break; }
+        let field = r.cara[k] == Cara::Muat && kode[k].arg as usize == a && r.cara[k + 1] == Cara::Field
+            && kode[k + 1].op == OpCode::GetField && !r.pemimpin[k + 1] && r.keadaan[k + 1].is_some()
+            && !r.keluar[k + 1] && r.wujud[k + 1].is_empty();
+        if field {
+            if let Some(j @ (Jenis::Bulat | Jenis::Pecahan)) = r.spek[k + 1] {
+                let kk = (a, kode[k + 1].arg, false, if j == Jenis::Bulat { 1 } else { 5 });
+                if kk != kunci && !ekstra.contains(&kk) && !cse.iter().any(|(c, _)| *c == kk) { ekstra.push(kk); }
+            }
+            k += 2;
+            continue;
+        }
+        if !cse_aman(kode[k].op, &r.cara[k]) { break; }
+        k += 1;
+    }
+    ekstra
+}
+
 /// Instruksi yang tidak menulis lokal dan tidak memanggil kode lain: tembolok field lokal (`cse`) tetap sah.
 fn cse_aman(op: OpCode, cara: &Cara) -> bool {
     use OpCode::*;
@@ -497,6 +525,7 @@ pub fn turunkan(
     let undi = impor.undi.map(|u| m.declare_func_in_func(u, b.func));
     let (baca, tulis) = (m.declare_func_in_func(impor.baca, b.func), m.declare_func_in_func(impor.tulis, b.func));
     let wadah = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
+    let wadah8 = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 64, 3));
     let il = impor.lambat;
     let [f_langkah, f_muat, f_buang, f_benar, f_buka, f_taruh, f_ambil, f_simpan, f_pola, f_payload] =
         [il.langkah, il.muat, il.buang, il.benar, il.buka, il.taruh, il.ambil, il.simpan, il.pola, il.payload]
@@ -507,8 +536,8 @@ pub fn turunkan(
     let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode, f_bawaan, f_biner] =
         [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode, il.bawaan, il.biner]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun, f_baca_pecahan, f_jenis_sama, f_panjang] =
-        [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun, il.baca_pecahan, il.jenis_sama, il.panjang]
+    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun, f_baca_pecahan, f_jenis_sama, f_panjang, f_field_banyak] =
+        [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun, il.baca_pecahan, il.jenis_sama, il.panjang, il.field_banyak]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -549,6 +578,8 @@ pub fn turunkan(
     let mut tunda: Vec<(Block, usize, usize)> = Vec::new();
     // Field lokal yang sudah dibaca sebagai angka di blok ini: (lokal, nama, privat, jenis) → variabelnya.
     let mut cse: Vec<((usize, u32, bool, i32), Variable)> = Vec::new();
+    // Bacaan yang sudah diambil `field_lokal_banyak` di blok ini: kunci → (berhasil, isi).
+    let mut tunggu: Vec<((usize, u32, bool, i32), Variable, Variable)> = Vec::new();
     for ip in 0..kode.len() {
         let Some(s) = &r.keadaan[ip] else { terbuka = false; continue };
         if let Some(bl) = blok[ip] {
@@ -561,7 +592,7 @@ pub fn turunkan(
             terbuka = true;
         }
         if std::mem::take(&mut lewati) { continue; }
-        if blok[ip].is_some() || !r.wujud[ip].is_empty() || !cse_aman(kode[ip].op, &r.cara[ip]) { cse.clear(); }
+        if blok[ip].is_some() || !r.wujud[ip].is_empty() || !cse_aman(kode[ip].op, &r.cara[ip]) { cse.clear(); tunggu.clear(); }
         k.bendera.set(0);
         // Salinan maya yang tidak boleh melewati instruksi ini ditulis dulu ke stack VM (`layak::boleh_lewat_salinan`).
         for &(p, l) in &r.wujud[ip] {
@@ -662,6 +693,24 @@ pub fn turunkan(
                             lewati = true;
                             continue;
                         }
+                        // Sudah diambil bersama bacaan sebelumnya: dipakai kalau bitnya ada, jalur biasa kalau tidak.
+                        let temu = match tunggu.iter().position(|(k, _, _)| *k == kunci) {
+                            Some(i) => {
+                                let (_, ok, isi) = tunggu.remove(i);
+                                let (kena, biasa, lanjut) = (b.create_block(), b.create_block(), b.create_block());
+                                let okv = b.use_var(ok);
+                                b.ins().brif(okv, kena, &[], biasa, &[]);
+                                b.switch_to_block(kena);
+                                let cv = b.declare_var(types::I64);
+                                let v = b.use_var(isi);
+                                b.def_var(var[t], v);
+                                b.def_var(cv, v);
+                                b.ins().jump(lanjut, &[]);
+                                b.switch_to_block(biasa);
+                                Some((lanjut, cv))
+                            }
+                            None => None,
+                        };
                         let situs = super::lambat::SitusField::bocor(
                             &f.chunk.names[kode[ip + 1].arg as usize], kode[ip + 1].op == OpCode::GetFieldPrivat,
                             match r.spek[ip + 1] { Some(Jenis::Bulat) => 1, Some(_) => 5, None => 0 });
@@ -680,9 +729,39 @@ pub fn turunkan(
                             k.bendera.set(lama);
                             let v = b.ins().stack_load(k.ptr, types::I64, wadah, 0);
                             b.def_var(var[t], v);
-                            let cv = b.declare_var(types::I64);
-                            b.def_var(cv, v);
-                            cse.push((kunci, cv));
+                            if let Some((lanjut, cv)) = temu {
+                                b.def_var(cv, v);
+                                b.ins().jump(lanjut, &[]);
+                                b.switch_to_block(lanjut);
+                                cse.push((kunci, cv));
+                            } else {
+                                let cv = b.declare_var(types::I64);
+                                b.def_var(cv, v);
+                                cse.push((kunci, cv));
+                                // Field angka lain lokal ini yang dibaca sesudahnya di blok yang sama: sekali kunci.
+                                let ekstra = field_sesudahnya(f, r, &blok, ip, a, kunci, &cse);
+                                if !ekstra.is_empty() {
+                                    let daftar: Vec<*const super::lambat::SitusField> = ekstra.iter()
+                                        .map(|kk| super::lambat::SitusField::bocor(&f.chunk.names[kk.1 as usize], false, kk.3) as *const _)
+                                        .collect();
+                                    let daftar = Box::leak(daftar.into_boxed_slice());
+                                    let (pl, n) = (i64c(&mut b, daftar.as_ptr() as i64), i64c(&mut b, ekstra.len() as i64));
+                                    let ke = b.ins().stack_addr(k.ptr, wadah8, 0);
+                                    let c = b.ins().call(f_field_banyak, &[d, pl, n, ke]);
+                                    let bit = b.inst_results(c)[0];
+                                    for (j, kk) in ekstra.into_iter().enumerate() {
+                                        let (ok, isi) = (b.declare_var(types::I64), b.declare_var(types::I64));
+                                        let okv = b.ins().band_imm_u(bit, 1i64 << j);
+                                        b.def_var(ok, okv);
+                                        let v = b.ins().stack_load(k.ptr, types::I64, wadah8, (j * 8) as i32);
+                                        b.def_var(isi, v);
+                                        tunggu.push((kk, ok, isi));
+                                    }
+                                }
+                            }
+                        } else if let Some((lanjut, _)) = temu {
+                            b.ins().jump(lanjut, &[]);
+                            b.switch_to_block(lanjut);
                         }
                         lewati = true;
                         continue;
