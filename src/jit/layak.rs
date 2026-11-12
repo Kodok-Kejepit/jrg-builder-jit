@@ -953,6 +953,10 @@ fn langkah_asli(
             r.spek[ip] = Some(j);
             *s.last_mut()? = j;
         }
+        // `a[i] = a[i] + x` (`TumbuhIndexLokal`): VM cuma menyambung di tempat bila elemen dan tambahannya
+        // sama-sama larik; dengan angka native di salah satunya indeksnya dibuang dan lanjut ke `Add` biasa.
+        OpCode::TumbuhIndexLokal if s.len() >= 3 && s[s.len() - 1] == Bulat
+            && (s[s.len() - 2].skalar() || s[s.len() - 3].skalar()) => { s.pop(); }
         OpCode::IndeksLokal => {
             if s.pop()? != Bulat || *s.get(a)? != Nilai { return None; }
             let j = elemen_larik(f, ip);

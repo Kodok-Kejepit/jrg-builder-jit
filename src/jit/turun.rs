@@ -1182,6 +1182,8 @@ pub fn turunkan(
                 let v = b.ins().stack_load(ptr, types::I64, wadah, 0);
                 b.def_var(var[t - 1], v);
             }
+            // Tidak ada yang disambung (`layak`: angka native): indeksnya cuma dibuang.
+            OpCode::TumbuhIndexLokal => {}
             OpCode::TulisIndexLokal => {
                 let (v, i) = (atas(&mut b, 2), atas(&mut b, 1));
                 let rel = b.ins().iconst(types::I64, a as i64);

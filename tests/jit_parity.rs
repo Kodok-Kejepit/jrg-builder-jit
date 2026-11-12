@@ -1004,3 +1004,39 @@ fn elemen_larik_pecahan() {
     }
     assert!(i.stdout.contains("8998.5 [1.5, 7, 3.5]"), "{}", i.stdout);
 }
+
+/// `a[i] = a[i] + x` (`TumbuhIndexLokal`) atas angka native langsung jatuh ke `Add` biasa; teks dan larik
+/// tetap lewat sambungan di tempat milik VM; elemen di atas 2^63.
+const TUMBUH_ANGKA: &str = r#"pub fn main() {
+    var c = [0, 0, 0]
+    var f = [0.5, 0.5]
+    var s = ["a", "b"]
+    var l = [[1], [2]]
+    for i in 0..3000 {
+        c[i % 3] = c[i % 3] + 1
+        f[i % 2] = f[i % 2] + 0.25
+        if i % 500 == 0 {
+            s[i % 2] = s[i % 2] + "x"
+            s[1] = s[1] + 7
+            l[i % 2] = l[i % 2] + [i]
+        }
+    }
+    wok(c, f, s, l)
+    var m = [1, 2]
+    for i in 0..2000 { m[i % 2] = m[i % 2] + (i % 2 == 0 $ 1 : 2) }
+    wok(m)
+    var big = [9223372036854775000]
+    for i in 0..2000 { big[0] = big[0] + 1 }
+    wok(big)
+}
+"#;
+
+#[test]
+fn tumbuh_index_atas_angka() {
+    let i = jalankan(TUMBUH_ANGKA, &[], &[]);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(TUMBUH_ANGKA, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    assert!(i.stdout.contains("[1000, 1000, 1000] [375.5, 375.5] [axxxxxx, b777777]"), "{}", i.stdout);
+}
