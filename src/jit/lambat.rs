@@ -328,9 +328,18 @@ fn bawaan_cepat(vm: &Vm, basis: usize, jenis: &[Jenis], nilai: &[i64], t: usize,
     fn alamat(nama: &str) -> usize {
         match crate::vm::bawaan::bawaan(nama) { Some(VmValue::NativeFn(f)) => f as usize, _ => 0 }
     }
-    static ALAMAT: std::sync::OnceLock<[usize; 3]> = std::sync::OnceLock::new();
-    let [char_at, int, uint] = *ALAMAT.get_or_init(|| [alamat("str::char_at"), alamat("int"), alamat("uint")]);
+    static ALAMAT: std::sync::OnceLock<[usize; 5]> = std::sync::OnceLock::new();
+    let [char_at, int, uint, teks, len] = *ALAMAT.get_or_init(|| {
+        [alamat("str::char_at"), alamat("int"), alamat("uint"), alamat("str"), alamat("len")]
+    });
     match argc {
+        // `str(n)` atas bulat native: tampilan `VmValue::Int` yang sama dengan bawaan `str`.
+        1 if f == teks && jenis[t - 1] == Jenis::Bulat => Some(VmValue::str(VmValue::Int(nilai[t - 1] as i128).to_string())),
+        // `len(teks)` milik VM: `Vm::vm_len`, definisi yang sama dengan opcode `Len`.
+        1 if f == len && jenis[t - 1].di_vm() => match vm.stack.get(basis + t - 1) {
+            Some(v @ VmValue::Str(_)) => vm.vm_len(v, None).ok().map(|n| VmValue::Int(n as i128)),
+            _ => None,
+        },
         // `str::char_at(s, i)`, `i` tak negatif yang ada: prefiks ASCII (per kata mesin) lewat indeks byte.
         2 if f == char_at && jenis[t - 1] == Jenis::Bulat && nilai[t - 1] >= 0 && jenis[t - 2].di_vm() => {
             let Some(VmValue::Str(s)) = vm.stack.get(basis + t - 2) else { return None };

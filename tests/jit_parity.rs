@@ -1536,3 +1536,30 @@ fn karakter_dari_teks_lokal() {
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// `str(bulat)` dan `len(teks)` dijawab di tempat oleh `lambat::bawaan_cepat`: bulat negatif dan terkecil,
+/// huruf lebar, teks kosong, yang lain lewat jalur umum (`len(5)` galat dari VM).
+const STR_LEN: &str = r#"pub fn main() {
+    var t = 0
+    var s = ""
+    for i in 0..3000 {
+        let a = str(i - 1500) + str(i * 7919)
+        t = t + len(a) + len("héllo" + str(i % 3)) + len([1, 2, i])
+        if i % 1000 == 0 { s = s + a + "|" }
+    }
+    wok(t, s, str(-9223372036854775807 - 1), len(""))
+    let d = dict { a: 1 }
+    wok(len(d), str(1.5), str(true))
+    wok(len(5))
+}
+"#;
+
+#[test]
+fn str_dan_len_di_tempat() {
+    let i = jalankan(STR_LEN, &[], &[]);
+    assert!(i.stdout.starts_with("60875 -15000|") && i.stderr.contains("tidak bisa ukur `int`"), "{}", i.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(STR_LEN, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}
