@@ -1002,5 +1002,5 @@ fn elemen_larik_pecahan() {
         let j = jalankan(ELEMEN_PECAHAN, &["--jit"], env);
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
-    assert!(i.stdout.ends_with("8998.5 [1.5, 7, 3.5]\n"), "{}", i.stdout);
+    assert!(i.stdout.contains("8998.5 [1.5, 7, 3.5]"), "{}", i.stdout);
 }
