@@ -33,12 +33,20 @@ fn konteks() -> (&'static mut Vm, usize) {
     (unsafe { &mut *vm }, basis)
 }
 
-/// Posisi `p` bingkai terluar ada di stack VM (yang lebih pendek diisi `nil`).
+/// Posisi `p` bingkai terluar ada di stack VM (yang lebih pendek diisi `nil`). Dipanggil hampir tiap
+/// pembantu: di-inline, yang jarang (stack lebih pendek dari puncak) di fungsi terpisah.
+#[inline(always)]
 fn sediakan(vm: &mut Vm, basis: usize, p: usize) -> &mut VmValue {
     let i = basis + p;
     // Posisi baru di puncak (yang paling sering): satu `push`, bukan `resize`.
-    if vm.stack.len() == i { vm.stack.push(VmValue::Nil); } else if vm.stack.len() < i { vm.stack.resize(i + 1, VmValue::Nil); }
+    if vm.stack.len() <= i { tumbuh(vm, i); }
     &mut vm.stack[i]
+}
+
+#[cold]
+#[inline(never)]
+fn tumbuh(vm: &mut Vm, i: usize) {
+    if vm.stack.len() == i { vm.stack.push(VmValue::Nil); } else { vm.stack.resize(i + 1, VmValue::Nil); }
 }
 
 fn nilai_skalar(j: Jenis, v: i64) -> Option<VmValue> {
