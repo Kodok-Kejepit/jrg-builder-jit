@@ -754,8 +754,12 @@ fn langkah_lambat(
             *s.last_mut()? = Bulat;
             return Some((Cara::Panjang, vec![(lanjut, s)]));
         }
-        OpCode::BuildStruct | OpCode::BuildArray | OpCode::BuildTuple => {
+        OpCode::BuildStruct | OpCode::BuildArray | OpCode::BuildTuple | OpCode::BuildEnum => {
             let n = match ins.op {
+                OpCode::BuildEnum => match f.chunk.constants.get(a)? {
+                    VmValue::Map(p) if matches!(p.label, crate::vm::value::Label::Enum { .. }) => 1,
+                    _ => return None,
+                },
                 OpCode::BuildStruct => match f.chunk.constants.get(a)? {
                     VmValue::Map(p) => p.bentuk()?.nama.len(),
                     _ => return None,

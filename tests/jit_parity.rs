@@ -1177,3 +1177,47 @@ fn cabang_tanpa_umpan_dispekulasikan_bulat() {
         assert_eq!((v.sukses, &v.stdout, &v.stderr), (w.sukses, &w.stdout, &w.stderr), "{env:?}");
     }
 }
+
+/// `BuildEnum` lewat `lambat::bangun` (`SitusBangun::Varian`, `VmValue::varian_berisi` sama dengan VM): payload
+/// bulat, pecahan, bool, teks, tuple, rune, larik, bulat di atas 2^63.
+const BANGUN_VARIAN: &str = r#"enum V { I(int), F(float), B(bool), S(string), T((int, int)), R(rune), A([]int) }
+fn buat(i) {
+    let k = i % 7
+    if k == 0 { return V::I(i * 3) }
+    if k == 1 { return V::F(i as float / 2.0) }
+    if k == 2 { return V::B(i % 2 == 0) }
+    if k == 3 { return V::S("s" + str(i)) }
+    if k == 4 { return V::T((i, i + 1)) }
+    if k == 5 { return V::R(str::char_at("héllo", i % 5)) }
+    return V::A([i, i])
+}
+fn besar(i) { return V::I(9223372036854775807 + i) }
+fn nilai(v) {
+    match v {
+        V::I(n) => n % 1000,
+        V::F(x) => (x as int) % 1000,
+        V::B(b) => b $ 1 : 2,
+        V::S(s) => len(s),
+        V::T(p) => p.0 + p.1,
+        V::R(r) => int(r) % 100,
+        V::A(a) => len(a),
+    }
+}
+pub fn main() {
+    var t = 0
+    for i in 0..3000 { t = t + nilai(buat(i)) }
+    wok(t)
+    wok(besar(5), nilai(besar(2)))
+    wok(buat(3), buat(4), buat(5), buat(1))
+}
+"#;
+
+#[test]
+fn bangun_varian_dari_angka_native() {
+    let i = jalankan(BANGUN_VARIAN, &[], &[]);
+    assert!(i.stdout.starts_with("1684447\nV::I(9223372036854775812) 809"), "{}", i.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(BANGUN_VARIAN, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}

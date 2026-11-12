@@ -423,6 +423,14 @@ impl VmValue {
             std::iter::empty::<(Kunci, VmValue)>(),
         )))
     }
+    /// Varian berpayload dari nama milik prototipenya (`BuildEnum`, juga dipakai JIT).
+    #[inline(always)]
+    pub fn varian_berisi(tipe: Arc<str>, varian: Arc<str>, payload: VmValue) -> Self {
+        VmValue::Map(Arc::new(Peta::baru(
+            Label::Enum { tipe, varian, payload: Some(payload) },
+            std::iter::empty::<(Kunci, VmValue)>(),
+        )))
+    }
     /// `(tipe, varian, payload)` kalau nilai ini enum.
     pub fn bagian_enum(&self) -> Option<(&str, &str, Option<&VmValue>)> {
         match self {

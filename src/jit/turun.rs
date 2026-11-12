@@ -760,6 +760,13 @@ pub fn turunkan(
                         _ => unreachable!("dijamin layak.rs"),
                     },
                     OpCode::BuildTuple => SitusBangun::Tuple,
+                    OpCode::BuildEnum => match &f.chunk.constants[a] {
+                        crate::vm::value::VmValue::Map(p) => match &p.label {
+                            crate::vm::value::Label::Enum { tipe, varian, .. } => SitusBangun::Varian(tipe.clone(), varian.clone()),
+                            _ => unreachable!("dijamin layak.rs"),
+                        },
+                        _ => unreachable!("dijamin layak.rs"),
+                    },
                     _ => SitusBangun::Larik,
                 });
                 tumpahkan(&mut b, &k, &var, s, t - n..t, slot, ptr, f_taruh, &r.callee_nilai);

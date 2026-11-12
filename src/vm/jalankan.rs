@@ -709,10 +709,7 @@ impl Vm {
                         },
                         _ => return Err(VmError::at("BuildEnum: prototipe bukan enum", sp)),
                     };
-                    self.push(VmValue::Map(Arc::new(Peta::baru(
-                        Label::Enum { tipe, varian, payload: Some(payload) },
-                        std::iter::empty::<(crate::vm::value::Kunci, VmValue)>(),
-                    ))));
+                    self.push(VmValue::varian_berisi(tipe, varian, payload));
                 }
 
                 // ── Field / Index ───────────────────────────────────────── Sama seperti

@@ -64,6 +64,8 @@ pub enum SitusBangun {
     Struktur(crate::vm::value::Label, Arc<crate::vm::peta::Bentuk>),
     Larik,
     Tuple,
+    /// `BuildEnum`: tipe dan varian milik prototipenya, payloadnya satu posisi.
+    Varian(Arc<str>, Arc<str>),
 }
 
 impl SitusBangun {
@@ -90,6 +92,8 @@ pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64,
             VmValue::Map(Arc::new(crate::vm::value::Peta::struktur_dari(label.clone(), Arc::clone(bentuk), isi))),
         SitusBangun::Tuple => VmValue::tuple(isi),
         SitusBangun::Larik => VmValue::array(isi),
+        SitusBangun::Varian(tipe, varian) =>
+            VmValue::varian_berisi(Arc::clone(tipe), Arc::clone(varian), isi.pop().expect("satu payload")),
     };
     *sediakan(vm, basis, t - n) = v;
 }
