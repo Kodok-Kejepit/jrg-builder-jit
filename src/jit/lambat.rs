@@ -51,9 +51,18 @@ fn tumbuh(vm: &mut Vm, i: usize) {
     while vm.stack.len() <= i { vm.stack.push(VmValue::Nil); }
 }
 
+/// Satu `match` atas jenisnya (sama artinya dengan `skalar_kode(j.kode())`, tanpa pembandingan `Lebar` dan
+/// kode antara): dipanggil per posisi di `bangun`, `masuk`, `bawaan`.
+#[inline(always)]
 fn nilai_skalar(j: Jenis, v: i64) -> Option<VmValue> {
-    if j == Jenis::Lebar { return None; }
-    skalar_kode(j.kode() as i32, v)
+    Some(match j {
+        Jenis::Bulat => VmValue::Int(v as i128),
+        Jenis::Pecahan => VmValue::Float(f64::from_bits(v as u64)),
+        Jenis::Bool => VmValue::Bool(v != 0),
+        Jenis::Kosong => VmValue::Nil,
+        Jenis::Rune => VmValue::Rune(char::from_u32(v as u32).expect("kode rune dari char")),
+        _ => return None,
+    })
 }
 
 /// Satu definisi isi native → nilai VM menurut `Jenis::kode`; `None` = milik VM (4) atau `Lebar` (6).
@@ -90,19 +99,25 @@ pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64,
     let (t, n) = (t as usize, n as usize);
     let jenis = unsafe { std::slice::from_raw_parts(jenis, t) };
     let nilai = unsafe { std::slice::from_raw_parts(nilai, t) };
-    let mut isi = Vec::with_capacity(n);
-    for i in t - n..t {
-        isi.push(match nilai_skalar(jenis[i], nilai[i]) {
-            Some(v) => v,
-            None => std::mem::replace(sediakan(vm, basis, i), VmValue::Nil),
-        });
+    let situs = unsafe { &*situs };
+    // Varian: satu payload, tanpa `Vec` antara.
+    if let SitusBangun::Varian(nama) = situs {
+        let p = nilai_skalar(jenis[t - 1], nilai[t - 1])
+            .unwrap_or_else(|| std::mem::replace(sediakan(vm, basis, t - 1), VmValue::Nil));
+        *sediakan(vm, basis, t - n) = VmValue::varian_berisi(nama, p);
+        return;
     }
-    let v = match unsafe { &*situs } {
+    // Rentang berukuran pasti: `collect` mengalokasi sekali tanpa cek kapasitas per elemen.
+    let isi: Vec<VmValue> = (t - n..t).map(|i| match nilai_skalar(jenis[i], nilai[i]) {
+        Some(v) => v,
+        None => std::mem::replace(sediakan(vm, basis, i), VmValue::Nil),
+    }).collect();
+    let v = match situs {
         SitusBangun::Struktur(label, bentuk) =>
             VmValue::Map(crate::vm::value::Peta::struktur_arc(label.clone(), Arc::clone(bentuk), isi)),
         SitusBangun::Tuple => VmValue::tuple(isi),
         SitusBangun::Larik => VmValue::array(isi),
-        SitusBangun::Varian(nama) => VmValue::varian_berisi(nama, isi.pop().expect("satu payload")),
+        SitusBangun::Varian(_) => unreachable!("ditangani di atas"),
     };
     *sediakan(vm, basis, t - n) = v;
 }
