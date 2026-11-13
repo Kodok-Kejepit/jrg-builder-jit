@@ -281,6 +281,9 @@ pub struct Peta {
     isi: Mutex<IsiPeta>,
 }
 
+/// Posisi `isi` di dalam `Peta` (untuk `jit::tata_letak`).
+pub(crate) const PETA_ISI: usize = std::mem::offset_of!(Peta, isi);
+
 impl Peta {
     pub fn baru<K: Into<Kunci>>(label: Label, isi: impl IntoIterator<Item = (K, VmValue)>) -> Self {
         let it = isi.into_iter();
@@ -475,7 +478,8 @@ impl VmValue {
     /// Varian dari nama yang sudah diintern (prototipe konstanta, `Option`/`Result` tetap).
     #[inline(always)]
     pub fn varian_nama(nama: &'static NamaVarian, payload: Option<VmValue>) -> Self {
-        VmValue::Map(Arc::new(Peta::baru(Label::Enum { nama, payload }, std::iter::empty::<(Kunci, VmValue)>())))
+        // Dibangun langsung di dalam `Arc`-nya (isi kosong = tabel tanpa alokasi), tanpa `Peta` antara yang disalin.
+        VmValue::Map(Arc::new(Peta { label: Label::Enum { nama, payload }, isi: Mutex::new(IsiPeta::tabel(0, false)) }))
     }
     /// Varian berpayload dari nama milik prototipenya (`BuildEnum`, juga dipakai JIT).
     #[inline(always)]

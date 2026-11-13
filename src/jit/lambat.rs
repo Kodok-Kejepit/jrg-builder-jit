@@ -679,13 +679,23 @@ pub extern "C" fn payload_lokal(slot: i64, ke: i64) -> i32 {
 
 /// Satu situs `x.f` yang digabung: nama, privat, jenis spekulasi, dan tembolok bentuk (monomorfik — diisi
 /// sekali, memegang referensi kuat ke bentuknya, jadi alamatnya tidak pernah dipakai bentuk lain).
+#[repr(C)]
 pub struct SitusField {
     pub nama: *const String,
     pub privat: bool,
     pub jenis: i32,
     bentuk: std::sync::atomic::AtomicPtr<crate::vm::peta::Bentuk>,
     indeks: std::sync::atomic::AtomicUsize,
+    /// Berapa kali jalur sebaris situs ini meleset (jenuh di `MELESET_MAKS`), ditulis kode JIT.
+    meleset: std::sync::atomic::AtomicU64,
 }
+
+/// Posisi tembolok bentuk dan indeks sebuah `SitusField`, untuk jalur field sebaris di `turun`.
+pub(crate) const SITUS_BENTUK: usize = std::mem::offset_of!(SitusField, bentuk);
+pub(crate) const SITUS_INDEKS: usize = std::mem::offset_of!(SitusField, indeks);
+pub(crate) const SITUS_MELESET: usize = std::mem::offset_of!(SitusField, meleset);
+/// Sesudah sekian kali meleset (struct yang dibagi — elemen larik, salinan), situs langsung ke pembantu.
+pub(crate) const MELESET_MAKS: i64 = 16;
 
 impl SitusField {
     /// Hidup selama kode yang memakainya (kode JIT tidak pernah dibebaskan).
@@ -694,6 +704,7 @@ impl SitusField {
             nama, privat, jenis,
             bentuk: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             indeks: std::sync::atomic::AtomicUsize::new(0),
+            meleset: std::sync::atomic::AtomicU64::new(0),
         }))
     }
 

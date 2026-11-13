@@ -1962,3 +1962,64 @@ fn bawaan_langsung_gagal_sama() {
     let baris = j.stderr.lines().find(|l| l.contains("dikompilasi:")).unwrap_or("");
     assert!(baris.contains("olah"), "olah tidak dikompilasi:\n{}", j.stderr);
 }
+
+/// Field struct sebaris (J8 tahap 5): bentuk yang tidak pasti jatuh ke pembantu dengan jawaban yang sama — struct
+/// dibagi, di sel tangkapan, dict bernama field sama, struct di atas 16 field (tabel hash), dua bentuk di satu situs,
+/// field privat, field berisi jenis lain, dan deopt (luapan) di tengah bacaan.
+const FIELD_SEBARIS: &str = r#"
+package main
+struct P { pub x: int, pub y: int, pub z: f64 }
+struct Q { pub y: int, pub x: int, pub z: f64, pub w: int }
+struct R { a: int, pub b: int }
+struct Besar { pub f0: int, pub f1: int, pub f2: int, pub f3: int, pub f4: int, pub f5: int, pub f6: int, pub f7: int,
+    pub f8: int, pub f9: int, pub f10: int, pub f11: int, pub f12: int, pub f13: int, pub f14: int, pub f15: int, pub f16: int }
+impl R { fn jumlah(self) -> int { self.a + self.b } }
+fn baca(p) -> f64 { (p.x + p.y) as f64 + p.z }
+pub fn main() {
+    var t = 0.0
+    for i in 0..400 {
+        var p = P { x: i, y: i * 2, z: 0.5 }
+        if (i % 3 == 0) { let salin = p; t = t + baca(salin) + (salin.x as f64) }
+        t = t + baca(p)
+        if (i % 5 == 0) { t = t + baca(Q { y: 1, x: 2, z: 0.25, w: 9 }) }
+        if (i == 300) { p.x = 9223372036854775000 }
+        t = t + (p.x % 1000) as f64
+    }
+    wok(t)
+    var c = P { x: 1, y: 2, z: 3.0 }
+    let ubah = || { c.x = c.x + 1 }
+    var u = 0
+    for i in 0..300 { u = u + c.x + c.y; if (i % 50 == 0) { ubah() } }
+    wok(u, c.x)
+    var d = dict { x: 1, y: 2, z: 0.5 }
+    var v = 0.0
+    for i in 0..300 { v = v + baca(d) }
+    wok(v)
+    let b = Besar { f0: 0, f1: 1, f2: 2, f3: 3, f4: 4, f5: 5, f6: 6, f7: 7, f8: 8, f9: 9, f10: 10, f11: 11, f12: 12,
+        f13: 13, f14: 14, f15: 15, f16: 16 }
+    var w = 0
+    for i in 0..300 { w = w + b.f3 + b.f16 + b.f0 }
+    wok(w)
+    var r = R { a: 3, b: 4 }
+    var x = 0
+    for i in 0..300 { x = x + r.jumlah() + r.b }
+    wok(x)
+    var campur = P { x: 1, y: 2, z: 3.0 }
+    var y = 0
+    for i in 0..300 { y = y + campur.x; if (i == 200) { campur = P { x: 5, y: 6, z: 7.0 } } }
+    wok(y, typeof(baca(P { x: 1, y: 2, z: 0.5 })))
+}
+"#;
+
+#[test]
+fn field_sebaris_jatuh_ke_pembantu_bila_tak_pasti() {
+    let v = jalankan(FIELD_SEBARIS, &["--vm"], &[]);
+    assert!(v.sukses, "{}", v.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(FIELD_SEBARIS, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(FIELD_SEBARIS, &["--jit"], &[STRES, ACAK, ("JRG_JIT_LOG", "ringkas")]);
+    let baris = j.stderr.lines().find(|l| l.contains("dikompilasi:")).unwrap_or("");
+    assert!(baris.contains("main") && baris.contains("baca"), "main/baca tidak dikompilasi:\n{}", j.stderr);
+}

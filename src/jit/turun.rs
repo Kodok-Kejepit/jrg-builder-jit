@@ -269,33 +269,129 @@ fn lanjut_jika(b: &mut FunctionBuilder, benar: Value, lambat: Block) {
     b.switch_to_block(terus);
 }
 
-/// Alamat elemen `a[i]` atas lokal `rel` lewat tata letak yang ditemukan (aturan `norm_indeks`); tiap pemeriksaan
-/// yang gagal lompat ke `lambat`. Cuma penyimpanan milik tunggal (hitungan kuat 1, lemah mentah 1) — yang tidak
-/// dijangkau thread lain, sama dengan `value::tunggal`.
-fn elemen_sebaris(
-    b: &mut FunctionBuilder, tl: &super::tata_letak::TataLetak, vm_p: Value, basis: Value, rel: usize, i: Value,
-    lambat: Block,
+/// `ArcInner` isi lokal `rel` kalau tag-nya `tag` dan penyimpanannya milik tunggal (hitungan kuat 1, lemah mentah 1
+/// — yang tidak dijangkau thread lain, sama dengan `value::tunggal`); selain itu lompat ke `lambat`.
+#[allow(clippy::too_many_arguments)]
+fn milik_sebaris(
+    b: &mut FunctionBuilder, tl: &super::tata_letak::TataLetak, vm_p: Value, basis: Value, rel: usize, tag_mau: u8,
+    isi_off: usize, lambat: Block,
 ) -> Value {
     let fl = MemFlagsData::trusted();
     let lanjut_jika = |b: &mut FunctionBuilder, benar: Value| lanjut_jika(b, benar, lambat);
-    let ukuran = tl.ukuran as i64;
     // Slot lokal di stack VM; penunjuk dan panjang stack dibaca ulang tiap kali (stack bisa dialokasi ulang).
     let stack = b.ins().load(types::I64, fl, vm_p, (tl.vm_stack + tl.vec_ptr) as i32);
     let panjang = b.ins().load(types::I64, fl, vm_p, (tl.vm_stack + tl.vec_len) as i32);
     let posisi = b.ins().iadd_imm_s(basis, rel as i64);
     let ada = b.ins().icmp(IntCC::UnsignedLessThan, posisi, panjang);
     lanjut_jika(b, ada);
-    let off = b.ins().imul_imm_s(posisi, ukuran);
+    let off = b.ins().imul_imm_s(posisi, tl.ukuran as i64);
     let slot = b.ins().iadd(stack, off);
     let tag = b.ins().uload8(types::I64, fl, slot, tl.tag as i32);
-    let larik = b.ins().icmp_imm_u(IntCC::Equal, tag, tl.tag_array as i64);
-    lanjut_jika(b, larik);
-    let inner = b.ins().load(types::I64, fl, slot, tl.isi_array as i32);
+    let cocok = b.ins().icmp_imm_u(IntCC::Equal, tag, tag_mau as i64);
+    lanjut_jika(b, cocok);
+    let inner = b.ins().load(types::I64, fl, slot, isi_off as i32);
     let kuat = b.ins().load(types::I64, fl, inner, tl.arc_kuat as i32);
     let lemah = b.ins().load(types::I64, fl, inner, tl.arc_lemah as i32);
     let (k1, l1) = (b.ins().icmp_imm_u(IntCC::Equal, kuat, 1), b.ins().icmp_imm_u(IntCC::Equal, lemah, 1));
     let tunggal = b.ins().band(k1, l1);
     lanjut_jika(b, tunggal);
+    inner
+}
+
+/// Field angka struct rapat lokal `rel` (`jit::tata_letak::baca_field_bulat`): bentuknya harus yang ditembolok
+/// `SitusField` di `situs` (tembolok kosong tidak pernah cocok — pembantu yang mengisinya), lalu elemen ke-indeks
+/// tembolok itu berjenis yang dispekulasikan; selain itu `lambat`. Cuma membaca, cuma milik tunggal.
+#[allow(clippy::too_many_arguments)]
+fn field_sebaris(
+    b: &mut FunctionBuilder, tl: &super::tata_letak::TataLetak, vm_p: Value, basis: Value, rel: usize, situs: i64,
+    pecahan: bool, lambat: Block,
+) -> Value {
+    let isi = peta_sebaris(b, tl, vm_p, basis, rel, lambat);
+    field_dari_isi(b, tl, isi, situs, pecahan, lambat)
+}
+
+/// Situs yang jalur sebarisnya sudah sering meleset langsung ke `lambat` (satu bacaan); `catat_meleset` di sana.
+fn belum_jenuh(b: &mut FunctionBuilder, situs: i64, lambat: Block) {
+    let s = b.ins().iconst(types::I64, situs);
+    let n = b.ins().load(types::I64, MemFlagsData::trusted(), s, super::lambat::SITUS_MELESET as i32);
+    let boleh = b.ins().icmp_imm_s(IntCC::SignedLessThan, n, super::lambat::MELESET_MAKS);
+    lanjut_jika(b, boleh, lambat);
+}
+
+/// Penghitung meleset situs naik satu, jenuh di `MELESET_MAKS` (ditulis di blok dingin pembantunya).
+fn catat_meleset(b: &mut FunctionBuilder, situs: i64) {
+    let fl = MemFlagsData::trusted();
+    let s = b.ins().iconst(types::I64, situs);
+    let n = b.ins().load(types::I64, fl, s, super::lambat::SITUS_MELESET as i32);
+    let n1 = b.ins().iadd_imm_s(n, 1);
+    let maks = b.ins().iconst(types::I64, super::lambat::MELESET_MAKS);
+    let n1 = b.ins().smin(n1, maks);
+    b.ins().store(fl, n1, s, super::lambat::SITUS_MELESET as i32);
+}
+
+/// `IsiPeta` rapat milik tunggal di lokal `rel` (`milik_sebaris`, tag `Map`, varian `Rapat`); selain itu `lambat`.
+fn peta_sebaris(
+    b: &mut FunctionBuilder, tl: &super::tata_letak::TataLetak, vm_p: Value, basis: Value, rel: usize, lambat: Block,
+) -> Value {
+    let fl = MemFlagsData::trusted();
+    let inner = milik_sebaris(b, tl, vm_p, basis, rel, tl.tag_map, tl.isi_map, lambat);
+    let isi = b.ins().iadd_imm_s(inner, (tl.arc_isi + tl.peta_isi) as i64);
+    let tag = b.ins().uload8(types::I64, fl, isi, 0);
+    let rapat = b.ins().icmp_imm_u(IntCC::Equal, tag, tl.tag_rapat as i64);
+    lanjut_jika(b, rapat, lambat);
+    isi
+}
+
+/// Field angka di `IsiPeta` rapat `isi` lewat tembolok bentuk `SitusField` di `situs` (`field_sebaris`).
+fn field_dari_isi(
+    b: &mut FunctionBuilder, tl: &super::tata_letak::TataLetak, isi: Value, situs: i64, pecahan: bool, lambat: Block,
+) -> Value {
+    let fl = MemFlagsData::trusted();
+    let lanjut_jika = |b: &mut FunctionBuilder, benar: Value| lanjut_jika(b, benar, lambat);
+    let bentuk = b.ins().load(types::I64, fl, isi, tl.rapat_bentuk as i32);
+    let bentuk = b.ins().iadd_imm_s(bentuk, tl.bentuk_isi as i64);
+    let s = b.ins().iconst(types::I64, situs);
+    let tembolok = b.ins().load(types::I64, fl, s, super::lambat::SITUS_BENTUK as i32);
+    let sama = b.ins().icmp(IntCC::Equal, bentuk, tembolok);
+    lanjut_jika(b, sama);
+    let j = b.ins().load(types::I64, fl, s, super::lambat::SITUS_INDEKS as i32);
+    let vec = tl.rapat_nilai as i32;
+    let data = b.ins().load(types::I64, fl, isi, vec + tl.vec_ptr as i32);
+    let n = b.ins().load(types::I64, fl, isi, vec + tl.vec_len as i32);
+    let dalam = b.ins().icmp(IntCC::UnsignedLessThan, j, n);
+    lanjut_jika(b, dalam);
+    let off = b.ins().imul_imm_s(j, tl.ukuran as i64);
+    let el = b.ins().iadd(data, off);
+    angka_sebaris(b, tl, el, pecahan, lambat)
+}
+
+/// Bit `i64` nilai di `el` kalau jenisnya yang dispekulasikan (pecahan, atau bulat yang muat 64 bit); selain itu `lambat`.
+fn angka_sebaris(b: &mut FunctionBuilder, tl: &super::tata_letak::TataLetak, el: Value, pecahan: bool, lambat: Block) -> Value {
+    let fl = MemFlagsData::trusted();
+    let tag = b.ins().uload8(types::I64, fl, el, tl.tag as i32);
+    if pecahan {
+        let cocok = b.ins().icmp_imm_u(IntCC::Equal, tag, tl.tag_float as i64);
+        lanjut_jika(b, cocok, lambat);
+        return b.ins().load(types::I64, fl, el, tl.isi_float as i32);
+    }
+    let cocok = b.ins().icmp_imm_u(IntCC::Equal, tag, tl.tag_int as i64);
+    lanjut_jika(b, cocok, lambat);
+    let lo = b.ins().load(types::I64, fl, el, tl.isi_int as i32);
+    let hi = b.ins().load(types::I64, fl, el, tl.isi_int as i32 + 8);
+    let tanda = b.ins().sshr_imm_u(lo, 63);
+    let muat = b.ins().icmp(IntCC::Equal, hi, tanda);
+    lanjut_jika(b, muat, lambat);
+    lo
+}
+
+/// Alamat elemen `a[i]` atas lokal `rel` lewat tata letak yang ditemukan (aturan `norm_indeks`); tiap pemeriksaan
+/// yang gagal lompat ke `lambat`. Cuma penyimpanan milik tunggal (`milik_sebaris`).
+fn elemen_sebaris(
+    b: &mut FunctionBuilder, tl: &super::tata_letak::TataLetak, vm_p: Value, basis: Value, rel: usize, i: Value,
+    lambat: Block,
+) -> Value {
+    let fl = MemFlagsData::trusted();
+    let inner = milik_sebaris(b, tl, vm_p, basis, rel, tl.tag_array, tl.isi_array, lambat);
     let vec = (tl.arc_isi + tl.mutex_isi) as i32;
     let data = b.ins().load(types::I64, fl, inner, vec + tl.vec_ptr as i32);
     let n = b.ins().load(types::I64, fl, inner, vec + tl.vec_len as i32);
@@ -303,8 +399,8 @@ fn elemen_sebaris(
     let dari_belakang = b.ins().iadd(i, n);
     let j = b.ins().select(negatif, dari_belakang, i);
     let dalam = b.ins().icmp(IntCC::UnsignedLessThan, j, n);
-    lanjut_jika(b, dalam);
-    let off = b.ins().imul_imm_s(j, ukuran);
+    lanjut_jika(b, dalam, lambat);
+    let off = b.ins().imul_imm_s(j, tl.ukuran as i64);
     b.ins().iadd(data, off)
 }
 
@@ -314,23 +410,8 @@ fn baca_sebaris(
     b: &mut FunctionBuilder, tl: &super::tata_letak::TataLetak, vm_p: Value, basis: Value, rel: usize, i: Value,
     pecahan: bool, lambat: Block,
 ) -> Value {
-    let fl = MemFlagsData::trusted();
-    let lanjut_jika = |b: &mut FunctionBuilder, benar: Value| lanjut_jika(b, benar, lambat);
     let el = elemen_sebaris(b, tl, vm_p, basis, rel, i, lambat);
-    let tag = b.ins().uload8(types::I64, fl, el, tl.tag as i32);
-    if pecahan {
-        let cocok = b.ins().icmp_imm_u(IntCC::Equal, tag, tl.tag_float as i64);
-        lanjut_jika(b, cocok);
-        return b.ins().load(types::I64, fl, el, tl.isi_float as i32);
-    }
-    let cocok = b.ins().icmp_imm_u(IntCC::Equal, tag, tl.tag_int as i64);
-    lanjut_jika(b, cocok);
-    let lo = b.ins().load(types::I64, fl, el, tl.isi_int as i32);
-    let hi = b.ins().load(types::I64, fl, el, tl.isi_int as i32 + 8);
-    let tanda = b.ins().sshr_imm_u(lo, 63);
-    let muat = b.ins().icmp(IntCC::Equal, hi, tanda);
-    lanjut_jika(b, muat);
-    lo
+    angka_sebaris(b, tl, el, pecahan, lambat)
 }
 
 /// `a[i] = v` sebaris untuk `v` bulat (1), bool (2) atau pecahan (5): elemen lama harus `Nil`/`Bool`/`Int`/`Float`
@@ -730,7 +811,7 @@ pub fn turunkan(
     // Jalur sebaris larik (`tata_letak`): alamat VM dan basis dibaca sekali, cuma di fungsi yang memakainya.
     let sebaris = super::tata_letak::tata_letak().filter(|_| kode.iter().enumerate()
         .any(|(i, x)| r.keadaan[i].as_ref().is_some_and(|s| !r.keluar[i] && match x.op {
-            OpCode::IndeksLokal | OpCode::TulisIndexLokal => true,
+            OpCode::IndeksLokal | OpCode::TulisIndexLokal | OpCode::GetField => true,
             OpCode::GetIndex => s.len() >= 2 && matches!(s[s.len() - 2], Jenis::Salinan(_)),
             _ => false,
         })))
@@ -926,9 +1007,23 @@ pub fn turunkan(
                             }
                             None => None,
                         };
-                        let situs = super::lambat::SitusField::bocor(
-                            &f.chunk.names[kode[ip + 1].arg as usize], kode[ip + 1].op == OpCode::GetFieldPrivat,
+                        let privat = kode[ip + 1].op == OpCode::GetFieldPrivat;
+                        let situs = super::lambat::SitusField::bocor(&f.chunk.names[kode[ip + 1].arg as usize], privat,
                             match r.spek[ip + 1] { Some(Jenis::Bulat) => 1, Some(_) => 5, None => 0 });
+                        // Jalur sebaris (field tidak privat, angka yang dispekulasikan); selebihnya `field_lokal`.
+                        let selesai = sebaris.filter(|_| !privat && r.spek[ip + 1].is_some()).map(|(tl, vm_p, basis)| {
+                            let (lambat, selesai) = (b.create_block(), b.create_block());
+                            b.set_cold_block(lambat);
+                            b.append_block_param(selesai, types::I64);
+                            let pecahan = r.spek[ip + 1] == Some(Jenis::Pecahan);
+                            let sv = situs as *const _ as i64;
+                            belum_jenuh(&mut b, sv, lambat);
+                            let v = field_sebaris(&mut b, tl, vm_p, basis, a, sv, pecahan, lambat);
+                            b.ins().jump(selesai, &[v.into()]);
+                            b.switch_to_block(lambat);
+                            catat_meleset(&mut b, sv);
+                            selesai
+                        });
                         let situs = i64c(&mut b, situs as *const _ as i64);
                         let pk = b.ins().stack_addr(k.ptr, wadah, 0);
                         let ke = i64c(&mut b, t as i64);
@@ -943,6 +1038,10 @@ pub fn turunkan(
                             jaga(&mut b, &k, &var, bukan, ip + 2, r.keadaan[ip + 2].as_ref().expect("penerus hasil terjangkau"));
                             k.bendera.set(lama);
                             let v = b.ins().stack_load(k.ptr, types::I64, wadah, 0);
+                            let v = match selesai {
+                                Some(sel) => { b.ins().jump(sel, &[v.into()]); b.switch_to_block(sel); b.block_params(sel)[0] }
+                                None => v,
+                            };
                             b.def_var(var[t], v);
                             if let Some((lanjut, cv)) = temu {
                                 b.def_var(cv, v);
@@ -960,10 +1059,32 @@ pub fn turunkan(
                                         .map(|kk| super::lambat::SitusField::bocor(&f.chunk.names[kk.1 as usize], false, kk.3) as *const _)
                                         .collect();
                                     let daftar = Box::leak(daftar.into_boxed_slice());
+                                    // Sebaris: struct diperiksa sekali, tiap field lewat tembolok situsnya; yang meleset
+                                    // satu saja = pembantu untuk semuanya (yang juga mengisi tembolok situs yang sama).
+                                    let (lambat, akhir) = (b.create_block(), b.create_block());
+                                    b.append_block_param(akhir, types::I64);
+                                    if let Some((tl, vm_p, basis)) = sebaris {
+                                        b.set_cold_block(lambat);
+                                        belum_jenuh(&mut b, daftar[0] as i64, lambat);
+                                        let isi = peta_sebaris(&mut b, tl, vm_p, basis, a, lambat);
+                                        for (j, kk) in ekstra.iter().enumerate() {
+                                            let v = field_dari_isi(&mut b, tl, isi, daftar[j] as i64, kk.3 == 5, lambat);
+                                            b.ins().stack_store(k.ptr, v, wadah8, (j * 8) as i32);
+                                        }
+                                        let semua = b.ins().iconst(types::I64, (1i64 << ekstra.len()) - 1);
+                                        b.ins().jump(akhir, &[semua.into()]);
+                                    } else {
+                                        b.ins().jump(lambat, &[]);
+                                    }
+                                    b.switch_to_block(lambat);
+                                    if sebaris.is_some() { catat_meleset(&mut b, daftar[0] as i64); }
                                     let (pl, n) = (i64c(&mut b, daftar.as_ptr() as i64), i64c(&mut b, ekstra.len() as i64));
                                     let ke = b.ins().stack_addr(k.ptr, wadah8, 0);
                                     let c = b.ins().call(f_field_banyak, &[d, pl, n, ke]);
                                     let bit = b.inst_results(c)[0];
+                                    b.ins().jump(akhir, &[bit.into()]);
+                                    b.switch_to_block(akhir);
+                                    let bit = b.block_params(akhir)[0];
                                     for (j, kk) in ekstra.into_iter().enumerate() {
                                         let (ok, isi) = (b.declare_var(types::I64), b.declare_var(types::I64));
                                         let okv = b.ins().band_imm_u(bit, 1i64 << j);
