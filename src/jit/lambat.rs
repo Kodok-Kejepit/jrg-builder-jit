@@ -952,7 +952,7 @@ pub extern "C" fn tulis(rel: i64, i: i64, nilai: i64, jenis: i32) -> i32 {
     let ok = atas_larik(rel, |t| {
         if let Some(g) = crate::vm::larik_milik_tunggal(t) {
             let k = norm_indeks(i, g.len())?;
-            g[k] = v.clone();
+            g[k] = v;
             return Some(());
         }
         // Aturan `PinjamLokal`: isi dipisahkan dari pemegang lain sebelum ditulis (tidak terlihat bila gagal).
