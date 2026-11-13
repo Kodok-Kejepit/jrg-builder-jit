@@ -1103,10 +1103,15 @@ pub fn turunkan(
             Cara::Langsung(n) => {
                 // Bingkai VM callee didorong `masuk`; kode callee dipanggil langsung; `keluar` menaruh hasilnya.
                 let jenis = &r.langsung[*n].1;
-                tumpahkan(&mut b, &k, &var, s, t - a - 1..t, slot, ptr, f_taruh, &r.callee_nilai);
+                // Callee maya: `masuk` mengambilnya dari rencana, posisinya tidak perlu ditulis ke stack VM.
+                let (dari, fungsi) = match s[t - a - 1] {
+                    Jenis::Fungsi(c) => (t - a, &r.callee_nilai[c] as *const _ as i64),
+                    _ => (t - a - 1, 0),
+                };
+                tumpahkan(&mut b, &k, &var, s, dari..t, slot, ptr, f_taruh, &r.callee_nilai);
                 let args = [
                     i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
-                    i64c(&mut b, a as i64), b.ins().stack_addr(ptr, slot, 0),
+                    i64c(&mut b, a as i64), b.ins().stack_addr(ptr, slot, 0), i64c(&mut b, fungsi),
                 ];
                 let c = b.ins().call(f_masuk, &args);
                 let m0 = b.inst_results(c)[0];

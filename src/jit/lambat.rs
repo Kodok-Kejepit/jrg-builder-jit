@@ -223,7 +223,7 @@ pub extern "C" fn langkah_cabang(ip: i64, jenis: *const Jenis, t: i64, tumpah: i
 /// Panggilan langsung (`Cara::Langsung`): callee dan `argc` argumennya (posisi `t - argc - 1..t`) ke stack
 /// VM, bingkai callee didorong dengan aturan `Vm::call_value`, dan basis konteks jadi milik callee.
 /// 0 = jalankan kode native callee; 1 = VM yang menjalankannya; 2 = galat (`ambil_galat`).
-pub extern "C" fn masuk(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai: *const i64) -> i32 {
+pub extern "C" fn masuk(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai: *const i64, fungsi: *const VmValue) -> i32 {
     let (vm, basis) = konteks();
     let (t, argc) = (t as usize, argc as usize);
     let jenis = unsafe { std::slice::from_raw_parts(jenis, t) };
@@ -237,7 +237,9 @@ pub extern "C" fn masuk(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai: 
     let fr = vm.frames.last_mut().expect("bingkai terluar");
     fr.ip = ip as usize + 1;
     let slot = basis + t - argc - 1;
-    let VmValue::Function(func) = vm.stack[slot].clone() else { panic!("bug di jrgc: panggilan langsung JIT bukan atas fungsi") };
+    // Callee maya (`Jenis::Fungsi`): dari rencana, posisinya tidak ditulis; selain itu dari stack VM.
+    let callee = match unsafe { fungsi.as_ref() } { Some(f) => f.clone(), None => vm.stack[slot].clone() };
+    let VmValue::Function(func) = callee else { panic!("bug di jrgc: panggilan langsung JIT bukan atas fungsi") };
     if vm.periksa_kedalaman(&func.name, None).is_err() {
         // Span cuma untuk kalimat galatnya.
         let fr = vm.frames.last().expect("bingkai terluar");
