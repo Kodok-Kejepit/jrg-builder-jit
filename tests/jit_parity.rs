@@ -1671,3 +1671,55 @@ fn callee_bulat_disisipkan() {
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// Callee `layak::ringan` dipanggil tanpa bingkai VM didorong lebih dulu (`lambat::masuk_ringan`): deopt,
+/// galat dengan jejaknya (indeks di luar batas, `match` tanpa lengan cocok), dan spekulasi gagal di dalamnya —
+/// bingkainya diwujudkan `keluar_ringan` sebelum VM melanjutkan, jadi stderr sama persis dengan VM.
+const BINGKAI_TUNDA: &str = r#"enum Op { A(int), B((int, int)), C(string) }
+struct P { pub x: int, pub y: float }
+impl P {
+    fn geser(self, k) -> P { return P { x: self.x + k, y: self.y * 0.5 } }
+    fn ambil(self, i) -> int { let t = (self.x, 2, 3); return t[i] }
+}
+fn ex(o, acc) {
+    match o {
+        Op::A(k) => acc + k,
+        Op::B(p) => acc + p.0 * p.1,
+    }
+}
+pub fn main() {
+    var t = 0
+    var p = P { x: 0, y: 1.0 }
+    for i in 0..3000 {
+        let o = i % 2 == 0 $ Op::A(i) : Op::B((i, 2))
+        t = ex(o, t) % 1000003
+        p = p.geser(1)
+        t = t + p.ambil(i % 3)
+    }
+    wok(t, p.x, p.y)
+    wok(ex(Op::A(1.5), 2))
+    wok(p.ambil(1))
+    wok(p.ambil(7))
+}
+"#;
+const BINGKAI_TUNDA_MATCH: &str = r#"enum Op { A(int), C(string) }
+fn ex(o, acc) { match o { Op::A(k) => acc + k } }
+pub fn main() {
+    var t = 0
+    for i in 0..3000 { t = ex(Op::A(i), t) % 1000 }
+    wok(t)
+    wok(ex(Op::C("z"), 1))
+}
+"#;
+
+#[test]
+fn callee_ringan_tanpa_bingkai_didorong() {
+    for (src, galat) in [(BINGKAI_TUNDA, "dipanggil di"), (BINGKAI_TUNDA_MATCH, "tidak exhaustive")] {
+        let v = jalankan(src, &["--vm"], &[]);
+        assert!(v.stderr.contains(galat), "{}", v.stderr);
+        for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+            let j = jalankan(src, &["--jit"], env);
+            assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+        }
+    }
+}

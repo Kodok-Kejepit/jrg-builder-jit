@@ -83,7 +83,7 @@ pub fn tanda_tangan_umum(cc: CallConv, param: &[Type], hasil: Option<Type>) -> S
 pub struct ImporLambat {
     pub langkah: FuncId, pub muat: FuncId, pub buang: FuncId, pub benar: FuncId, pub buka: FuncId,
     pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
-    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub metode_tukar: FuncId, pub metode_lokal: FuncId, pub karakter_lokal: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
+    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub metode_tukar: FuncId, pub metode_lokal: FuncId, pub karakter_lokal: FuncId, pub masuk_ringan: FuncId, pub keluar_ringan: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
@@ -95,6 +95,8 @@ pub struct ImporLambat {
 pub struct Impor<'a> {
     pub catat: FuncId, pub undi: Option<FuncId>, pub baca: FuncId, pub tulis: FuncId, pub fid: u32,
     pub lambat: &'a ImporLambat,
+    /// Per `Rencana::langsung`: callee bisa dipanggil tanpa bingkai VM didorong lebih dulu (`layak::ringan`).
+    pub ringan: &'a [bool],
 }
 
 /// Kembali dengan status `st` tanpa mencatat apa pun.
@@ -596,7 +598,8 @@ pub fn turunkan(
     let wadah = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
     let wadah8 = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 64, 3));
     // Titipan `masuk` untuk `keluar` (kedalaman, basis, slot); panggilan langsung di satu bingkai tidak bertumpuk.
-    let titip = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24, 3));
+    // `masuk_ringan` menitipkan dua kata lagi (alamat fungsi, argc).
+    let titip = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 40, 3));
     let il = impor.lambat;
     let [f_langkah, f_muat, f_buang, f_benar, f_buka, f_taruh, f_ambil, f_simpan, f_pola, f_payload] =
         [il.langkah, il.muat, il.buang, il.benar, il.buka, il.taruh, il.ambil, il.simpan, il.pola, il.payload]
@@ -607,8 +610,8 @@ pub fn turunkan(
     let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode, f_bawaan, f_biner] =
         [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode, il.bawaan, il.biner]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun, f_baca_pecahan, f_jenis_sama, f_panjang, f_field_banyak, f_metode_tukar, f_metode_lokal, f_karakter_lokal] =
-        [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun, il.baca_pecahan, il.jenis_sama, il.panjang, il.field_banyak, il.metode_tukar, il.metode_lokal, il.karakter_lokal]
+    let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun, f_baca_pecahan, f_jenis_sama, f_panjang, f_field_banyak, f_metode_tukar, f_metode_lokal, f_karakter_lokal, f_masuk_ringan, f_keluar_ringan] =
+        [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun, il.baca_pecahan, il.jenis_sama, il.panjang, il.field_banyak, il.metode_tukar, il.metode_lokal, il.karakter_lokal, il.masuk_ringan, il.keluar_ringan]
         .map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
@@ -1116,7 +1119,8 @@ pub fn turunkan(
                     i64c(&mut b, a as i64), b.ins().stack_addr(ptr, slot, 0), i64c(&mut b, fungsi),
                     b.ins().stack_addr(ptr, titip, 0),
                 ];
-                let c = b.ins().call(f_masuk, &args);
+                let ringan = fungsi != 0 && impor.ringan.get(*n).copied().unwrap_or(false);
+                let c = b.ins().call(if ringan { f_masuk_ringan } else { f_masuk }, &args);
                 let m0 = b.inst_results(c)[0];
                 let (gagal, cek, asli, akhir) = (b.create_block(), b.create_block(), b.create_block(), b.create_block());
                 b.set_cold_block(gagal);
@@ -1145,7 +1149,7 @@ pub fn turunkan(
                 let st = b.ins().sextend(types::I64, st);
                 let h = b.ins().stack_load(ptr, types::I64, wadah, 0);
                 let tp = b.ins().stack_addr(ptr, titip, 0);
-                let c = b.ins().call(f_keluar, &[st, h, tp]);
+                let c = b.ins().call(if ringan { f_keluar_ringan } else { f_keluar }, &[st, h, tp]);
                 let r0 = b.inst_results(c)[0];
                 let (gagal2, terus) = (b.create_block(), b.create_block());
                 b.set_cold_block(gagal2);

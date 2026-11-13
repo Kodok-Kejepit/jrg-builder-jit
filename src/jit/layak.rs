@@ -272,6 +272,34 @@ fn spek_hasil(f: &VmFunction, ip: usize) -> Option<Jenis> {
     }
 }
 
+/// Callee `Cara::Langsung` yang bisa jalan tanpa bingkai VM didorong dulu (`lambat::masuk_ringan`): pembantu
+/// basis-relatif atau native saja, kegagalannya deopt (`keluar_ringan` mewujudkan bingkainya). Yang membaca
+/// bingkai teratas (langkah VM, bawaan, operator VM, panggilan, upvalue, field privat, `char_at`) tidak.
+pub fn ringan(f: &VmFunction, r: &Rencana) -> bool {
+    if r.ada_defer || r.masuk != 0 { return false; }
+    let kode = &f.chunk.code;
+    (0..kode.len()).all(|ip| {
+        let Some(s) = &r.keadaan[ip] else { return true };
+        if r.keluar[ip] { return true; }
+        match &r.cara[ip] {
+            Cara::Asli | Cara::Buka(_) if kode[ip].op == OpCode::Call => {
+                let a = kode[ip].arg as usize;
+                a < s.len() && match s[s.len() - a - 1] {
+                    Jenis::Fungsi(_) => true,
+                    Jenis::Bungkus(k, _) => k != BUNGKUS_CHAR_AT,
+                    _ => false,
+                }
+            }
+            Cara::Field => kode[ip].op == OpCode::GetField,
+            Cara::Asli | Cara::Buka(_) | Cara::TipeLipat(_) | Cara::TipeSama(_) | Cara::Panjang | Cara::Salinan
+            | Cara::Bangun(_) | Cara::Geser | Cara::Indeks | Cara::Salin | Cara::Tukar | Cara::Muat
+            | Cara::Konstanta | Cara::Ambil | Cara::Simpan | Cara::Pola | Cara::Payload | Cara::Benar
+            | Cara::Buang | Cara::KembaliNilai | Cara::KembaliUnit => true,
+            _ => false,
+        }
+    })
+}
+
 /// Sifat fungsi yang membuatnya bisa dipanggil langsung dari kode native (bingkainya disusun ulang
 /// `deopt::pulihkan` tanpa closure dan dengan argumen tepat sebanyak aritasnya).
 pub fn bentuk_layak(f: &VmFunction) -> bool {

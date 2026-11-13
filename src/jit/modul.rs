@@ -30,6 +30,8 @@ struct ModulJit {
     tolak: Vec<(String, String)>,
     /// Badan CLIF callee bulat kecil per `FuncId`, disisipkan Cranelift di tempat panggilannya (`Sisip`).
     badan: HashMap<u32, cranelift_codegen::ir::Function>,
+    /// Titik masuk yang bisa dipanggil tanpa bingkai VM didorong lebih dulu (`layak::ringan`).
+    ringan: HashMap<Kunci, bool>,
 }
 
 /// Callee bulat yang badannya disisipkan paling besar sekian instruksi CLIF.
@@ -98,6 +100,8 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
             jb.symbol("jrg_jit_metode_tukar", lambat::metode_tukar as *const u8);
             jb.symbol("jrg_jit_metode_lokal", lambat::metode_lokal as *const u8);
             jb.symbol("jrg_jit_karakter_lokal", lambat::karakter_lokal as *const u8);
+            jb.symbol("jrg_jit_masuk_ringan", lambat::masuk_ringan as *const u8);
+            jb.symbol("jrg_jit_keluar_ringan", lambat::keluar_ringan as *const u8);
             jb.symbol("jrg_jit_karakter", lambat::karakter as *const u8);
             jb.symbol("jrg_jit_bangun", lambat::bangun as *const u8);
             jb.symbol("jrg_jit_baca_pecahan", lambat::baca_pecahan as *const u8);
@@ -153,6 +157,8 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
                 metode_tukar: impor("jrg_jit_metode_tukar", &[I64, I64], Some(I32))?,
                 metode_lokal: impor("jrg_jit_metode_lokal", &[I64, I64, I64, I32], Some(I32))?,
                 karakter_lokal: impor("jrg_jit_karakter_lokal", &[I64, I64], Some(I64))?,
+                masuk_ringan: impor("jrg_jit_masuk_ringan", &[I64, p, I64, I64, p, p, p], Some(I32))?,
+                keluar_ringan: impor("jrg_jit_keluar_ringan", &[I64, I64, p], Some(I32))?,
                 karakter: impor("jrg_jit_karakter", &[I64, I64], Some(I64))?,
                 bangun: impor("jrg_jit_bangun", &[I64, I64, I64, I64, I64], None)?,
                 baca_pecahan: impor("jrg_jit_baca_pecahan", &[I64, I64, p], Some(I32))?,
@@ -184,7 +190,7 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
             let undi = if deopt::acak_aktif() {
                 Some(m.declare_function("jrg_jit_undi", Linkage::Import, &turun::tanda_tangan_undi(cc)).ok()?)
             } else { None };
-            Some(ModulJit { m, jadi: HashMap::new(), info: Vec::new(), catat, undi, baca, tulis, lambat, fctx: FunctionBuilderContext::new(), urut: 0, tolak: Vec::new(), badan: HashMap::new() })
+            Some(ModulJit { m, jadi: HashMap::new(), info: Vec::new(), catat, undi, baca, tulis, lambat, fctx: FunctionBuilderContext::new(), urut: 0, tolak: Vec::new(), badan: HashMap::new(), ringan: HashMap::new() })
         }))
     })
 }
@@ -300,8 +306,14 @@ pub fn kompilasi(
             .map(|i| asli.contains(&i).then(|| id_kunci(&kunci_callee(&r.callee[i]), mj))).collect();
         let langsung: Vec<FuncId> = r.langsung.iter()
             .map(|(i, jenis)| id_kunci(&kunci(&r.callee[*i], 0, layak::KEMBALI_SKALAR, jenis), mj)).collect();
+        let ringan: Vec<bool> = r.langsung.iter()
+            .map(|(i, jenis)| mj.ringan.get(&kunci(&r.callee[*i], 0, layak::KEMBALI_SKALAR, jenis)).copied().unwrap_or(false))
+            .collect();
+        mj.ringan.insert(k.clone(), layak::ringan(h, r));
         ctx.func.signature = sig.clone();
-        let impor = turun::Impor { catat: mj.catat, undi: mj.undi, baca: mj.baca, tulis: mj.tulis, fid: fid0 + i as u32, lambat: &mj.lambat };
+        let impor = turun::Impor {
+            catat: mj.catat, undi: mj.undi, baca: mj.baca, tulis: mj.tulis, fid: fid0 + i as u32, lambat: &mj.lambat, ringan: &ringan,
+        };
         turun::turunkan(&mut mj.m, &mut ctx.func, &mut mj.fctx, h, r, &callee, &langsung, &impor);
         let diri = id_baru[i].as_u32();
         if ctx.inline(Sisip { badan: &mj.badan, diri }).is_err() { utuh = false; break; }
