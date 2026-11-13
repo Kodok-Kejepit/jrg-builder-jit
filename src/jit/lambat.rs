@@ -260,37 +260,31 @@ pub extern "C" fn masuk(
     0
 }
 
-/// `masuk` untuk callee `layak::ringan`: argumennya di stack VM dan basis konteks digeser, tapi bingkai VM-nya
-/// belum didorong — `titip` = (kedalaman, basis, slot, alamat fungsi, argc) untuk `keluar_ringan`.
+/// `masuk` untuk callee `layak::ringan`: basis konteks digeser, bingkai VM-nya belum didorong — argumen native
+/// dibaca callee dari penyangganya, jadi baru ditulis ke stack VM kalau bingkainya diwujudkan. `titip` =
+/// (kedalaman, basis, slot, fungsi, argc, jenis, nilai, t, ip) untuk `keluar_ringan`.
 pub extern "C" fn masuk_ringan(
-    ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai: *const i64, fungsi: *const VmValue, titip: *mut [usize; 5],
+    ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai: *const i64, fungsi: *const VmValue, titip: *mut [usize; 9],
 ) -> i32 {
     let (vm, basis) = konteks();
     let (t, argc) = (t as usize, argc as usize);
-    let jenis = unsafe { std::slice::from_raw_parts(jenis, t) };
-    let nilai = unsafe { std::slice::from_raw_parts(nilai, t) };
     vm.stack.truncate(basis + t);
-    while vm.stack.len() < basis + t { vm.stack.push(VmValue::Nil); }
-    for i in t - argc..t {
-        if let Some(v) = nilai_skalar(jenis[i], nilai[i]) { vm.stack[basis + i] = v; }
-    }
-    let d = vm.frames.len();
-    vm.frames.last_mut().expect("bingkai terluar").ip = ip as usize + 1;
     let slot = basis + t - argc - 1;
     if let VmValue::Function(func) = unsafe { &*fungsi } {
         if let Some(p) = &func.chunk.profil { p.catat_panggilan(); }
     }
-    unsafe { *titip = [d, basis, slot, fungsi as usize, argc] };
+    let d = vm.frames.len();
+    unsafe { *titip = [d, basis, slot, fungsi as usize, argc, jenis as usize, nilai as usize, t, ip as usize] };
     KONTEKS.with(|k| k.set((vm, slot + 1)));
     0
 }
 
 /// `keluar` untuk `masuk_ringan`. Hasil biasa: tanpa bingkai yang perlu dilepas. Deopt, belum mulai, atau
 /// galat: bingkai callee diwujudkan dulu persis seperti `masuk`, lalu jalur `keluar` biasa.
-pub extern "C" fn keluar_ringan(st: i64, hasil: i64, titip: *const [usize; 5]) -> i32 {
+pub extern "C" fn keluar_ringan(st: i64, hasil: i64, titip: *const [usize; 9]) -> i32 {
     use super::turun::{BERHASIL, BERHASIL_BOOL, BERHASIL_NILAI, BERHASIL_PECAHAN, BERHASIL_UNIT};
     let (vm, _) = konteks();
-    let [_, basis, slot, fungsi, argc] = unsafe { *titip };
+    let [_, basis, slot, fungsi, argc, jenis, nilai, t, ip] = unsafe { *titip };
     let v = match st {
         BERHASIL => VmValue::Int(hasil as i128),
         BERHASIL_BOOL => VmValue::Bool(hasil != 0),
@@ -298,6 +292,16 @@ pub extern "C" fn keluar_ringan(st: i64, hasil: i64, titip: *const [usize; 5]) -
         BERHASIL_NILAI => std::mem::replace(&mut vm.stack[slot + 1 + hasil as usize], VmValue::Nil),
         BERHASIL_UNIT => VmValue::Unit,
         _ => {
+            // Yang `masuk` biasa kerjakan: stack sampai posisi pemanggil (`Return` VM membaca panjangnya), `ip`
+            // pemanggil sesudah panggilan, argumen native di stack VM. Posisi callee di atasnya tidak dipotong.
+            while vm.stack.len() < basis + t { vm.stack.push(VmValue::Nil); }
+            vm.frames.last_mut().expect("bingkai terluar").ip = ip + 1;
+            let (jenis, nilai) = unsafe {
+                (std::slice::from_raw_parts(jenis as *const Jenis, t), std::slice::from_raw_parts(nilai as *const i64, t))
+            };
+            for i in t - argc..t {
+                if let Some(v) = nilai_skalar(jenis[i], nilai[i]) { *sediakan(vm, basis, i) = v; }
+            }
             let VmValue::Function(func) = (unsafe { &*(fungsi as *const VmValue) }) else { unreachable!("dijamin turun.rs") };
             vm.dorong_bingkai(crate::vm::vm::CallFrame {
                 func: Arc::clone(func), ip: 0, slot, defers: Vec::new(), argc: argc as u8, closure: None,
@@ -306,7 +310,9 @@ pub extern "C" fn keluar_ringan(st: i64, hasil: i64, titip: *const [usize; 5]) -
         }
     };
     KONTEKS.with(|k| k.set((vm, basis)));
+    // Hasilnya tepat di slot callee, juga kalau stack belum sepanjang itu (`masuk_ringan` tidak memanjangkannya).
     vm.stack.truncate(slot);
+    while vm.stack.len() < slot { vm.stack.push(VmValue::Nil); }
     vm.catat_hasil(&v);
     vm.stack.push(v);
     0

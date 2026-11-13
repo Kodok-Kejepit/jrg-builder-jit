@@ -598,8 +598,8 @@ pub fn turunkan(
     let wadah = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
     let wadah8 = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 64, 3));
     // Titipan `masuk` untuk `keluar` (kedalaman, basis, slot); panggilan langsung di satu bingkai tidak bertumpuk.
-    // `masuk_ringan` menitipkan dua kata lagi (alamat fungsi, argc).
-    let titip = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 40, 3));
+    // `masuk_ringan` menitipkan enam kata lagi (fungsi, argc, jenis, nilai, t, ip).
+    let titip = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 72, 3));
     let il = impor.lambat;
     let [f_langkah, f_muat, f_buang, f_benar, f_buka, f_taruh, f_ambil, f_simpan, f_pola, f_payload] =
         [il.langkah, il.muat, il.buang, il.benar, il.buka, il.taruh, il.ambil, il.simpan, il.pola, il.payload]
