@@ -906,9 +906,11 @@ fn atas_larik<T>(rel: i64, f: impl FnOnce(&mut VmValue) -> Option<T>) -> Option<
 }
 
 /// Indeks dengan aturan `norm_idx` (negatif dari belakang); di luar batas = `None` (VM yang menolak).
+#[inline(always)]
 fn norm_indeks(i: i64, n: usize) -> Option<usize> {
-    let i = if i < 0 { n as i128 + i as i128 } else { i as i128 };
-    (0..n as i128).contains(&i).then_some(i as usize)
+    // Panjang larik selalu di bawah `i64::MAX`, jadi `i + n` untuk `i` negatif tidak meluap.
+    let j = if i < 0 { i + n as i64 } else { i };
+    ((j as u64) < n as u64).then_some(j as usize)
 }
 
 /// `IndeksLokal` atas larik berelemen bulat 64 bit: 0 = `*keluar` terisi.

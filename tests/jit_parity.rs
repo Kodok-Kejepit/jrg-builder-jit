@@ -1614,3 +1614,35 @@ fn math_pecahan_tanpa_jembatan() {
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{m} {env:?}");
     }
 }
+
+/// Indeks larik lewat `lambat::norm_indeks` (64 bit): negatif dari belakang, di luar batas ke dua arah, larik
+/// kosong, baca dan tulis, elemen pecahan.
+const INDEKS_LARIK: &str = r#"fn baca(a, i) { return a[i] }
+fn tulis(a, i, v) { var b = a
+    b[i] = v
+    return b }
+pub fn main() {
+    var a = [1, 2, 3, 4, 5]
+    var t = 0
+    for k in 0..3000 {
+        let i = k % 10 - 5
+        t = t + a[i] * (k % 3)
+        a[i] = a[i] + 1
+    }
+    wok(t, a, baca(a, -1), baca(a, -5), tulis(a, -2, 9))
+    var f = [1.5, 2.5]
+    f[-1] = f[-2] + f[1]
+    wok(f)
+    wok(baca([], 0))
+}
+"#;
+
+#[test]
+fn indeks_larik_negatif_dan_luar_batas() {
+    let i = jalankan(INDEKS_LARIK, &[], &[]);
+    assert!(i.stdout.starts_with("907900 [601, 602, 603, 604, 605]") && i.stderr.contains("array ini kosong"), "{}", i.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(INDEKS_LARIK, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}
