@@ -1930,3 +1930,35 @@ fn unit_tidak_ditulis_ke_stack_vm() {
     let baris = j.stderr.lines().find(|l| l.contains("dikompilasi:")).unwrap_or("");
     assert!(baris.contains("main"), "main tidak dikompilasi:\n{}", j.stderr);
 }
+
+/// Bawaan murni dipanggil langsung atas argumennya di stack VM (J6 langkah 45): sesudah ratusan panggilan yang
+/// berhasil (terkompilasi), argumen berjenis salah harus gagal dengan kalimat, lokasi dan jejak yang sama.
+const BAWAAN_LANGSUNG: &str = r#"
+package main
+fn olah(x, i: int) -> string {
+    let a = str::upper(x)
+    let b = str::replace(a, "A", "b")
+    return str::reverse(b) + str(i)
+}
+pub fn main() {
+    var n = 0
+    for i in 0..400 {
+        let x = if (i == 350) { 42 } else { "aku-" + str(i % 7) }
+        n = n + len(olah(x, i))
+    }
+    wok(n)
+}
+"#;
+
+#[test]
+fn bawaan_langsung_gagal_sama() {
+    let v = jalankan(BAWAAN_LANGSUNG, &["--vm"], &[]);
+    assert!(!v.sukses && v.stderr.contains("str::upper"), "{}", v.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(BAWAAN_LANGSUNG, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(BAWAAN_LANGSUNG, &["--jit"], &[STRES, ACAK, ("JRG_JIT_LOG", "ringkas")]);
+    let baris = j.stderr.lines().find(|l| l.contains("dikompilasi:")).unwrap_or("");
+    assert!(baris.contains("olah"), "olah tidak dikompilasi:\n{}", j.stderr);
+}

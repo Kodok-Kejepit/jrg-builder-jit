@@ -391,6 +391,39 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
         *sediakan(vm, basis, t - argc - 1) = v;
         return 0;
     }
+    let span = |vm: &mut Vm| {
+        let fr = vm.frames.last_mut().expect("bingkai terluar");
+        fr.ip = ip as usize + 1;
+        fr.func.chunk.code.get(ip as usize).and_then(|i| (i.span != 0).then(|| fr.func.chunk.spans.get(i.span as usize).copied()).flatten())
+    };
+    // Bawaan murni (tanpa layanan khusus, bukan cetak) dengan jumlah argumen yang sah: dipanggil langsung atas
+    // argumennya di stack VM, tanpa `Vec` per panggilan. Selebihnya — termasuk aritas salah, yang kalimatnya
+    // lahir di `panggil_native` — lewat pintu umum.
+    let polos = crate::vm::info_native::info(f).is_none_or(|i| i.khusus.is_none() && !i.cetak
+        && i.maks.is_none_or(|m| argc <= m) && i.min.is_none_or(|m| argc >= m));
+    if polos {
+        for i in t - argc..t {
+            if let Some(v) = nilai_skalar(jenis[i], nilai[i]) { *sediakan(vm, basis, i) = v; }
+        }
+        let _ = sediakan(vm, basis, t - 1);
+        let r = f(&vm.stack[basis + t - argc..basis + t]);
+        let r = r.map_err(|e| crate::vm::value::perjelas_pesan_native(e, &vm.stack[basis + t - argc..basis + t]));
+        // Argumennya dilepas di sini, seperti yang dulu dipindah ke larik argumen.
+        for i in t - argc..t { vm.stack[basis + i] = VmValue::Nil; }
+        return match r {
+            Ok(v) => {
+                let _ = span(vm);
+                vm.catat_hasil(&v);
+                *sediakan(vm, basis, t - argc - 1) = v;
+                0
+            }
+            Err(e) => {
+                let sp = span(vm);
+                GALAT.with(|g| *g.borrow_mut() = Some(crate::vm::VmError::at(e, sp)));
+                2
+            }
+        };
+    }
     let mut args = Vec::with_capacity(argc);
     for i in t - argc..t {
         args.push(match nilai_skalar(jenis[i], nilai[i]) {
@@ -398,9 +431,7 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
             None => std::mem::replace(sediakan(vm, basis, i), VmValue::Nil),
         });
     }
-    let fr = vm.frames.last_mut().expect("bingkai terluar");
-    let sp = fr.func.chunk.code.get(ip as usize).and_then(|i| (i.span != 0).then(|| fr.func.chunk.spans.get(i.span as usize).copied()).flatten());
-    fr.ip = ip as usize + 1;
+    let sp = span(vm);
     match vm.panggil_native(f, args, sp, true) {
         Ok(v) => {
             vm.catat_hasil(&v);
