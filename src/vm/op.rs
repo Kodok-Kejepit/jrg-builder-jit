@@ -108,6 +108,11 @@ impl Vm {
             OpCode::AndNot => return a.and_not(&b).map_err(|e| VmError::at(e, sp)),
             _ => return Err(VmError::at(format!("bug di jrgc: op_biner atas {op:?}"), sp)),
         };
+        // Teks + teks: tidak ada operator milik pemakai (cuma struct/enum yang punya) dan tidak ada hook tampilan
+        // (yang cuma mengubah sisi bukan-teks), jadi langsung disambung.
+        if let (OpCode::Add, VmValue::Str(_), VmValue::Str(_)) = (op, &a, &b) {
+            return a.tambah_milik(&b).map_err(|e| VmError::at(e, sp));
+        }
         match self.operator_biner_pengguna(&bop, &a, &b) {
             Err(e) => return Err(if e.span.is_none() { VmError::at(e.msg, sp) } else { e }),
             Ok(Some(h)) => return Ok(h),

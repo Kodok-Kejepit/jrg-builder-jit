@@ -633,7 +633,11 @@ impl VmValue {
         // tempat kalau Arc-nya unik — `make_mut` menyalin cuma kalau dipegang bersama.
         if let VmValue::Str(mut a) = self {
             use std::fmt::Write;
-            write!(Arc::make_mut(&mut a), "{}", rhs).expect("Display VmValue tidak boleh gagal");
+            // Tampilan teks adalah isinya sendiri: disalin langsung, tanpa mesin `fmt`.
+            match rhs {
+                VmValue::Str(r) => Arc::make_mut(&mut a).push_str(r),
+                _ => write!(Arc::make_mut(&mut a), "{}", rhs).expect("Display VmValue tidak boleh gagal"),
+            }
             return Ok(VmValue::Str(a));
         }
         self.add(rhs)

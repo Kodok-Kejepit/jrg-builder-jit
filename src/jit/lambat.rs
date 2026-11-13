@@ -414,6 +414,24 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
     }
 }
 
+/// Desimal sebuah bulat 64 bit, sama dengan `{}` atas `i128` (yang dipakai tampilan `VmValue::Int`), tanpa mesin
+/// `fmt`: digit ditulis dari belakang ke penyangga di stack.
+fn desimal(n: i64) -> String {
+    let mut b = [0u8; 20];
+    let mut i = b.len();
+    let mut x = n.unsigned_abs();
+    loop {
+        i -= 1;
+        b[i] = b'0' + (x % 10) as u8;
+        x /= 10;
+        if x == 0 { break; }
+    }
+    let mut s = String::with_capacity(b.len() - i + 1);
+    if n < 0 { s.push('-'); }
+    s.push_str(std::str::from_utf8(&b[i..]).expect("digit ASCII"));
+    s
+}
+
 /// Bawaan yang dijawab di tempat, tanpa larik argumen dan jembatan nilai; `None` = jalur umum (yang juga
 /// melapor galatnya). Posisi milik VM saja yang sah dibaca dari stack VM (posisi native bisa basi).
 fn bawaan_cepat(vm: &Vm, basis: usize, jenis: &[Jenis], nilai: &[i64], t: usize, argc: usize, f: usize) -> Option<VmValue> {
@@ -426,7 +444,7 @@ fn bawaan_cepat(vm: &Vm, basis: usize, jenis: &[Jenis], nilai: &[i64], t: usize,
     });
     match argc {
         // `str(n)` atas bulat native: tampilan `VmValue::Int` yang sama dengan bawaan `str`.
-        1 if f == teks && jenis[t - 1] == Jenis::Bulat => Some(VmValue::str(VmValue::Int(nilai[t - 1] as i128).to_string())),
+        1 if f == teks && jenis[t - 1] == Jenis::Bulat => Some(VmValue::str(desimal(nilai[t - 1]))),
         // `len(teks)` milik VM: `Vm::vm_len`, definisi yang sama dengan opcode `Len`.
         1 if f == len && jenis[t - 1].di_vm() => match vm.stack.get(basis + t - 1) {
             Some(v @ VmValue::Str(_)) => vm.vm_len(v, None).ok().map(|n| VmValue::Int(n as i128)),
@@ -1061,4 +1079,14 @@ pub extern "C" fn tulis(rel: i64, i: i64, nilai: i64, jenis: i32) -> i32 {
         Some(())
     });
     if ok.is_some() { 0 } else { 1 }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn desimal_sama_dengan_fmt() {
+        for n in [0i64, 1, -1, 9, 10, -10, 99, 100, 12345, i64::MAX, i64::MIN, i64::MIN + 1, 1 << 40, -(1 << 50)] {
+            assert_eq!(super::desimal(n), format!("{}", n as i128), "{n}");
+        }
+    }
 }
