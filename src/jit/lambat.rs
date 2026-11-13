@@ -74,8 +74,8 @@ pub enum SitusBangun {
     Struktur(crate::vm::value::Label, Arc<crate::vm::peta::Bentuk>),
     Larik,
     Tuple,
-    /// `BuildEnum`: tipe dan varian milik prototipenya, payloadnya satu posisi.
-    Varian(Arc<str>, Arc<str>),
+    /// `BuildEnum`: nama varian milik prototipenya, payloadnya satu posisi.
+    Varian(&'static crate::vm::value::NamaVarian),
 }
 
 impl SitusBangun {
@@ -102,8 +102,7 @@ pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64,
             VmValue::Map(crate::vm::value::Peta::struktur_arc(label.clone(), Arc::clone(bentuk), isi)),
         SitusBangun::Tuple => VmValue::tuple(isi),
         SitusBangun::Larik => VmValue::array(isi),
-        SitusBangun::Varian(tipe, varian) =>
-            VmValue::varian_berisi(Arc::clone(tipe), Arc::clone(varian), isi.pop().expect("satu payload")),
+        SitusBangun::Varian(nama) => VmValue::varian_berisi(nama, isi.pop().expect("satu payload")),
     };
     *sediakan(vm, basis, t - n) = v;
 }
@@ -537,8 +536,8 @@ pub extern "C" fn pola(p: i64, situs: *const SitusPola) -> i32 {
 }
 
 /// Satu situs pola enum (`CekEnum`): deskriptornya dan tembolok hasil per varian. Kunci = alamat nama varian
-/// milik nilainya (satu `Arc` cuma dimiliki satu tipe+varian; referensi kuatnya dibocorkan, jadi alamatnya
-/// tidak dipakai ulang) | bit payload, isi = hasilnya; `Err` (sub-pola salah jumlah) tidak pernah ditembolok.
+/// nilainya (diintern: satu alamat per tipe+varian, hidup selamanya) | bit payload, isi = hasilnya; `Err`
+/// (sub-pola salah jumlah) tidak pernah ditembolok.
 pub struct SitusPola {
     desc: *const VmValue,
     // Delapan: situs `CekEnum` melihat semua varian enum-nya, bukan cuma yang dicocokkannya.
@@ -556,24 +555,22 @@ impl SitusPola {
         use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
         let kunci = match v {
             VmValue::Map(m) => match &m.label {
-                crate::vm::value::Label::Enum { varian, payload, .. } =>
-                    Some((Arc::as_ptr(varian) as *const u8 as usize | (payload.is_some() as usize) << 1, varian)),
+                crate::vm::value::Label::Enum { nama, payload } =>
+                    Some(*nama as *const _ as usize | (payload.is_some() as usize) << 1),
                 _ => None,
             },
             _ => None,
         };
-        if let Some((k, _)) = kunci {
+        if let Some(k) = kunci {
             for e in &self.tembolok {
                 let isi = e.load(Acquire);
                 if isi & !1 == k { return Ok(isi & 1 == 1); }
             }
         }
         let hasil = crate::vm::cocok_enum(v, unsafe { &*self.desc })?;
-        if let Some((k, varian)) = kunci {
+        if let Some(k) = kunci {
             if let Some(e) = self.tembolok.iter().find(|e| e.load(Relaxed) == 0) {
-                if e.compare_exchange(0, k | hasil as usize, Release, Relaxed).is_ok() {
-                    std::mem::forget(Arc::clone(varian));
-                }
+                let _ = e.compare_exchange(0, k | hasil as usize, Release, Relaxed);
             }
         }
         Ok(hasil)

@@ -974,7 +974,7 @@ pub fn turunkan(
                     OpCode::BuildTuple => SitusBangun::Tuple,
                     OpCode::BuildEnum => match &f.chunk.constants[a] {
                         crate::vm::value::VmValue::Map(p) => match &p.label {
-                            crate::vm::value::Label::Enum { tipe, varian, .. } => SitusBangun::Varian(tipe.clone(), varian.clone()),
+                            crate::vm::value::Label::Enum { nama, .. } => SitusBangun::Varian(nama),
                             _ => unreachable!("dijamin layak.rs"),
                         },
                         _ => unreachable!("dijamin layak.rs"),
