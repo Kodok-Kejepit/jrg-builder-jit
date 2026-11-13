@@ -330,6 +330,12 @@ impl Peta {
         self.isi.lock()
     }
 
+    /// Isi peta milik tunggal pemegang ini, tanpa kunci (`tunggal`).
+    #[inline]
+    pub fn isi_tunggal(m: &mut Arc<Peta>) -> Option<&mut IsiPeta> {
+        tunggal(m).map(|p| p.isi.get_mut().unwrap_or_else(|e| e.into_inner()))
+    }
+
     /// Nama tipe untuk mencari method (`P::m`, `Option::m`); `None` untuk dict.
     pub fn nama_tipe(&self) -> Option<&str> {
         match &self.label {
@@ -338,6 +344,17 @@ impl Peta {
             Label::Enum { tipe, .. } => Some(tipe.as_ref()),
         }
     }
+}
+
+/// Isi penyimpanan yang tidak dipegang `Arc` lain (kuat maupun lemah), tanpa operasi atomik tulis-baca:
+/// pemegang `&mut` ini satu-satunya jalan ke sana, jadi thread lain tidak bisa menjangkaunya. Pagar Acquire
+/// menyusul pelepasan pemegang terakhir sebelumnya. Satu definisi untuk larik dan peta.
+#[inline]
+pub fn tunggal<T>(a: &mut Arc<T>) -> Option<&mut T> {
+    if Arc::strong_count(a) != 1 || Arc::weak_count(a) != 0 { return None; }
+    std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
+    // SAFETY: tidak ada `Arc` lain ke isinya dan `a` dipinjam eksklusif selama hasil ini hidup.
+    Some(unsafe { &mut *(Arc::as_ptr(a) as *mut T) })
 }
 
 // ─── Constructors ─────────────────────────────────────────────────────────

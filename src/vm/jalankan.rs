@@ -1440,7 +1440,7 @@ fn tambah_tempat(cur: &mut VmValue, rhs: &VmValue) -> bool {
 /// Isi larik yang cuma dimiliki slot ini, tanpa kunci (`Arc::get_mut` + `Mutex::get_mut`).
 pub(crate) fn larik_milik_tunggal(v: &mut VmValue) -> Option<&mut Vec<VmValue>> {
     let VmValue::Array(a) = v else { return None };
-    Arc::get_mut(a).map(|m| m.get_mut().unwrap_or_else(|p| p.into_inner()))
+    crate::vm::value::tunggal(a).map(|m| m.get_mut().unwrap_or_else(|p| p.into_inner()))
 }
 
 /// Dua bulat di jalur cepat; `None` = luapan, pembagi 0/-1, atau bukan operator ini (jalur biasa

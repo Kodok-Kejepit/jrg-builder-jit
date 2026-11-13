@@ -658,9 +658,12 @@ pub extern "C" fn field_lokal(slot: i64, situs: *const SitusField, keluar: *mut 
     };
     // Jalur panas: struct milik lokal (bukan sel), bukan privat, angka yang cocok spekulasi — tanpa `VmValue`.
     if !situs.privat {
-        if let Some(VmValue::Map(m)) = vm.stack.get(basis + slot as usize) {
-            let g = m.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some(n) = situs.baca(&g, nama).and_then(angka) {
+        if let Some(VmValue::Map(m)) = vm.stack.get_mut(basis + slot as usize) {
+            let n = match crate::vm::value::Peta::isi_tunggal(m) {
+                Some(isi) => situs.baca(isi, nama).and_then(angka),
+                None => situs.baca(&m.lock().unwrap_or_else(|p| p.into_inner()), nama).and_then(angka),
+            };
+            if let Some(n) = n {
                 unsafe { *keluar = n };
                 return 4;
             }
@@ -700,12 +703,16 @@ pub extern "C" fn field_lokal(slot: i64, situs: *const SitusField, keluar: *mut 
 /// lewat `field_lokal` biasa di tempatnya.
 pub extern "C" fn field_lokal_banyak(slot: i64, situs: *const *const SitusField, n: i64, keluar: *mut i64) -> i64 {
     let (vm, basis) = konteks();
-    let Some(VmValue::Map(m)) = vm.stack.get(basis + slot as usize) else { return 0 };
-    let g = m.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(VmValue::Map(m)) = vm.stack.get_mut(basis + slot as usize) else { return 0 };
+    let kunci;
+    let g: &crate::vm::peta::IsiPeta = match crate::vm::value::Peta::isi_tunggal(m) {
+        Some(isi) => isi,
+        None => { kunci = m.lock().unwrap_or_else(|p| p.into_inner()); &kunci }
+    };
     let mut bit = 0i64;
     for j in 0..n as usize {
         let s = unsafe { &**situs.add(j) };
-        let n = s.baca(&g, unsafe { &*s.nama }).and_then(|v| match (v, s.jenis) {
+        let n = s.baca(g, unsafe { &*s.nama }).and_then(|v| match (v, s.jenis) {
             (VmValue::Int(n), 1) => i64::try_from(*n).ok(),
             (VmValue::Float(x), 5) => Some(x.to_bits() as i64),
             _ => None,
