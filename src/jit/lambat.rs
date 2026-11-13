@@ -473,7 +473,8 @@ pub extern "C" fn pola(p: i64, situs: *const SitusPola) -> i32 {
 /// tidak dipakai ulang) | bit payload, isi = hasilnya; `Err` (sub-pola salah jumlah) tidak pernah ditembolok.
 pub struct SitusPola {
     desc: *const VmValue,
-    tembolok: [std::sync::atomic::AtomicUsize; 4],
+    // Delapan: situs `CekEnum` melihat semua varian enum-nya, bukan cuma yang dicocokkannya.
+    tembolok: [std::sync::atomic::AtomicUsize; 8],
 }
 
 impl SitusPola {
