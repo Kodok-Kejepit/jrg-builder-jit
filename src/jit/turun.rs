@@ -595,6 +595,8 @@ pub fn turunkan(
     let (baca, tulis) = (m.declare_func_in_func(impor.baca, b.func), m.declare_func_in_func(impor.tulis, b.func));
     let wadah = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
     let wadah8 = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 64, 3));
+    // Titipan `masuk` untuk `keluar` (kedalaman, basis, slot); panggilan langsung di satu bingkai tidak bertumpuk.
+    let titip = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 24, 3));
     let il = impor.lambat;
     let [f_langkah, f_muat, f_buang, f_benar, f_buka, f_taruh, f_ambil, f_simpan, f_pola, f_payload] =
         [il.langkah, il.muat, il.buang, il.benar, il.buka, il.taruh, il.ambil, il.simpan, il.pola, il.payload]
@@ -1112,6 +1114,7 @@ pub fn turunkan(
                 let args = [
                     i64c(&mut b, ip as i64), i64c(&mut b, s.as_ptr() as i64), i64c(&mut b, t as i64),
                     i64c(&mut b, a as i64), b.ins().stack_addr(ptr, slot, 0), i64c(&mut b, fungsi),
+                    b.ins().stack_addr(ptr, titip, 0),
                 ];
                 let c = b.ins().call(f_masuk, &args);
                 let m0 = b.inst_results(c)[0];
@@ -1141,7 +1144,8 @@ pub fn turunkan(
                 let st = b.block_params(akhir)[0];
                 let st = b.ins().sextend(types::I64, st);
                 let h = b.ins().stack_load(ptr, types::I64, wadah, 0);
-                let c = b.ins().call(f_keluar, &[st, h]);
+                let tp = b.ins().stack_addr(ptr, titip, 0);
+                let c = b.ins().call(f_keluar, &[st, h, tp]);
                 let r0 = b.inst_results(c)[0];
                 let (gagal2, terus) = (b.create_block(), b.create_block());
                 b.set_cold_block(gagal2);

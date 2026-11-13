@@ -15,7 +15,6 @@ thread_local! {
     static KONTEKS: Cell<(*mut Vm, usize)> = const { Cell::new((std::ptr::null_mut(), 0)) };
     /// Panggilan langsung yang sedang berjalan (`masuk`/`keluar`): kedalaman bingkai pemanggil, basisnya,
     /// dan posisi mutlak slot fungsi callee.
-    static LANGSUNG: RefCell<Vec<(usize, usize, usize)>> = const { RefCell::new(Vec::new()) };
     /// Galat dari instruksi yang dijalankan `langkah`; diambil `panggil::jalankan`.
     static GALAT: RefCell<Option<VmError>> = const { RefCell::new(None) };
 }
@@ -223,7 +222,9 @@ pub extern "C" fn langkah_cabang(ip: i64, jenis: *const Jenis, t: i64, tumpah: i
 /// Panggilan langsung (`Cara::Langsung`): callee dan `argc` argumennya (posisi `t - argc - 1..t`) ke stack
 /// VM, bingkai callee didorong dengan aturan `Vm::call_value`, dan basis konteks jadi milik callee.
 /// 0 = jalankan kode native callee; 1 = VM yang menjalankannya; 2 = galat (`ambil_galat`).
-pub extern "C" fn masuk(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai: *const i64, fungsi: *const VmValue) -> i32 {
+pub extern "C" fn masuk(
+    ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai: *const i64, fungsi: *const VmValue, titip: *mut [usize; 3],
+) -> i32 {
     let (vm, basis) = konteks();
     let (t, argc) = (t as usize, argc as usize);
     let jenis = unsafe { std::slice::from_raw_parts(jenis, t) };
@@ -250,7 +251,8 @@ pub extern "C" fn masuk(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai: 
     }
     if let Some(p) = &func.chunk.profil { p.catat_panggilan(); }
     vm.dorong_bingkai(crate::vm::vm::CallFrame { func, ip: 0, slot, defers: Vec::new(), argc: argc as u8, closure: None });
-    LANGSUNG.with(|l| l.borrow_mut().push((d, basis, slot)));
+    // `(kedalaman, basis, slot)` dititipkan di bingkai native pemanggil sampai `keluar` (tidak bertumpuk di sana).
+    unsafe { *titip = [d, basis, slot] };
     // Rekursi native sedalam itu diteruskan VM (lihat `panggil::jalankan`).
     let ukuran = crate::interpreter::Interpreter::INTERPRETER_STACK_SIZE;
     if crate::interpreter::stack_terpakai().is_some_and(|t| t > ukuran / 2) { return 1; }
@@ -260,10 +262,10 @@ pub extern "C" fn masuk(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai: 
 
 /// Akhir panggilan langsung: status kode callee (`turun::BERHASIL`…; `ULANG` juga untuk "VM yang
 /// menjalankan"), basis konteks pemanggil dipulihkan, hasilnya di slot fungsi callee. 0 = selesai; 2 = galat.
-pub extern "C" fn keluar(st: i64, hasil: i64) -> i32 {
+pub extern "C" fn keluar(st: i64, hasil: i64, titip: *const [usize; 3]) -> i32 {
     use super::turun::{BERHASIL, BERHASIL_BOOL, BERHASIL_NILAI, BERHASIL_PECAHAN, BERHASIL_UNIT, DEOPT, GAGAL};
     let (vm, _) = konteks();
-    let (d, basis, slot) = LANGSUNG.with(|l| l.borrow_mut().pop()).expect("bug di jrgc: keluar tanpa masuk");
+    let [d, basis, slot] = unsafe { *titip };
     KONTEKS.with(|k| k.set((vm, basis)));
     let v = match st {
         BERHASIL => VmValue::Int(hasil as i128),
