@@ -1814,3 +1814,82 @@ fn pemeriksa_match_tanpa_salinan() {
     let rencana = j.stderr.split("rencana exec").nth(1).expect("rencana exec dicetak");
     assert!(rencana.lines().take(3).any(|l| l.contains("LoadLocal 0 Salinan")), "{rencana}");
 }
+
+/// Jalur sebaris `a[i]` (J8, `tata_letak`): tiap bentuk yang tidak pasti jatuh ke pembantu dengan jawaban yang
+/// sama — larik dibagi variabel lain, larik di sel tangkapan closure, elemen di atas 64 bit, pecahan dan teks di
+/// larik bulat, indeks negatif, larik yang ditulis dan tumbuh di tengah loop, dan indeks di luar batas di akhir.
+const LARIK_SEBARIS: &str = r#"
+package main
+fn jumlah(a, n: int) -> int {
+    var s = 0
+    for i in 0..n { s = s + a[i] + a[-1 - (i % 3)] }
+    return s
+}
+pub fn main() {
+    var a = [3, 1, 4, 1, 5, 9, 2, 6]
+    var tot = 0
+    for r in 0..200 {
+        for i in 0..8 { tot = tot + a[i] * (r % 7) }
+        if (r == 50) { let b = a; tot = tot + b[2] }
+        if (r == 120) { a[3] = 1180591620717411303424 }
+        if (r == 121) { a[3] = 1 }
+        if (r == 150) { a = a + [7] }
+    }
+    wok(tot, jumlah(a, 9))
+    var c = [1, 2, 3]
+    let ubah = || { c[0] = c[0] + 10 }
+    var u = 0
+    for i in 0..300 {
+        u = u + c[i % 3]
+        if (i % 100 == 0) { ubah() }
+    }
+    wok(u, c)
+    var campur = [1, 2, 3, 4]
+    var v = 0
+    for i in 0..400 {
+        v = v + campur[i % 4]
+        if (i == 200) { campur[1] = 2.5 }
+    }
+    wok(v)
+    var bersama = [5, 6, 7]
+    let simpan = bersama
+    var w = 0
+    for i in 0..300 { w = w + bersama[i % 3] }
+    wok(w, simpan)
+    var teks = ["a", "b", 3]
+    var z = [[1], 2, 3]
+    var dulu = [1, 2, 3]
+    // Indeks bernama: bentuk yang diturunkan VM jadi `TulisIndexLokal` (jalur tulis sebaris).
+    for i in 0..300 {
+        let k = i % 3
+        let q = i % 4
+        teks[k] = i
+        z[k] = i * 2
+        if (i == 150) { let lama = dulu; dulu[0] = 99; wok(lama, dulu) }
+        dulu[k] = dulu[k] + 1
+        campur[q] = 0.5 * i
+    }
+    var nyala = [true, false, true]
+    for i in 0..300 { let k = i % 3; nyala[k] = i % 2 == 0 }
+    wok(teks, z, dulu, campur, nyala)
+    let x = [10, 20, 30]
+    var y = 0
+    for i in 0..300 { y = y + x[i % 3] }
+    wok(y, x[3])
+}
+"#;
+
+#[test]
+fn larik_sebaris_jatuh_ke_pembantu_bila_tak_pasti() {
+    let v = jalankan(LARIK_SEBARIS, &["--vm"], &[]);
+    assert!(v.stderr.contains("di luar"), "{}", v.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(LARIK_SEBARIS, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    // IR yang ditolak verifier mematikan JIT diam-diam — jawabannya tetap benar lewat VM, jadi paritas saja tidak
+    // menangkapnya: `main` harus benar-benar dikompilasi. Verifier cuma menyala kalau `JRG_JIT_STRES` diset.
+    let j = jalankan(LARIK_SEBARIS, &["--jit"], &[STRES, ACAK, ("JRG_JIT_LOG", "ringkas")]);
+    let baris = j.stderr.lines().find(|l| l.contains("dikompilasi:")).unwrap_or("");
+    assert!(baris.contains("main"), "main tidak dikompilasi:\n{}", j.stderr);
+}

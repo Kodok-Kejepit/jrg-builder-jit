@@ -1001,6 +1001,13 @@ fn norm_indeks(i: i64, n: usize) -> Option<usize> {
     ((j as u64) < n as u64).then_some(j as usize)
 }
 
+/// Alamat VM dan basis bingkai ini untuk jalur sebaris (`jit::tata_letak`): dibaca sekali di pintu masuk fungsi,
+/// tetap selama panggilannya (`masuk`/`keluar` memulihkannya sebelum kembali ke sini).
+pub extern "C" fn konteks_mentah(keluar: *mut usize) {
+    let (vm, basis) = KONTEKS.with(|k| k.get());
+    unsafe { *keluar = vm as usize; *keluar.add(1) = basis; }
+}
+
 /// `IndeksLokal` atas larik berelemen bulat 64 bit: 0 = `*keluar` terisi.
 pub extern "C" fn baca(rel: i64, i: i64, keluar: *mut i64) -> i32 {
     let bulat = |g: &[VmValue]| match g.get(norm_indeks(i, g.len())?)? {
