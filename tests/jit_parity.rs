@@ -1723,3 +1723,94 @@ fn callee_ringan_tanpa_bingkai_didorong() {
         }
     }
 }
+
+/// Pemeriksa `match` sebagai salinan maya (J6 langkah 41): closure menimpa pemeriksanya di tengah lengan (match
+/// luar memegang nilai saat masuk, match dalam sesudah panggilan membaca yang baru), pemeriksa ditulis ulang
+/// di lengannya lalu dibaca sesudah match, dan `let t = a` yang dibaca lewat lokal sementaranya.
+const SALINAN_PEMERIKSA: &str = r#"
+package main
+enum Op { A(int), B(int), C }
+fn exec(o: Op, acc: int) -> int {
+    match o {
+        Op::A(k) => acc + k,
+        Op::B(k) => acc * k % 1000003,
+        Op::C => acc ^ 77,
+    }
+}
+pub fn main() {
+    var o: Op = Op::A(1)
+    let ganti = || { o = Op::B(2) }
+    var hasil = []
+    for i in 0..300 {
+        o = Op::A(i)
+        let r = match o {
+            Op::C => -1,
+            Op::A(k) => {
+                ganti()
+                let dalam = match o { Op::B(m) => m * 10, Op::A(m) => m, Op::C => -2 }
+                k * 1000 + dalam
+            }
+            Op::B(k) => k,
+        }
+        if (i % 100 == 0) { hasil = arr::push(hasil, r) }
+    }
+    wok(hasil, o)
+    var p: Op = Op::A(7)
+    var acc = 1
+    for j in 0..300 {
+        let q = match p {
+            Op::A(k) => { p = Op::B(k + 1); k }
+            Op::B(k) => { p = Op::A(k + 1); k * 2 }
+            Op::C => 0,
+        }
+        acc = exec(p, acc + q)
+        if (j % 100 == 0) { wok(j, q, p, acc) }
+    }
+    var arr = [1, 2, 3]
+    var tot = 0
+    for i in 0..300 {
+        let t = arr
+        tot = tot + t[i % 3] + len(t)
+        arr[i % 3] = arr[i % 3] + 1
+    }
+    wok(p, tot, arr)
+}
+"#;
+
+/// Deopt di dalam lengan: luapan 64 bit atas payload sesudah pemeriksanya cuma maya — VM yang melanjutkan
+/// harus melihat salinan pemeriksa yang diwujudkan dari lokalnya.
+const SALINAN_PEMERIKSA_DEOPT: &str = r#"
+package main
+enum Op { Kecil(int), Besar(int) }
+fn nilai(o: Op) -> int {
+    match o {
+        Op::Kecil(k) => k * 2,
+        Op::Besar(k) => k * 9223372036854775807,
+    }
+}
+pub fn main() {
+    var total: int = 0
+    for i in 0..400 {
+        let o = if (i % 2 == 0) { Op::Kecil(i) } else { Op::Besar(i % 3) }
+        total = total + nilai(o)
+    }
+    wok(total)
+    wok(nilai(Op::Besar(170141183460469231731687303715884105727)))
+}
+"#;
+
+#[test]
+fn pemeriksa_match_tanpa_salinan() {
+    for (src, galat) in [(SALINAN_PEMERIKSA, ""), (SALINAN_PEMERIKSA_DEOPT, "kelewat besar")] {
+        let v = jalankan(src, &["--vm"], &[]);
+        assert!(v.stderr.contains(galat), "{}", v.stderr);
+        for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+            let j = jalankan(src, &["--jit"], env);
+            assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+        }
+    }
+    // Rencananya memang memakai salinan maya untuk pemeriksa `exec`: `LoadLocal 0` jadi `Salinan`.
+    let j = jalankan(SALINAN_PEMERIKSA, &["--jit"], &[STRES, ("JRG_JIT_LOG", "rencana")]);
+    let rencana = j.stderr.split("rencana exec").nth(1).expect("rencana exec dicetak");
+    assert!(rencana.lines().take(3).any(|l| l.contains("LoadLocal 0 Salinan")), "{rencana}");
+}

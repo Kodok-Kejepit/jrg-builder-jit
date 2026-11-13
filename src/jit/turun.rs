@@ -749,6 +749,8 @@ pub fn turunkan(
                 continue;
             }
             Cara::Muat => {
+                // Lokal yang isinya salinan maya: lokal asalnya yang dibaca (dan ditembolok).
+                let a = match s[a] { Jenis::Salinan(l) => l as usize, _ => a };
                 // Dipakai langsung oleh instruksi sesudahnya (bukan sasaran lompat): lokalnya dibaca di
                 // tempat; gagal = deopt di sini, sebelum keduanya.
                 let gabung = !r.pemimpin.get(ip + 1).copied().unwrap_or(true)
@@ -950,7 +952,11 @@ pub fn turunkan(
                 // Gagal (2) = deopt di sini dengan stack sebelum instruksinya; VM yang melapor.
                 let situs = super::lambat::SitusPola::bocor(&f.chunk.constants[a]);
                 let (p, d) = (i64c(&mut b, t as i64 - 1), i64c(&mut b, situs as *const _ as i64));
-                let c = b.ins().call(f_pola, &[p, d]);
+                // Salinan maya: lokal asalnya yang dibaca, tanpa salinan di stack VM.
+                let c = match s[t - 1] {
+                    Jenis::Salinan(l) => { let lv = i64c(&mut b, l as i64); b.ins().call(f_pola_lokal, &[lv, d]) }
+                    _ => b.ins().call(f_pola, &[p, d]),
+                };
                 let c = b.inst_results(c)[0];
                 let salah = b.ins().icmp_imm_u(IntCC::Equal, c, 2);
                 jaga(&mut b, &k, &var, salah, ip, s);
@@ -1293,7 +1299,10 @@ pub fn turunkan(
             }
             Cara::Payload => {
                 let p = i64c(&mut b, t as i64 - 1);
-                let c = b.ins().call(f_payload, &[p]);
+                let c = match s[t - 1] {
+                    Jenis::Salinan(l) => { let lv = i64c(&mut b, l as i64); b.ins().call(f_payload_lokal, &[lv, p]) }
+                    _ => b.ins().call(f_payload, &[p]),
+                };
                 let c = b.inst_results(c)[0];
                 jaga(&mut b, &k, &var, c, ip, s);
                 if let Some(j) = r.spek[ip] { buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t - 1, j); }

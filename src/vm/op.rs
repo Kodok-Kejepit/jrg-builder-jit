@@ -1,8 +1,6 @@
 // src/vm/op.rs — badan handler opcode yang juga dijalankan langsung oleh jalur lambat JIT
 // (`jit::lambat::satu`), tanpa masuk loop dispatch: satu definisi untuk keduanya.
 
-use std::sync::Arc;
-
 use super::opcode::OpCode;
 use super::value::{Peta, VmValue};
 use super::vm::*;
@@ -91,8 +89,7 @@ impl Vm {
         let start = self.stack.len().checked_sub(bentuk.nama.len()).ok_or_else(|| VmError::at("BuildStruct: stack kurang", sp))?;
         let label = proto.label.clone();
         let nilai: Vec<VmValue> = self.stack.drain(start..).collect();
-        let peta = Peta::struktur_dari(label, bentuk, nilai);
-        self.stack.push(VmValue::Map(Arc::new(peta)));
+        self.stack.push(VmValue::Map(Peta::struktur_arc(label, bentuk, nilai)));
         Ok(())
     }
 

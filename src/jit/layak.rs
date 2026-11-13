@@ -546,14 +546,26 @@ fn elemen_larik(f: &VmFunction, ip: usize) -> Jenis {
     if spek_hasil(f, ip) == Some(Jenis::Pecahan) { Jenis::Pecahan } else { Jenis::Bulat }
 }
 
-/// Instruksi yang tidak menyentuh lokal, tidak melompat, dan tidak memakai salinan maya sebagai operand —
-/// kecuali `GetIndex` berindeks bulat yang memakainya sebagai wadah (`baca` atas lokal asalnya).
+/// Instruksi yang salinan maya boleh hidup melewatinya: tidak menulis lokal asalnya, tidak menjalankan kode
+/// asing, dan tidak memakai salinan itu sebagai operand — kecuali yang dibaca langsung dari lokal asalnya
+/// (`CekEnum`/`AmbilPayload` lewat `pola_lokal`/`payload_lokal`, `GetIndex` berindeks bulat, `str::char_at`).
 fn boleh_lewat_salinan(f: &VmFunction, ip: usize, s: &[Jenis]) -> bool {
     let t = s.len();
-    let bebas = |k: usize| k <= t && !s[t - k..].iter().any(|j| matches!(j, Jenis::Salinan(_)));
-    match f.chunk.code[ip].op {
-        OpCode::LoadLocal | OpCode::LokalHitung | OpCode::IntImm | OpCode::Const => true,
-        OpCode::Add | OpCode::Sub | OpCode::Mul => bebas(2),
+    let salinan = |j: &Jenis| matches!(j, Jenis::Salinan(_));
+    let bebas = |k: usize| k <= t && !s[t - k..].iter().any(salinan);
+    let ins = &f.chunk.code[ip];
+    let a = ins.arg as usize;
+    match ins.op {
+        OpCode::LoadLocal | OpCode::LokalHitung | OpCode::IntImm | OpCode::Const | OpCode::Jump | OpCode::Pop
+        | OpCode::SlideDown | OpCode::ReturnNil | OpCode::CekEnum | OpCode::AmbilPayload => true,
+        OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Mod | OpCode::Lt | OpCode::Le | OpCode::Gt
+        | OpCode::Ge | OpCode::Eq | OpCode::Ne | OpCode::BitAnd | OpCode::BitOr | OpCode::BitXor | OpCode::AndNot
+        | OpCode::Shl | OpCode::Shr => bebas(2),
+        OpCode::Neg | OpCode::Not | OpCode::BitNot | OpCode::KeBool | OpCode::JumpFalse | OpCode::JumpTrue
+        | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep | OpCode::Return => bebas(1),
+        // Yang ditulis bukan salinan, sasarannya bukan posisi maya dan bukan asal salinan mana pun.
+        OpCode::StoreLocal | OpCode::SimpanBuang => bebas(1) && a < t && !salinan(&s[a])
+            && !s.iter().any(|j| matches!(j, Jenis::Salinan(l) if *l as usize == a)),
         OpCode::GetIndex => t >= 2 && matches!(s[t - 2], Jenis::Salinan(_)) && s[t - 1] == Jenis::Bulat
             && !f.chunk.kode_jit.spek_gagal_di(ip),
         // `str::char_at(teks, i)` atas teks lokal (`lambat::karakter_lokal`).
@@ -561,6 +573,17 @@ fn boleh_lewat_salinan(f: &VmFunction, ip: usize, s: &[Jenis]) -> bool {
             && matches!(s[t - 2], Jenis::Salinan(_)) && s[t - 1] == Jenis::Bulat,
         _ => false,
     }
+}
+
+/// `LoadLocal` di `ip` yang hasilnya (posisi `p`) langsung dibaca lagi sebagai lokal — pemeriksa `match`:
+/// salinan maya sampai ada yang perlu isinya di stack VM (`boleh_lewat_salinan`).
+fn salinan_sementara(f: &VmFunction, ip: usize, p: usize) -> bool {
+    f.chunk.code.get(ip + 1).is_some_and(|i| i.op == OpCode::LoadLocal && i.arg as usize == p)
+}
+
+/// Salinan yang instruksi sesudahnya baca langsung dari lokal asalnya (`pola_lokal`/`payload_lokal`).
+fn salinan_dibaca_langsung(f: &VmFunction, ip: usize) -> bool {
+    f.chunk.code.get(ip + 1).is_some_and(|i| matches!(i.op, OpCode::CekEnum | OpCode::AmbilPayload))
 }
 
 /// `LoadLocal` di `ip` yang hasilnya cuma dipakai sebagai wadah `GetIndex` (atau teks `str::char_at`, kalau
@@ -656,9 +679,19 @@ fn langkah_lambat(
     // Bingkai tanpa posisi apa pun (`SelectEnd` di `main` kosong) tetap boleh dilangkahkan.
     let puncak = s.last().copied().unwrap_or(Kosong);
     match ins.op {
-        OpCode::LoadLocal if s.get(a)?.di_vm() && salinan_ke_indeks(f, ip, s.last().is_some_and(|j| j.bungkus(BUNGKUS_CHAR_AT))) => {
+        OpCode::LoadLocal if s.get(a)?.di_vm()
+            && (salinan_ke_indeks(f, ip, s.last().is_some_and(|j| j.bungkus(BUNGKUS_CHAR_AT))) || salinan_sementara(f, ip, t)) => {
             s.push(Salinan(a as u32));
             return Some((Cara::Salinan, vec![(lanjut, s)]));
+        }
+        // Salinan dari salinan maya: maya juga kalau pembacanya membaca lokal asalnya; selain itu salinan
+        // sungguhan dari lokal asalnya (`Cara::Muat`, `turun` membaca lokal asalnya).
+        OpCode::LoadLocal if matches!(s.get(a), Some(Salinan(_))) => {
+            let j = s[a];
+            let maya = salinan_dibaca_langsung(f, ip)
+                || salinan_ke_indeks(f, ip, s.last().is_some_and(|k| k.bungkus(BUNGKUS_CHAR_AT)));
+            s.push(if maya { j } else { Nilai });
+            return Some((if maya { Cara::Salinan } else { Cara::Muat }, vec![(lanjut, s)]));
         }
         OpCode::LoadLocal | OpCode::LokalHitung if s.get(a)?.di_vm() => {
             s.push(Nilai);
@@ -775,12 +808,13 @@ fn langkah_lambat(
             let c = Cara::Cabang { tumpah: 0, hasil_bool: false, tujuan: [a, a] };
             return Some((c, vec![(a, s)]));
         }
-        OpCode::CekEnum if puncak.di_vm() => {
+        // Atas salinan maya: dibaca langsung dari lokal asalnya (`pola_lokal`/`payload_lokal`).
+        OpCode::CekEnum if puncak.di_vm() || matches!(puncak, Salinan(_)) => {
             s.pop();
             s.push(Bool);
             return Some((Cara::Pola, vec![(lanjut, s)]));
         }
-        OpCode::AmbilPayload if puncak.di_vm() => {
+        OpCode::AmbilPayload if puncak.di_vm() || matches!(puncak, Salinan(_)) => {
             r.spek[ip] = spek_hasil(f, ip);
             *s.last_mut()? = r.spek[ip].unwrap_or(Nilai);
             return Some((Cara::Payload, vec![(lanjut, s)]));

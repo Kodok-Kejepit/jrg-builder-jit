@@ -42,9 +42,14 @@ fn sediakan(vm: &mut Vm, basis: usize, p: usize) -> &mut VmValue {
     &mut vm.stack[i]
 }
 
+/// Celahnya biasanya satu-dua posisi (argumen native callee ringan yang tidak ditulis `masuk_ringan`):
+/// `push` berulang, bukan `resize` (yang menyalin `VmValue::Nil` lewat `clone` umum, ±65 instruksi).
 #[cold]
 #[inline(never)]
-fn tumbuh(vm: &mut Vm, i: usize) { vm.stack.resize(i + 1, VmValue::Nil); }
+fn tumbuh(vm: &mut Vm, i: usize) {
+    vm.stack.reserve(i + 1 - vm.stack.len());
+    while vm.stack.len() <= i { vm.stack.push(VmValue::Nil); }
+}
 
 fn nilai_skalar(j: Jenis, v: i64) -> Option<VmValue> {
     if j == Jenis::Lebar { return None; }
@@ -94,7 +99,7 @@ pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64,
     }
     let v = match unsafe { &*situs } {
         SitusBangun::Struktur(label, bentuk) =>
-            VmValue::Map(Arc::new(crate::vm::value::Peta::struktur_dari(label.clone(), Arc::clone(bentuk), isi))),
+            VmValue::Map(crate::vm::value::Peta::struktur_arc(label.clone(), Arc::clone(bentuk), isi)),
         SitusBangun::Tuple => VmValue::tuple(isi),
         SitusBangun::Larik => VmValue::array(isi),
         SitusBangun::Varian(tipe, varian) =>
@@ -268,7 +273,10 @@ pub extern "C" fn masuk_ringan(
 ) -> i32 {
     let (vm, basis) = konteks();
     let (t, argc) = (t as usize, argc as usize);
+    // Posisi argumen native cukup `nil` (isinya ditulis `keluar_ringan` kalau bingkainya diwujudkan), supaya
+    // tulisan pertama callee di atasnya lewat jalur `push` `sediakan`, bukan `tumbuh`.
     vm.stack.truncate(basis + t);
+    while vm.stack.len() < basis + t { vm.stack.push(VmValue::Nil); }
     let slot = basis + t - argc - 1;
     if let VmValue::Function(func) = unsafe { &*fungsi } {
         if let Some(p) = &func.chunk.profil { p.catat_panggilan(); }

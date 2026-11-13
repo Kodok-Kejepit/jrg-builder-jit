@@ -314,6 +314,16 @@ impl Peta {
         }
     }
 
+    /// `struktur_dari` langsung di dalam `Arc`-nya: `Peta` (±150 byte) tidak dibangun di stack lalu disalin.
+    #[inline]
+    pub fn struktur_arc(label: Label, bentuk: Arc<Bentuk>, nilai: Vec<VmValue>) -> Arc<Peta> {
+        if bentuk.unik && !matches!(label, Label::Dict) {
+            Arc::new(Peta { label, isi: Mutex::new(IsiPeta::Rapat { bentuk, nilai }) })
+        } else {
+            Arc::new(Peta::struktur_dari(label, bentuk, nilai))
+        }
+    }
+
     /// Bentuk rapat isi ini, kalau rapat.
     pub fn bentuk(&self) -> Option<Arc<Bentuk>> {
         match &*self.isi.lock().unwrap_or_else(|p| p.into_inner()) {

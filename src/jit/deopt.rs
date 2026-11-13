@@ -85,6 +85,9 @@ pub(crate) fn pulihkan(vm: &mut Vm, catatan: Catatan) {
             SPEK_BARU.with(|s| s.set(true));
         }
         let mut jenis = rencana.keadaan[ip].clone().expect("ip lanjut selalu terjangkau");
+        // `keadaan[ip]` sudah sesudah `wujud[ip]`; rekaman yang dipasang instruksi SEBELUMNYA untuk `ip` tiba
+        // sebelum `muat`-nya berjalan, jadi salinan mayanya dibaca dari lokal asalnya (sama isinya bila sudah).
+        for &(p, l) in &rencana.wujud[ip] { jenis[p] = Jenis::Salinan(l); }
         // Bukaan yang sudah berhasil: angkanya di bingkai native (lokal gabungan tidak pernah di stack VM).
         if let (true, Cara::Buka(daftar)) = (bendera & BUKA_SUDAH != 0, &rencana.cara[ip]) {
             for &(p, j) in daftar { jenis[p] = j; }
