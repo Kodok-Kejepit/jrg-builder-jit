@@ -1893,3 +1893,40 @@ fn larik_sebaris_jatuh_ke_pembantu_bila_tak_pasti() {
     let baris = j.stderr.lines().find(|l| l.contains("dikompilasi:")).unwrap_or("");
     assert!(baris.contains("main"), "main tidak dikompilasi:\n{}", j.stderr);
 }
+
+/// `()` sebagai `Jenis::Satuan` (J8): tidak ditulis ke stack VM sampai ada yang butuh isinya. Nilai `if` tanpa
+/// `else` dipakai, disimpan, masuk larik, dikembalikan, ditanya `typeof`, dibandingkan, dan hidup di stack saat
+/// deopt (luapan 64 bit di putaran yang sama).
+const SATUAN_MAYA: &str = r#"
+package main
+fn kosong(n: int) { if (n > 5) { wok("besar") } }
+fn bare() { return }
+pub fn main() {
+    var simpan = []
+    var hitung = 0
+    var besar = 1
+    for i in 0..400 {
+        let u = if (i % 7 == 0) { hitung = hitung + 1 }
+        if (i % 100 == 0) { simpan = arr::push(simpan, u) }
+        let v = kosong(i % 3)
+        if (typeof(v) != "unit") { wok("salah") }
+        if (u != ()) { wok("beda") }
+        besar = (besar * 3 + i) % 1000000000000000000000
+        if (i == 390) { besar = 9223372036854775000 }
+    }
+    wok(hitung, simpan, typeof(bare()), besar + 1000, [(), 1])
+}
+"#;
+
+#[test]
+fn unit_tidak_ditulis_ke_stack_vm() {
+    let v = jalankan(SATUAN_MAYA, &["--vm"], &[]);
+    assert!(v.sukses, "{}", v.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(SATUAN_MAYA, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(SATUAN_MAYA, &["--jit"], &[STRES, ACAK, ("JRG_JIT_LOG", "ringkas")]);
+    let baris = j.stderr.lines().find(|l| l.contains("dikompilasi:")).unwrap_or("");
+    assert!(baris.contains("main"), "main tidak dikompilasi:\n{}", j.stderr);
+}

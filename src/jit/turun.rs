@@ -729,7 +729,11 @@ pub fn turunkan(
     b.switch_to_block(mulai);
     // Jalur sebaris larik (`tata_letak`): alamat VM dan basis dibaca sekali, cuma di fungsi yang memakainya.
     let sebaris = super::tata_letak::tata_letak().filter(|_| kode.iter().enumerate()
-        .any(|(i, x)| matches!(x.op, OpCode::IndeksLokal | OpCode::TulisIndexLokal) && r.keadaan[i].is_some() && !r.keluar[i]))
+        .any(|(i, x)| r.keadaan[i].as_ref().is_some_and(|s| !r.keluar[i] && match x.op {
+            OpCode::IndeksLokal | OpCode::TulisIndexLokal => true,
+            OpCode::GetIndex => s.len() >= 2 && matches!(s[s.len() - 2], Jenis::Salinan(_)),
+            _ => false,
+        })))
         .map(|tl| {
             let ks = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3));
             let pk = b.ins().stack_addr(ptr, ks, 0);
@@ -1555,18 +1559,13 @@ pub fn turunkan(
             }
             OpCode::AmbilLokal => salin_pos(&mut b, &var, &v128, a, t),
             // Wadahnya salinan maya lokal `l`: dibaca langsung dari lokal itu (`layak`: hasil bulat dispekulasikan).
-            OpCode::GetIndex if matches!(s[t - 2], Jenis::Salinan(_)) => {
-                let Jenis::Salinan(l) = s[t - 2] else { unreachable!() };
-                let (rel, i) = (b.ins().iconst(types::I64, l as i64), atas(&mut b, 1));
-                let pk = b.ins().stack_addr(ptr, wadah, 0);
-                let f_baca = if r.spek[ip] == Some(Jenis::Pecahan) { f_baca_pecahan } else { baca };
-                let c = b.ins().call(f_baca, &[rel, i, pk]);
-                let st = b.inst_results(c)[0];
-                jaga_spek(&mut b, &k, &var, st, ip, s);
-                let v = b.ins().stack_load(ptr, types::I64, wadah, 0);
-                b.def_var(var[t - 2], v);
-            }
-            OpCode::IndeksLokal => {
+            // `IndeksLokal` atas lokal `a`, atau `GetIndex` atas salinan maya lokal `l` (dibaca langsung dari `l`):
+            // hasilnya di posisi wadahnya.
+            OpCode::IndeksLokal | OpCode::GetIndex if ins.op == OpCode::IndeksLokal || matches!(s[t - 2], Jenis::Salinan(_)) => {
+                let (a, tujuan) = match s.get(t.wrapping_sub(2)) {
+                    Some(Jenis::Salinan(l)) if ins.op == OpCode::GetIndex => (*l as usize, t - 2),
+                    _ => (a, t - 1),
+                };
                 let (rel, i) = (b.ins().iconst(types::I64, a as i64), atas(&mut b, 1));
                 let pecahan = r.spek[ip] == Some(Jenis::Pecahan);
                 // Jalur sebaris; yang tidak pasti (bukan larik milik tunggal, di luar batas, jenis lain) ke pembantu.
@@ -1589,7 +1588,7 @@ pub fn turunkan(
                     Some(sel) => { b.ins().jump(sel, &[v.into()]); b.switch_to_block(sel); b.block_params(sel)[0] }
                     None => v,
                 };
-                b.def_var(var[t - 1], v);
+                b.def_var(var[tujuan], v);
             }
             // Tidak ada yang disambung (`layak`: angka native): indeksnya cuma dibuang.
             OpCode::TumbuhIndexLokal => {}
@@ -1616,7 +1615,7 @@ pub fn turunkan(
                 let v = b.ins().iconst(types::I64, (ins.op == OpCode::True) as i64);
                 b.def_var(var[t], v);
             }
-            OpCode::Nil => {}
+            OpCode::Nil | OpCode::Unit => {}
             OpCode::Neg if s[t - 1] == Jenis::Pecahan => {
                 let x = atas(&mut b, 1);
                 let x = ke_f64(&mut b, x, Jenis::Pecahan);

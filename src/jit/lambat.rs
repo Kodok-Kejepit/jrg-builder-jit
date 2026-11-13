@@ -60,6 +60,7 @@ fn nilai_skalar(j: Jenis, v: i64) -> Option<VmValue> {
         Jenis::Pecahan => VmValue::Float(f64::from_bits(v as u64)),
         Jenis::Bool => VmValue::Bool(v != 0),
         Jenis::Kosong => VmValue::Nil,
+        Jenis::Satuan => VmValue::Unit,
         Jenis::Rune => VmValue::Rune(char::from_u32(v as u32).expect("kode rune dari char")),
         _ => return None,
     })
@@ -74,6 +75,7 @@ pub(crate) fn skalar_kode(kode: i32, nilai: i64) -> Option<VmValue> {
         5 => VmValue::Float(f64::from_bits(nilai as u64)),
         // Kode rune selalu lahir dari `char` (`karakter`, `buka` kode 7).
         7 => VmValue::Rune(char::from_u32(nilai as u32).expect("kode rune dari char")),
+        8 => VmValue::Unit,
         _ => return None,
     })
 }
