@@ -1646,3 +1646,28 @@ fn indeks_larik_negatif_dan_luar_batas() {
         assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// Callee bulat kecil disisipkan Cranelift di tempat panggilannya (`modul::Sisip`): hasil, bersarang, dan
+/// luapan 64 bit di dalam badan yang disisipkan (deopt-nya lewat status yang sama dengan panggilan biasa).
+const SISIP_BULAT: &str = r#"fn kuad(x: int) -> int { return x * x + 1 }
+fn campur(a: int, b: int) -> int { return kuad(a) % 1000 + kuad(b) % 7 }
+fn luap(x: int) -> int { return x * 3037000500 }
+pub fn main() {
+    var t = 0
+    for i in 0..300000 { t = (t + campur(i, i + 3)) % 1000000007 }
+    wok(t)
+    var u = 0
+    for i in 0..10 { u = u + luap(i * 1000000000) }
+    wok(u)
+}
+"#;
+
+#[test]
+fn callee_bulat_disisipkan() {
+    let i = jalankan(SISIP_BULAT, &[], &[]);
+    assert_eq!(i.stdout, "139650000\n136665022500000000000");
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(SISIP_BULAT, &["--jit"], env);
+        assert_eq!((i.sukses, &i.stdout, &i.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}

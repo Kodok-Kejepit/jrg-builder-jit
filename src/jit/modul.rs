@@ -28,6 +28,36 @@ struct ModulJit {
     urut: u32,
     /// Fungsi yang ditolak dan alasannya, untuk `JRG_JIT_LOG`.
     tolak: Vec<(String, String)>,
+    /// Badan CLIF callee bulat kecil per `FuncId`, disisipkan Cranelift di tempat panggilannya (`Sisip`).
+    badan: HashMap<u32, cranelift_codegen::ir::Function>,
+}
+
+/// Callee bulat yang badannya disisipkan paling besar sekian instruksi CLIF.
+const SISIP_MAKS: usize = 300;
+
+/// Penyisip Cranelift: panggilan langsung ke callee bulat yang badannya tersimpan (bukan ke dirinya sendiri)
+/// diganti badannya. Status, deopt dan hasilnya tetap lewat nilai kembalian yang sama, jadi pemanggil
+/// menanganinya persis seperti panggilan biasa.
+struct Sisip<'a> {
+    badan: &'a HashMap<u32, cranelift_codegen::ir::Function>,
+    diri: u32,
+}
+
+impl cranelift_codegen::inline::Inline for Sisip<'_> {
+    fn inline(
+        &mut self, caller: &cranelift_codegen::ir::Function, _inst: cranelift_codegen::ir::Inst,
+        _op: cranelift_codegen::ir::Opcode, callee: cranelift_codegen::ir::FuncRef, _args: &[cranelift_codegen::ir::Value],
+    ) -> cranelift_codegen::inline::InlineCommand<'_> {
+        use cranelift_codegen::inline::InlineCommand;
+        use cranelift_codegen::ir::ExternalName;
+        let ExternalName::User(r) = &caller.dfg.ext_funcs[callee].name else { return InlineCommand::KeepCall };
+        let nama = &caller.params.user_named_funcs()[*r];
+        if nama.namespace != 0 || nama.index == self.diri { return InlineCommand::KeepCall; }
+        match self.badan.get(&nama.index) {
+            Some(f) => InlineCommand::Inline { callee: std::borrow::Cow::Borrowed(f), visit_callee: false },
+            None => InlineCommand::KeepCall,
+        }
+    }
 }
 
 // `JITModule` memegang penunjuk mentah; semua aksesnya lewat `Mutex` di bawah, satu per satu.
@@ -154,7 +184,7 @@ fn modul() -> &'static Mutex<Option<ModulJit>> {
             let undi = if deopt::acak_aktif() {
                 Some(m.declare_function("jrg_jit_undi", Linkage::Import, &turun::tanda_tangan_undi(cc)).ok()?)
             } else { None };
-            Some(ModulJit { m, jadi: HashMap::new(), info: Vec::new(), catat, undi, baca, tulis, lambat, fctx: FunctionBuilderContext::new(), urut: 0, tolak: Vec::new() })
+            Some(ModulJit { m, jadi: HashMap::new(), info: Vec::new(), catat, undi, baca, tulis, lambat, fctx: FunctionBuilderContext::new(), urut: 0, tolak: Vec::new(), badan: HashMap::new() })
         }))
     })
 }
@@ -263,7 +293,8 @@ pub fn kompilasi(
     let mut ctx = mj.m.make_context();
     let mut utuh = true;
     let fid0 = mj.info.len() as u32;
-    for (i, (_, h, r)) in baru.iter().enumerate() {
+    // Callee lebih dulu (ditemukan sesudah pemanggilnya), supaya badannya sudah ada saat pemanggilnya disisipi.
+    for (i, (k, h, r)) in baru.iter().enumerate().rev() {
         let asli = r.callee_asli();
         let callee: Vec<Option<FuncId>> = (0..r.callee.len())
             .map(|i| asli.contains(&i).then(|| id_kunci(&kunci_callee(&r.callee[i]), mj))).collect();
@@ -272,6 +303,11 @@ pub fn kompilasi(
         ctx.func.signature = sig.clone();
         let impor = turun::Impor { catat: mj.catat, undi: mj.undi, baca: mj.baca, tulis: mj.tulis, fid: fid0 + i as u32, lambat: &mj.lambat };
         turun::turunkan(&mut mj.m, &mut ctx.func, &mut mj.fctx, h, r, &callee, &langsung, &impor);
+        let diri = id_baru[i].as_u32();
+        if ctx.inline(Sisip { badan: &mj.badan, diri }).is_err() { utuh = false; break; }
+        if k.2 == layak::KEMBALI_BULAT && ctx.func.dfg.num_insts() <= SISIP_MAKS {
+            mj.badan.insert(diri, ctx.func.clone());
+        }
         utuh = mj.m.define_function(id_baru[i], &mut ctx).is_ok();
         mj.m.clear_context(&mut ctx);
         if !utuh { break; }
