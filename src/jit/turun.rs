@@ -1466,7 +1466,25 @@ pub fn turunkan(
                 let lama = k.bendera.replace(PUNCAK_VM);
                 jaga(&mut b, &k, &var, basi, ip + 1, r.keadaan[ip + 1].as_ref().expect("penerus panggilan terjangkau"));
                 k.bendera.set(lama);
-                if let Some(j) = r.spek[ip] { buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t - a - 1, j); }
+                match r.spek[ip] {
+                    // Callee kembali dengan angka native sejenis spekulasi: itulah `h` (yang `keluar` taruh di slot
+                    // sebagai `VmValue`), jadi tidak perlu dibuka lagi dari stack VM.
+                    Some(j @ (Jenis::Bulat | Jenis::Pecahan)) => {
+                        let (cepat, biasa, lanjut) = (b.create_block(), b.create_block(), b.create_block());
+                        let kode = if j == Jenis::Bulat { BERHASIL } else { BERHASIL_PECAHAN };
+                        let cocok = b.ins().icmp_imm_u(IntCC::Equal, st, kode);
+                        b.ins().brif(cocok, cepat, &[], biasa, &[]);
+                        b.switch_to_block(cepat);
+                        b.def_var(var[t - a - 1], h);
+                        b.ins().jump(lanjut, &[]);
+                        b.switch_to_block(biasa);
+                        buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t - a - 1, j);
+                        b.ins().jump(lanjut, &[]);
+                        b.switch_to_block(lanjut);
+                    }
+                    Some(j) => buka_hasil(&mut b, &k, &var, r, f_buka, wadah, ip + 1, t - a - 1, j),
+                    None => {}
+                }
                 continue;
             }
             Cara::Bawaan => {
