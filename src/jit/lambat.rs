@@ -57,6 +57,17 @@ fn tumbuh(vm: &mut Vm, i: usize) {
     }
 }
 
+/// `*tempat = v` tanpa memanggil `drop_glue` kalau isi lamanya skalar (yang biasa di posisi stack VM).
+#[inline(always)]
+fn timpa(tempat: &mut VmValue, v: VmValue) {
+    if matches!(tempat, VmValue::Nil | VmValue::Unit | VmValue::Bool(_) | VmValue::Int(_) | VmValue::Rune(_)
+        | VmValue::Float(_) | VmValue::Ptr(_)) {
+        unsafe { std::ptr::write(tempat, v) }
+    } else {
+        *tempat = v;
+    }
+}
+
 /// `Vec::truncate` untuk bingkai callee: skalar tanpa destruktor dilewati tanpa memanggil `drop_glue`. Panjangnya
 /// dipendekkan lebih dulu, jadi destruktor yang panik membocorkan sisanya, bukan melepasnya dua kali.
 #[inline(always)]
@@ -134,7 +145,7 @@ pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64,
     if let SitusBangun::Varian(nama) = situs {
         let p = nilai_skalar(jenis[t - 1], nilai[t - 1])
             .unwrap_or_else(|| std::mem::replace(sediakan(vm, basis, t - 1), VmValue::Nil));
-        *sediakan(vm, basis, t - n) = VmValue::varian_berisi(nama, p);
+        timpa(sediakan(vm, basis, t - n), VmValue::varian_berisi(nama, p));
         return;
     }
     if let SitusBangun::StrukturUlang(label, bentuk) = situs {
@@ -161,7 +172,7 @@ pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64,
                     tempat => *tempat = v,
                 }
             }
-            *sediakan(vm, basis, t - n) = lama;
+            timpa(sediakan(vm, basis, t - n), lama);
             return;
         }
     }
@@ -177,7 +188,7 @@ pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64,
         SitusBangun::Larik => VmValue::array(isi),
         SitusBangun::Varian(_) => unreachable!("ditangani di atas"),
     };
-    *sediakan(vm, basis, t - n) = v;
+    timpa(sediakan(vm, basis, t - n), v);
 }
 
 /// `Typeof; Const; Eq` atas posisi `p` milik VM: nama jenisnya (`VmValue::type_name`, sama dengan opcode
@@ -380,7 +391,7 @@ pub extern "C" fn keluar_ringan(st: i64, hasil: i64, titip: *const [usize; 9]) -
                 (std::slice::from_raw_parts(jenis as *const Jenis, t), std::slice::from_raw_parts(nilai as *const i64, t))
             };
             for i in t - argc..t {
-                if let Some(v) = nilai_skalar(jenis[i], nilai[i]) { *sediakan(vm, basis, i) = v; }
+                if let Some(v) = nilai_skalar(jenis[i], nilai[i]) { timpa(sediakan(vm, basis, i), v); }
             }
             let VmValue::Function(func) = (unsafe { &*(fungsi as *const VmValue) }) else { unreachable!("dijamin turun.rs") };
             vm.dorong_bingkai(crate::vm::vm::CallFrame {
@@ -444,7 +455,7 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
     let f: crate::vm::value::VmNativeFn = unsafe { std::mem::transmute(f as usize) };
     if let Some(v) = bawaan_cepat(vm, basis, jenis, nilai, t, argc, f as usize) {
         vm.catat_hasil(&v);
-        *sediakan(vm, basis, t - argc - 1) = v;
+        timpa(sediakan(vm, basis, t - argc - 1), v);
         return 0;
     }
     let span = |vm: &mut Vm| {
@@ -459,7 +470,7 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
         && i.maks.is_none_or(|m| argc <= m) && i.min.is_none_or(|m| argc >= m));
     if polos {
         for i in t - argc..t {
-            if let Some(v) = nilai_skalar(jenis[i], nilai[i]) { *sediakan(vm, basis, i) = v; }
+            if let Some(v) = nilai_skalar(jenis[i], nilai[i]) { timpa(sediakan(vm, basis, i), v); }
         }
         let _ = sediakan(vm, basis, t - 1);
         let r = f(&vm.stack[basis + t - argc..basis + t]);
@@ -470,7 +481,7 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
             Ok(v) => {
                 let _ = span(vm);
                 vm.catat_hasil(&v);
-                *sediakan(vm, basis, t - argc - 1) = v;
+                timpa(sediakan(vm, basis, t - argc - 1), v);
                 0
             }
             Err(e) => {
@@ -491,7 +502,7 @@ pub extern "C" fn bawaan(ip: i64, jenis: *const Jenis, t: i64, argc: i64, nilai:
     match vm.panggil_native(f, args, sp, true) {
         Ok(v) => {
             vm.catat_hasil(&v);
-            *sediakan(vm, basis, t - argc - 1) = v;
+            timpa(sediakan(vm, basis, t - argc - 1), v);
             0
         }
         Err(e) => {
@@ -569,7 +580,7 @@ pub extern "C" fn biner(ip: i64, jenis: *const Jenis, t: i64, nilai: *const i64)
     fr.ip = ip as usize + 1;
     match vm.op_biner(ins.op, a, b, sp) {
         Ok(v) if matches!(ins.op, OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge) => v.is_truthy() as i32,
-        Ok(v) => { *sediakan(vm, basis, t - 2) = v; 0 }
+        Ok(v) => { timpa(sediakan(vm, basis, t - 2), v); 0 }
         Err(e) => {
             GALAT.with(|g| *g.borrow_mut() = Some(e));
             2
@@ -600,7 +611,7 @@ pub extern "C" fn muat(dari: i64, ke: i64) {
         if sama_penyimpanan(a, b) { return; }
     }
     let v = vm.baca_lokal(basis + dari as usize).unwrap_or(VmValue::Nil);
-    *sediakan(vm, basis, ke as usize) = v;
+    timpa(sediakan(vm, basis, ke as usize), v);
 }
 
 /// Dua nilai berbagi penyimpanan yang sama (isinya identik); sel tangkapan tidak termasuk.
@@ -622,14 +633,14 @@ pub extern "C" fn taruh(ke: i64, k: *const VmValue) {
         if *k as usize == *ada as usize { return; }
     }
     let v = if k.is_null() { VmValue::Unit } else { unsafe { (*k).clone() } };
-    *sediakan(vm, basis, ke as usize) = v;
+    timpa(sediakan(vm, basis, ke as usize), v);
 }
 
 /// `AmbilLokal` atas lokal milik VM (`Vm::ambil_lokal`): posisi `ke` = isinya.
 pub extern "C" fn ambil(dari: i64, ke: i64) {
     let (vm, basis) = konteks();
     let v = vm.ambil_lokal(basis + dari as usize).unwrap_or(VmValue::Nil);
-    *sediakan(vm, basis, ke as usize) = v;
+    timpa(sediakan(vm, basis, ke as usize), v);
 }
 
 /// `StoreLocal` (`pindah` 0) / `SimpanBuang` (1): lokal `ke` = nilai posisi `dari`, berjenis `jenis`
@@ -740,7 +751,7 @@ pub extern "C" fn payload_lokal(slot: i64, ke: i64) -> i32 {
         _ => None,
     }) else { return 1 };
     let (vm, basis) = konteks();
-    *sediakan(vm, basis, ke as usize) = isi;
+    timpa(sediakan(vm, basis, ke as usize), isi);
     0
 }
 
@@ -825,14 +836,14 @@ pub extern "C" fn field_lokal(slot: i64, situs: *const SitusField, keluar: *mut 
         Some(Err(v)) => v,
         None => {
             let obj = vm.baca_lokal(basis + slot as usize).unwrap_or(VmValue::Nil);
-            *sediakan(vm, basis, ke as usize) = obj;
+            timpa(sediakan(vm, basis, ke as usize), obj);
             if field(ke, nama, situs.privat as i32) != 0 { return 1; }
             let i = basis + ke as usize;
             if let Some(n) = angka(&vm.stack[i]) { unsafe { *keluar = n }; return 4; }
             return 0;
         }
     };
-    *sediakan(vm, basis, ke as usize) = v;
+    timpa(sediakan(vm, basis, ke as usize), v);
     0
 }
 
@@ -941,7 +952,7 @@ pub extern "C" fn maju(slot: i64) -> i32 {
 pub extern "C" fn pindah(dari: i64, ke: i64) {
     let (vm, basis) = konteks();
     let v = std::mem::replace(sediakan(vm, basis, dari as usize), VmValue::Nil);
-    *sediakan(vm, basis, ke as usize) = v;
+    timpa(sediakan(vm, basis, ke as usize), v);
 }
 
 /// `LoadGlobal`: posisi `ke` = global `nama` (isi sel `var` modul); 1 = tidak ada (VM yang melapor).
@@ -952,7 +963,7 @@ pub extern "C" fn muat_global(nama: *const String, ke: i64) -> i32 {
         Some(v) => v.clone(),
         None => return 1,
     };
-    *sediakan(vm, basis, ke as usize) = v;
+    timpa(sediakan(vm, basis, ke as usize), v);
     0
 }
 
@@ -961,7 +972,7 @@ pub extern "C" fn muat_upval(idx: i64, ke: i64) -> i32 {
     let (vm, basis) = konteks();
     let Ok(sel) = vm.upval_at(idx as u32, None) else { return 1 };
     let v = sel.lock().unwrap_or_else(|p| p.into_inner()).clone();
-    *sediakan(vm, basis, ke as usize) = v;
+    timpa(sediakan(vm, basis, ke as usize), v);
     0
 }
 
@@ -1025,7 +1036,7 @@ pub extern "C" fn field(p: i64, nama: *const String, privat: i32) -> i32 {
 pub extern "C" fn salin(dari: i64, ke: i64) {
     let (vm, basis) = konteks();
     let v = sediakan(vm, basis, dari as usize).clone();
-    *sediakan(vm, basis, ke as usize) = v;
+    timpa(sediakan(vm, basis, ke as usize), v);
 }
 
 /// `Swap` atas dua posisi milik VM.
@@ -1057,11 +1068,11 @@ pub extern "C" fn metode_tukar(p: i64, label: *const String) -> i32 {
     let v = sediakan(vm, basis, p as usize);
     if v.nama_tipe() != Some(unsafe { (*label).as_str() }) {
         let salinan = v.clone();
-        *sediakan(vm, basis, p as usize + 1) = salinan;
+        timpa(sediakan(vm, basis, p as usize + 1), salinan);
         return 1;
     }
     let v = std::mem::replace(v, VmValue::Nil);
-    *sediakan(vm, basis, p as usize + 1) = v;
+    timpa(sediakan(vm, basis, p as usize + 1), v);
     if !vm.galat_metode.is_empty() { vm.galat_metode.retain(|(j, _)| *j < i); }
     0
 }
@@ -1077,12 +1088,12 @@ pub extern "C" fn metode_lokal(slot: i64, p: i64, label: *const Arc<str>, ambil:
     let sama = v.nama_tipe().is_some_and(|s| (s.as_ptr() == l.as_ptr() && s.len() == l.len()) || s == l);
     if !sama {
         let salinan = v.clone();
-        *sediakan(vm, basis, p as usize) = v;
-        *sediakan(vm, basis, p as usize + 1) = salinan;
+        timpa(sediakan(vm, basis, p as usize), v);
+        timpa(sediakan(vm, basis, p as usize + 1), salinan);
         return 1;
     }
-    *sediakan(vm, basis, p as usize) = VmValue::Nil;
-    *sediakan(vm, basis, p as usize + 1) = v;
+    timpa(sediakan(vm, basis, p as usize), VmValue::Nil);
+    timpa(sediakan(vm, basis, p as usize + 1), v);
     let j = basis + p as usize;
     if !vm.galat_metode.is_empty() { vm.galat_metode.retain(|(x, _)| *x < j); }
     0
@@ -1093,13 +1104,13 @@ pub extern "C" fn tulis_vm(p: i64, nilai: i64, jenis: i32) {
     let (vm, basis) = konteks();
     // Tepi cuma menulis posisi native (`Jenis::kode` selain 4).
     let v = skalar_kode(jenis, nilai).expect("tepi menulis angka native");
-    *sediakan(vm, basis, p as usize) = v;
+    timpa(sediakan(vm, basis, p as usize), v);
 }
 
 /// `Jenis::Lebar` di posisi `p` ke stack VM: bulat i128 dari dua belahan 64 bit.
 pub extern "C" fn tulis_lebar(p: i64, lo: i64, hi: i64) {
     let (vm, basis) = konteks();
-    *sediakan(vm, basis, p as usize) = VmValue::Int(((hi as i128) << 64) | (lo as u64 as i128));
+    timpa(sediakan(vm, basis, p as usize), VmValue::Int(((hi as i128) << 64) | (lo as u64 as i128)));
 }
 
 /// Posisi `p` (milik VM) sebagai bulat i128: `keluar[0]` belahan bawah, `keluar[1]` atas; 1 = bukan bulat.
