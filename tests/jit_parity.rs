@@ -2247,3 +2247,60 @@ fn isi_struct_di_tempat_tidak_teramati() {
     let j = jalankan(ISI_DI_TEMPAT, &["--jit"], &[STRES, ACAK, ("JRG_JIT_LOG", "ringkas")]);
     assert!(j.stderr.contains("Q::ganti, Q::maju, main"), "{}", j.stderr);
 }
+
+/// Field pertama ikut diambil bersama field sesudahnya (`field_lokal_banyak`, bit 0) dan label method diintern:
+/// field pertama atau lain yang berganti jenis di tengah loop, bulat di atas 64 bit, teks, method atas dua
+/// struct sebentuk dan atas enum (label teks) — jawaban dan galatnya sama dengan `--vm`.
+const FIELD_GABUNG: &str = r#"
+package main
+struct V { pub x: float, pub y: float, pub z: float }
+struct W { pub x: float, pub y: float, pub z: float }
+enum E { A(int), B }
+impl V {
+    fn total(self) -> float { self.x * 2.0 + self.y + self.z }
+}
+impl W {
+    fn total(self) -> float { self.x + self.y * 3.0 + self.z }
+}
+impl E {
+    fn nilai(self) -> int { match self { E::A(k) => k, E::B => 0 } }
+}
+fn campur(v: V) -> float { v.x + v.y - v.z }
+pub fn main() {
+    var t = 0.0
+    var n = 0
+    for i in 0..600 {
+        let fi = i as float
+        let v = V { x: if (i == 300) { 1.0 } else { fi }, y: fi * 0.5, z: if (i == 450) { 2.0 } else { 1.5 } }
+        t = t + v.total() + campur(v)
+        let w = W { x: fi, y: 1.0, z: fi }
+        t = t + w.total()
+        let e = if (i % 3 == 0) { E::A(i) } else { E::B }
+        n = n + e.nilai()
+    }
+    wok(t, n)
+    var u = 0.0
+    for i in 0..400 {
+        let v = V { x: if (i == 399) { 7 } else { 1.5 }, y: 2.5, z: if (i == 398) { 1180591620717411303424 } else { 0.5 } }
+        u = u + campur(v)
+    }
+    wok(u)
+    for i in 0..300 {
+        let v = V { x: if (i == 299) { "s" } else { 1.0 }, y: 1.0, z: 1.0 }
+        u = u + campur(v)
+    }
+    wok(u)
+}
+"#;
+
+#[test]
+fn field_gabung_dan_label_metode_sama_dengan_vm() {
+    let v = jalankan(FIELD_GABUNG, &["--vm"], &[]);
+    assert!(v.stdout.starts_with("1079103.0 59700") && v.stderr.contains("`string` dan `float`"), "{}", v.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(FIELD_GABUNG, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(FIELD_GABUNG, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
+    assert!(j.stderr.contains("dikompilasi: E::nilai, V::total, W::total, campur, main"), "{}", j.stderr);
+}

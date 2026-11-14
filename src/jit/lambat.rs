@@ -1000,11 +1000,14 @@ pub extern "C" fn metode_tukar(p: i64, label: *const String) -> i32 {
 
 /// `LoadLocal`/`AmbilLokal` lalu `metode_tukar`: lokal `slot` (dibaca, atau diambil kalau `ambil`) langsung
 /// ke `p + 1`. 1 = label lain: lokalnya di `p`, salinan `Dup` di `p + 1`, deopt di `GetMethod`.
-pub extern "C" fn metode_lokal(slot: i64, p: i64, label: *const String, ambil: i32) -> i32 {
+pub extern "C" fn metode_lokal(slot: i64, p: i64, label: *const Arc<str>, ambil: i32) -> i32 {
     let (vm, basis) = konteks();
     let i = basis + slot as usize;
     let v = if ambil != 0 { vm.ambil_lokal(i) } else { vm.baca_lokal(i) }.unwrap_or(VmValue::Nil);
-    if v.nama_tipe() != Some(unsafe { (*label).as_str() }) {
+    let l: &str = unsafe { &**label };
+    // Label struct dan label ini sama-sama diintern: alamatnya dulu, teksnya kalau beda (enum, label lain).
+    let sama = v.nama_tipe().is_some_and(|s| (s.as_ptr() == l.as_ptr() && s.len() == l.len()) || s == l);
+    if !sama {
         let salinan = v.clone();
         *sediakan(vm, basis, p as usize) = v;
         *sediakan(vm, basis, p as usize + 1) = salinan;
