@@ -125,6 +125,12 @@ pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64,
             let Some(crate::vm::peta::IsiPeta::Rapat { nilai: isi, .. }) = crate::vm::value::Peta::isi_tunggal(m)
                 else { unreachable!("diperiksa pakai_ulang") };
             for (j, i) in (t - n..t).enumerate() {
+                // Angka atas angka sejenis (biasa: struct yang diperbarui per langkah): cuma isinya yang ditulis.
+                match (jenis[i], &mut isi[j]) {
+                    (Jenis::Pecahan, VmValue::Float(x)) => { *x = f64::from_bits(nilai[i] as u64); continue }
+                    (Jenis::Bulat, VmValue::Int(x)) => { *x = nilai[i] as i128; continue }
+                    _ => {}
+                }
                 let v = match nilai_skalar(jenis[i], nilai[i]) {
                     Some(v) => v,
                     None => std::mem::replace(sediakan(vm, basis, i), VmValue::Nil),

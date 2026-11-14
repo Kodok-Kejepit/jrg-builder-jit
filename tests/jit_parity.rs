@@ -2205,3 +2205,45 @@ fn lokal_mati_dipindah_tidak_teramati() {
     let j = jalankan(PINDAH_LOKAL, &["--jit"], &[STRES, ACAK, ("JRG_JIT_LOG", "ringkas")]);
     assert!(j.stderr.contains("main, nilai, sisa, ukur"), "{}", j.stderr);
 }
+
+/// Struct dipakai ulang dengan field yang ditulis di tempat (angka atas angka sejenis): field yang berganti
+/// jenis (bulat, pecahan, bulat di atas 64 bit, teks) dan salinan bersama yang harus tetap utuh — sama dengan `--vm`.
+const ISI_DI_TEMPAT: &str = r#"
+package main
+struct Q { pub a: int, pub b: int, pub c: int }
+impl Q {
+    fn maju(self, k: int) -> Q {
+        return Q { a: self.b, b: self.a + k, c: self.c }
+    }
+    fn ganti(self, i: int) -> Q {
+        return Q { a: if (i % 3 == 0) { 1.5 } else { i }, b: if (i == 150) { 1180591620717411303424 } else { self.b }, c: if (i == 160) { "teks" } else { self.c } }
+    }
+}
+pub fn main() {
+    var q = Q { a: 1, b: 2.5, c: 0 }
+    for i in 0..300 {
+        q = q.maju(i)
+        if (i % 50 == 0) { wok(q.a, q.b, q.c) }
+    }
+    var r = Q { a: 0, b: 0, c: 0 }
+    for i in 0..300 {
+        r = r.ganti(i)
+        if (i % 40 == 0 || i == 150 || i == 151 || i == 160) { wok(r.a, r.b, r.c) }
+    }
+    let s = r
+    r = r.ganti(7)
+    wok(s.a, r.a)
+}
+"#;
+
+#[test]
+fn isi_struct_di_tempat_tidak_teramati() {
+    let v = jalankan(ISI_DI_TEMPAT, &["--vm"], &[]);
+    assert!(v.sukses && v.stdout.ends_with("299 7"), "{}", v.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(ISI_DI_TEMPAT, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(ISI_DI_TEMPAT, &["--jit"], &[STRES, ACAK, ("JRG_JIT_LOG", "ringkas")]);
+    assert!(j.stderr.contains("Q::ganti, Q::maju, main"), "{}", j.stderr);
+}
