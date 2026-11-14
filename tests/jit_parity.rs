@@ -2444,3 +2444,61 @@ fn larik_tembolok_sama_dengan_vm() {
     let j = jalankan(LARIK_TEMBOLOK, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
     assert!(j.stderr.contains("dikompilasi: jumlah, main"), "{}", j.stderr);
 }
+
+/// `payload_angka_lokal` (payload enum dibuka ke register tanpa ditulis ke stack VM): payload yang berganti
+/// jenis, bulat di atas 64 bit, `Option<float>`, varian tanpa payload, enum di sel tangkapan, payload teks.
+const PAYLOAD_ANGKA: &str = r#"
+package main
+enum K { A(int), B, C(int, int) }
+fn ambil(k: K) -> int {
+    match k {
+        K::A(x) => x + 1,
+        K::B => 0,
+        K::C(p, q) => p - q,
+    }
+}
+fn pecahan(o: Option<float>) -> float {
+    match o { Some(v) => v * 2.0, None => -1.0 }
+}
+pub fn main() {
+    var t = 0
+    for i in 0..900 {
+        let k = if (i % 3 == 0) { K::A(i) } else if (i % 3 == 1) { K::B } else { K::C(i, 1) }
+        t = t + ambil(k)
+        if (i == 600) { t = t + ambil(K::A(1180591620717411303424 % 7)) }
+    }
+    wok(t)
+    var f = 0.0
+    for i in 0..500 {
+        let o = if (i % 4 == 0) { None } else { Some((i as float) * 0.5) }
+        f = f + pecahan(o)
+    }
+    wok(f)
+    var c = K::A(5)
+    let ganti = || { c = K::C(9, 4) }
+    var u = 0
+    for i in 0..300 {
+        u = u + match c { K::A(x) => x, K::B => 0, K::C(p, q) => p * q }
+        if (i == 150) { ganti() }
+    }
+    wok(u)
+    var g = 0
+    for i in 0..400 {
+        let k = if (i == 399) { K::A("teks") } else { K::A(i) }
+        g = g + ambil(k)
+    }
+    wok(g)
+}
+"#;
+
+#[test]
+fn payload_angka_sama_dengan_vm() {
+    let v = jalankan(PAYLOAD_ANGKA, &["--vm"], &[]);
+    assert!(v.sukses && v.stdout.ends_with("79800teks1"), "{}", v.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(PAYLOAD_ANGKA, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(PAYLOAD_ANGKA, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
+    assert!(j.stderr.contains("dikompilasi: ambil, main, pecahan"), "{}", j.stderr);
+}

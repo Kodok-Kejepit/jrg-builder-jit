@@ -788,6 +788,29 @@ pub extern "C" fn pola_lokal(slot: i64, situs: *const SitusPola) -> i32 {
     }.map_or(2, |b| b as i32)
 }
 
+/// `LoadLocal` + `AmbilPayload` + bukaan angka (`jenis` 1 bulat 64 bit, 5 pecahan): 0 = angkanya di `*keluar`,
+/// stack VM tidak disentuh; 1 = bukan enum berpayload (VM yang menjalankan); 2 = payload jenis lain, ditaruh di
+/// posisi `ke` seperti `payload_lokal` (spekulasi gagal sesudahnya, seperti `buka`).
+pub extern "C" fn payload_angka_lokal(slot: i64, ke: i64, jenis: i32, keluar: *mut i64) -> i32 {
+    let hasil = lihat_lokal(slot, |v| match v.bagian_enum() {
+        Some((_, _, Some(isi))) => Some(match (isi, jenis) {
+            (VmValue::Int(n), 1) => i64::try_from(*n).map_err(|_| isi.clone()),
+            (VmValue::Float(x), 5) => Ok(x.to_bits() as i64),
+            _ => Err(isi.clone()),
+        }),
+        _ => None,
+    }).flatten();
+    match hasil {
+        Some(Ok(n)) => { unsafe { *keluar = n }; 0 }
+        Some(Err(isi)) => {
+            let (vm, basis) = konteks();
+            timpa(sediakan(vm, basis, ke as usize), isi);
+            2
+        }
+        None => 1,
+    }
+}
+
 /// `LoadLocal` + `AmbilPayload`: posisi `ke` = payload lokal `slot`; 1 = VM yang menjalankan keduanya.
 pub extern "C" fn payload_lokal(slot: i64, ke: i64) -> i32 {
     let Some(Some(isi)) = lihat_lokal(slot, |v| match v.bagian_enum() {

@@ -83,7 +83,7 @@ pub fn tanda_tangan_umum(cc: CallConv, param: &[Type], hasil: Option<Type>) -> S
 pub struct ImporLambat {
     pub langkah: FuncId, pub muat: FuncId, pub buang: FuncId, pub benar: FuncId, pub buka: FuncId,
     pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
-    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub metode_tukar: FuncId, pub metode_lokal: FuncId, pub karakter_lokal: FuncId, pub konteks_mentah: FuncId, pub masuk_ringan: FuncId, pub keluar_ringan: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
+    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub payload_angka: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub metode_tukar: FuncId, pub metode_lokal: FuncId, pub karakter_lokal: FuncId, pub konteks_mentah: FuncId, pub masuk_ringan: FuncId, pub keluar_ringan: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
@@ -508,6 +508,29 @@ fn jaga_spek(b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], cond: Value,
 /// Hasil spekulatif (`Rencana::spek`) di posisi `pos` dibuka jadi `j`; gagal = deopt di `lanjut` dengan
 /// puncak milik VM, dan spekulasinya tidak diulang.
 #[allow(clippy::too_many_arguments)]
+/// `LoadLocal` + `AmbilPayload` dengan payload berspekulasi angka: satu pembantu (`payload_angka_lokal`).
+/// 1 = bukan enum berpayload, deopt di `ip` (stack sebelum instruksinya); 2 = payload jenis lain, sudah di
+/// posisi `pos`, deopt spekulasi di `lanjut` seperti `buka` yang gagal; 0 = angkanya di `var[pos]`.
+#[allow(clippy::too_many_arguments)]
+fn payload_angka(
+    b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], r: &Rencana, f: FuncRef, wadah: StackSlot, slot: Value,
+    ip: usize, lanjut: usize, pos: usize, j: Jenis, s: &[Jenis],
+) {
+    let pk = b.ins().stack_addr(k.ptr, wadah, 0);
+    let pv = b.ins().iconst(types::I64, pos as i64);
+    let jv = b.ins().iconst(types::I32, if j == Jenis::Pecahan { 5 } else { 1 });
+    let c = b.ins().call(f, &[slot, pv, jv, pk]);
+    let c = b.inst_results(c)[0];
+    let bukan = b.ins().icmp_imm_u(IntCC::Equal, c, 1);
+    jaga(b, k, var, bukan, ip, s);
+    let lain = b.ins().icmp_imm_u(IntCC::Equal, c, 2);
+    let lama = k.bendera.replace(PUNCAK_VM | GAGAL_SPEK);
+    jaga(b, k, var, lain, lanjut, r.keadaan[lanjut].as_ref().expect("penerus hasil terjangkau"));
+    k.bendera.set(lama);
+    let v = b.ins().stack_load(k.ptr, types::I64, wadah, 0);
+    b.def_var(var[pos], v);
+}
+
 fn buka_hasil(
     b: &mut FunctionBuilder, k: &Keluar, var: &[Variable], r: &Rencana, buka: FuncRef, wadah: StackSlot,
     lanjut: usize, pos: usize, j: Jenis,
@@ -808,8 +831,8 @@ pub fn turunkan(
     let [f_langkah, f_muat, f_buang, f_benar, f_buka, f_taruh, f_ambil, f_simpan, f_pola, f_payload] =
         [il.langkah, il.muat, il.buang, il.benar, il.buka, il.taruh, il.ambil, il.simpan, il.pola, il.payload]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_pola_lokal, f_payload_lokal, f_buka_lokal, f_iter_ada, f_maju, f_cabang, f_sebar] =
-        [il.pola_lokal, il.payload_lokal, il.buka_lokal, il.iter_ada, il.maju, il.langkah_cabang, il.sebar]
+    let [f_pola_lokal, f_payload_lokal, f_buka_lokal, f_iter_ada, f_maju, f_cabang, f_sebar, f_payload_angka] =
+        [il.pola_lokal, il.payload_lokal, il.buka_lokal, il.iter_ada, il.maju, il.langkah_cabang, il.sebar, il.payload_angka]
         .map(|id| m.declare_func_in_func(id, b.func));
     let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode, f_bawaan, f_biner] =
         [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode, il.bawaan, il.biner]
@@ -1124,6 +1147,11 @@ pub fn turunkan(
                         continue;
                     }
                     Some(Cara::Payload) if gabung => {
+                        if let Some(j @ (Jenis::Bulat | Jenis::Pecahan)) = r.spek[ip + 1] {
+                            payload_angka(&mut b, &k, &var, r, f_payload_angka, wadah, d, ip, ip + 2, t, j, s);
+                            lewati = true;
+                            continue;
+                        }
                         let ke = i64c(&mut b, t as i64);
                         let c = b.ins().call(f_payload_lokal, &[d, ke]);
                         let c = b.inst_results(c)[0];
@@ -1567,6 +1595,11 @@ pub fn turunkan(
                 continue;
             }
             Cara::Payload => {
+                if let (Jenis::Salinan(l), Some(j @ (Jenis::Bulat | Jenis::Pecahan))) = (s[t - 1], r.spek[ip]) {
+                    let lv = i64c(&mut b, l as i64);
+                    payload_angka(&mut b, &k, &var, r, f_payload_angka, wadah, lv, ip, ip + 1, t - 1, j, s);
+                    continue;
+                }
                 let p = i64c(&mut b, t as i64 - 1);
                 let c = match s[t - 1] {
                     Jenis::Salinan(l) => { let lv = i64c(&mut b, l as i64); b.ins().call(f_payload_lokal, &[lv, p]) }
