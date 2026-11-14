@@ -662,7 +662,9 @@ pub extern "C" fn simpan(ke: i64, dari: i64, nilai: i64, jenis: i32, pindah: i32
 pub extern "C" fn pola(p: i64, situs: *const SitusPola) -> i32 {
     let (vm, basis) = konteks();
     let v = sediakan(vm, basis, p as usize);
-    match unsafe { &*situs }.cocok(v) {
+    let situs = unsafe { &*situs };
+    if situs.tolak(v) { timpa(v, VmValue::Nil); return 0; }
+    match situs.cocok(v) {
         Ok(b) => { *v = VmValue::Nil; b as i32 }
         Err(_) => 2,
     }
@@ -691,6 +693,14 @@ impl SitusPola {
             _ => 0,
         };
         Box::leak(Box::new(SitusPola { desc, nama, tembolok: Default::default() }))
+    }
+
+    /// Pola berkualifikasi atas enum yang alamat namanya lain: pasti tidak cocok (`cocok` memeriksa hal yang
+    /// sama di awalnya). Di-inline di pembantunya supaya penolakan tidak membayar panggilan `cocok`.
+    #[inline(always)]
+    fn tolak(&self, v: &VmValue) -> bool {
+        self.nama != 0 && matches!(v, VmValue::Map(m) if matches!(&m.label,
+            crate::vm::value::Label::Enum { nama, .. } if *nama as *const _ as usize != self.nama))
     }
 
     #[inline]
@@ -741,7 +751,14 @@ fn lihat_lokal<T>(slot: i64, f: impl FnOnce(&VmValue) -> T) -> Option<T> {
 
 /// `LoadLocal` + `CekEnum` tanpa menyalin lokalnya: 0/1 = hasil; 2 = VM yang menjalankan keduanya.
 pub extern "C" fn pola_lokal(slot: i64, situs: *const SitusPola) -> i32 {
-    lihat_lokal(slot, |v| unsafe { &*situs }.cocok(v).map_or(2, |b| b as i32)).unwrap_or(2)
+    let situs = unsafe { &*situs };
+    let (vm, basis) = konteks();
+    let Some(v) = vm.stack.get(basis + slot as usize) else { return 2 };
+    if situs.tolak(v) { return 0; }
+    match v {
+        VmValue::Cell(c) => situs.cocok(&c.lock().unwrap_or_else(|p| p.into_inner())),
+        v => situs.cocok(v),
+    }.map_or(2, |b| b as i32)
 }
 
 /// `LoadLocal` + `AmbilPayload`: posisi `ke` = payload lokal `slot`; 1 = VM yang menjalankan keduanya.
