@@ -45,10 +45,7 @@ impl Bentuk {
     }
 }
 
-/// `repr(u8)`: tag satu byte di awal dan tiap varian berbentuk `repr(C)` (RFC 2195), supaya kode JIT bisa
-/// mengenali bentuk rapat dan membaca field-nya tanpa menebak tata letak (`jit::tata_letak`).
 #[derive(Clone, Debug)]
-#[repr(u8)]
 pub enum IsiPeta {
     Hash(HashMap<Kunci, VmValue, HashPeta>),
     Rapat { bentuk: Arc<Bentuk>, nilai: Vec<VmValue> },

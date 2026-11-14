@@ -1963,9 +1963,9 @@ fn bawaan_langsung_gagal_sama() {
     assert!(baris.contains("olah"), "olah tidak dikompilasi:\n{}", j.stderr);
 }
 
-/// Field struct sebaris (J8 tahap 5): bentuk yang tidak pasti jatuh ke pembantu dengan jawaban yang sama — struct
-/// dibagi, di sel tangkapan, dict bernama field sama, struct di atas 16 field (tabel hash), dua bentuk di satu situs,
-/// field privat, field berisi jenis lain, dan deopt (luapan) di tengah bacaan.
+/// Bacaan field lewat `field_lokal`/`field_lokal_banyak` di bentuk-bentuk yang tidak biasa — struct dibagi, di sel
+/// tangkapan, dict bernama field sama, struct di atas 16 field (tabel hash), dua bentuk di satu situs, field
+/// privat, field berisi jenis lain, dan deopt (luapan) di tengah bacaan. (Dari J8 tahap 5, yang dicabut.)
 const FIELD_SEBARIS: &str = r#"
 package main
 struct P { pub x: int, pub y: int, pub z: f64 }

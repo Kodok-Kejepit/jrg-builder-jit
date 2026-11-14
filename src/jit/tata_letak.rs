@@ -29,16 +29,6 @@ pub struct TataLetak {
     pub vec_ptr: usize,
     pub vec_len: usize,
     pub vm_stack: usize,
-    /// Struct rapat (`Peta` berisi `IsiPeta::Rapat`): tag `Map` dan isinya (penunjuk `ArcInner<Peta>`), lalu dari
-    /// awal isi `Arc`-nya: `IsiPeta` (di dalam `Mutex`), tag `Rapat` di byte pertamanya (`repr(u8)`), penunjuk
-    /// `ArcInner<Bentuk>` dan `Vec` nilainya. `bentuk_isi` = jarak penunjuk `ArcInner<Bentuk>` ke `Arc::as_ptr`.
-    pub tag_map: u8,
-    pub isi_map: usize,
-    pub peta_isi: usize,
-    pub tag_rapat: u8,
-    pub rapat_bentuk: usize,
-    pub bentuk_isi: usize,
-    pub rapat_nilai: usize,
 }
 
 static TATA: OnceLock<Option<TataLetak>> = OnceLock::new();
@@ -168,93 +158,12 @@ fn temukan() -> Option<TataLetak> {
     let vec_len = (0..vb.len()).step_by(8).find(|&o| kata(&vb, o) == vl && o != vec_ptr)?;
     if (0..vb.len()).step_by(8).filter(|&o| kata(&vb, o) == vl).count() != 1 { return None; }
 
-    let (tag_map, isi_map, peta_isi, tag_rapat, rapat_bentuk, bentuk_isi, rapat_nilai) =
-        temukan_peta(ukuran, tag, &lain, &kelompok, vec_ptr, vec_len, arc_isi)?;
     let t = TataLetak {
         ukuran, tag, tag_nil, tag_bool, tag_int, tag_float, tag_array, isi_bool, isi_int, isi_float, isi_array,
         arc_kuat, arc_lemah, arc_isi, mutex_isi, vec_ptr, vec_len,
         vm_stack: std::mem::offset_of!(crate::vm::Vm, stack),
-        tag_map, isi_map, peta_isi, tag_rapat, rapat_bentuk, bentuk_isi, rapat_nilai,
     };
     periksa(&t).then_some(t)
-}
-
-/// Struct rapat dari literal biasa (`Peta::struktur_arc`).
-fn struktur(nama: &[&str], nilai: Vec<VmValue>) -> (VmValue, Arc<crate::vm::peta::Bentuk>) {
-    use crate::vm::value::{Kunci, Label, Peta};
-    let bentuk = crate::vm::peta::Bentuk::baru(nama.iter().map(|n| Kunci::from(n.to_string())).collect());
-    let v = VmValue::Map(Peta::struktur_arc(Label::Struct(Arc::from("TataLetakUji")), Arc::clone(&bentuk), nilai));
-    (v, bentuk)
-}
-
-/// Bagian tata letak untuk struct rapat; `None` = tidak bisa dipastikan.
-#[allow(clippy::type_complexity)]
-fn temukan_peta(
-    ukuran: usize, tag: usize, lain: &[Vec<u8>], kelompok: &[&[Vec<u8>]], vec_ptr: usize, vec_len: usize, arc_isi_vec: usize,
-) -> Option<(u8, usize, usize, u8, usize, usize, usize)> {
-    let contoh: Vec<(VmValue, Arc<crate::vm::peta::Bentuk>)> = (1..6)
-        .map(|n| struktur(&["a", "b", "c", "d", "e", "f"][..n], (0..n).map(|i| VmValue::Int(i as i128)).collect()))
-        .collect();
-    let peta: Vec<Vec<u8>> = contoh.iter().map(|(v, _)| byte(v.clone())).collect();
-    let tag_map = peta[0][tag];
-    // Tag `Map` tetap di semua contoh, beda dari jenis lain dan tidak pernah muncul di isi varian lain.
-    if !peta.iter().all(|b| b[tag] == tag_map) || kelompok.iter().any(|k| k[0][tag] == tag_map)
-        || lain.iter().any(|b| b[tag] == tag_map) { return None; }
-    let arc_peta: Vec<&Arc<crate::vm::value::Peta>> = contoh.iter().map(|(v, _)| match v {
-        VmValue::Map(m) => m,
-        _ => unreachable!("dibangun sebagai struct"),
-    }).collect();
-    let isi_map = (0..ukuran - 7).step_by(8).find(|&o| o != tag && peta.iter().zip(&arc_peta)
-        .all(|(b, a)| { let w = kata(b, o); Arc::as_ptr(a) as usize == w + arc_isi_vec }))?;
-    // `IsiPeta` dari awal `Peta`: alamat pinjaman `Mutex`-nya, yang harus sesudah awal field `isi`.
-    let p0 = Arc::as_ptr(arc_peta[0]) as usize;
-    let isi_alamat = { let g = arc_peta[0].lock().ok()?; &*g as *const crate::vm::peta::IsiPeta as usize };
-    let peta_isi = isi_alamat.checked_sub(p0)?;
-    if peta_isi < crate::vm::value::PETA_ISI { return None; }
-    let baca_isi = |a: &Arc<crate::vm::value::Peta>| -> Option<Vec<u8>> {
-        let g = a.lock().ok()?;
-        let p = &*g as *const crate::vm::peta::IsiPeta as *const u8;
-        Some((0..std::mem::size_of::<crate::vm::peta::IsiPeta>()).map(|i| unsafe { std::ptr::read_volatile(p.add(i)) }).collect())
-    };
-    let isi: Vec<Vec<u8>> = arc_peta.iter().map(|a| baca_isi(a)).collect::<Option<_>>()?;
-    let tag_rapat = isi[0][0];
-    let hash = byte(crate::vm::peta::IsiPeta::tabel(0, false));
-    if !isi.iter().all(|b| b[0] == tag_rapat) || hash[0] == tag_rapat { return None; }
-    // Penunjuk `ArcInner<Bentuk>`: kata yang berjarak tetap dari `Arc::as_ptr` bentuknya.
-    let n = isi[0].len();
-    let (rapat_bentuk, bentuk_isi) = (8..n - 7).step_by(8).find_map(|o| {
-        let jarak = Arc::as_ptr(&contoh[0].1) as usize - kata(&isi[0], o);
-        (jarak > 0 && jarak <= 64 && isi.iter().zip(&contoh)
-            .all(|(b, (_, bt))| Arc::as_ptr(bt) as usize == kata(b, o) + jarak)).then_some((o, jarak))
-    })?;
-    // `Vec` nilai: penunjuk dan panjangnya di posisi `vec_ptr`/`vec_len` relatif awalnya.
-    let rapat_nilai = (8..n - 23).step_by(8).find(|&o| o != rapat_bentuk && isi.iter().zip(&arc_peta).all(|(b, a)| {
-        let g = a.lock().unwrap_or_else(|p| p.into_inner());
-        let crate::vm::peta::IsiPeta::Rapat { nilai, .. } = &*g else { return false };
-        kata(b, o + vec_ptr) == nilai.as_ptr() as usize && kata(b, o + vec_len) == nilai.len()
-    }))?;
-    Some((tag_map, isi_map, peta_isi, tag_rapat, rapat_bentuk, bentuk_isi, rapat_nilai))
-}
-
-/// Field ke-`i` struct rapat milik tunggal yang berbentuk `bentuk` (`Arc::as_ptr`), lewat tata letak yang
-/// ditemukan, seperti yang akan dilakukan kode JIT; bit `i64`-nya kalau bulat 64 bit.
-pub fn baca_field_bulat(t: &TataLetak, v: &VmValue, bentuk: usize, i: usize) -> Option<i64> {
-    let p = v as *const VmValue as usize;
-    unsafe {
-        if *((p + t.tag) as *const u8) != t.tag_map { return None; }
-        let inner = *((p + t.isi_map) as *const usize);
-        if *((inner + t.arc_kuat) as *const usize) != 1 || *((inner + t.arc_lemah) as *const usize) != 1 { return None; }
-        let isi = inner + t.arc_isi + t.peta_isi;
-        if *(isi as *const u8) != t.tag_rapat { return None; }
-        if *((isi + t.rapat_bentuk) as *const usize) + t.bentuk_isi != bentuk { return None; }
-        let vec = isi + t.rapat_nilai;
-        let (data, len) = (*((vec + t.vec_ptr) as *const usize), *((vec + t.vec_len) as *const usize));
-        if i >= len { return None; }
-        let el = data + i * t.ukuran;
-        if *((el + t.tag) as *const u8) != t.tag_int { return None; }
-        let (lo, hi) = (*((el + t.isi_int) as *const i64), *((el + t.isi_int + 8) as *const i64));
-        (hi == lo >> 63).then_some(lo)
-    }
 }
 
 /// Byte sebuah `Vec` (tiga kata), dibaca di tempatnya.
@@ -301,19 +210,7 @@ fn periksa(t: &TataLetak) -> bool {
     let skalar = byte(VmValue::Float(-1.25)).get(t.isi_float..t.isi_float + 8) == Some(&(-1.25f64).to_bits().to_le_bytes()[..])
         && byte(VmValue::Bool(true))[t.isi_bool] == 1
         && byte(VmValue::Nil)[t.tag] == t.tag_nil;
-    // Struct rapat: field terbaca lewat bentuknya; bentuk lain, struct dibagi, dan dict tidak.
-    let (st, bt) = struktur(&["x", "y", "z"], vec![VmValue::Int(-5), VmValue::Int(1 << 40), VmValue::str("t")]);
-    let (lain, bl) = struktur(&["x", "y", "z"], vec![VmValue::Int(1), VmValue::Int(2), VmValue::Int(3)]);
-    let b = Arc::as_ptr(&bt) as usize;
-    let bersama = st.clone();
-    let field = baca_field_bulat(t, &lain, Arc::as_ptr(&bl) as usize, 2) == Some(3)
-        && baca_field_bulat(t, &lain, b, 0).is_none()
-        && baca_field_bulat(t, &bersama, b, 0).is_none();
-    drop(bersama);
-    let field = field && baca_field_bulat(t, &st, b, 0) == Some(-5) && baca_field_bulat(t, &st, b, 1) == Some(1 << 40)
-        && baca_field_bulat(t, &st, b, 2).is_none() && baca_field_bulat(t, &st, b, 3).is_none()
-        && baca_field_bulat(t, &VmValue::map(Vec::<(crate::vm::value::Kunci, VmValue)>::new()), b, 0).is_none();
-    ok && skalar && field
+    ok && skalar
 }
 
 #[cfg(test)]

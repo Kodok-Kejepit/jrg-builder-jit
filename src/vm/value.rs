@@ -281,9 +281,6 @@ pub struct Peta {
     isi: Mutex<IsiPeta>,
 }
 
-/// Posisi `isi` di dalam `Peta` (untuk `jit::tata_letak`).
-pub(crate) const PETA_ISI: usize = std::mem::offset_of!(Peta, isi);
-
 impl Peta {
     pub fn baru<K: Into<Kunci>>(label: Label, isi: impl IntoIterator<Item = (K, VmValue)>) -> Self {
         let it = isi.into_iter();
