@@ -2384,3 +2384,63 @@ fn cadangan_struct_tidak_teramati() {
     let j = jalankan(CADANGAN_STRUCT, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
     assert!(j.stderr.contains("dikompilasi: main, nilai"), "{}", j.stderr);
 }
+
+/// Tembolok penyimpanan larik per wilayah (`TemboLarik`): tukar elemen, salinan `let b = a` lalu tulis, larik
+/// diserahkan ke fungsi, tumbuh, bulat di atas 64 bit, sel tangkapan closure, teks, dan indeks di luar batas.
+const LARIK_TEMBOLOK: &str = r#"
+package main
+fn jumlah(x) -> int {
+    var s = 0
+    for i in 0..len(x) { s = s + x[i] }
+    return s
+}
+pub fn main() {
+    var a = [5, 3, 8, 1, 9, 2, 7, 4]
+    var tot = 0
+    for r in 0..300 {
+        let i = r % 8
+        let j = (r * 3) % 8
+        if (a[i] > a[j]) { let t = a[i]; a[i] = a[j]; a[j] = t }
+        tot = tot + a[i] + a[j] + a[-1]
+        let b = a
+        a[0] = a[0] + 1
+        tot = tot + b[0] + a[0]
+        a[1] = a[1] + jumlah(a) % 3
+        if (r == 100) { a = a + [6] }
+        if (r == 200) { a[2] = 1180591620717411303424 }
+        if (r == 201) { a[2] = 3 }
+    }
+    wok(tot, a)
+    var c = [1, 2, 3]
+    let tambah = || { c[0] = c[0] + 100 }
+    var u = 0
+    for k in 0..200 {
+        u = u + c[k % 3] + c[0]
+        c[1] = c[1] + 1
+        if (k % 50 == 0) { tambah() }
+    }
+    wok(u, c)
+    var d = [1, 2, 3, 4]
+    for k in 0..100 {
+        d[k % 4] = d[(k + 1) % 4] + d[(k + 2) % 4]
+        if (k == 99) { d[0] = "teks" }
+    }
+    wok(d)
+    var e = [1, 2, 3]
+    var v = 0
+    for k in 0..10 { v = v + e[k] }
+    wok(v)
+}
+"#;
+
+#[test]
+fn larik_tembolok_sama_dengan_vm() {
+    let v = jalankan(LARIK_TEMBOLOK, &["--vm"], &[]);
+    assert!(v.stdout.starts_with("114284 [305, 115, 3, 41, 9, 4, 7, 2, 6]") && v.stderr.contains("di luar batas"), "{}", v.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(LARIK_TEMBOLOK, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(LARIK_TEMBOLOK, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
+    assert!(j.stderr.contains("dikompilasi: jumlah, main"), "{}", j.stderr);
+}
