@@ -11,6 +11,8 @@ use crate::vm::value::VmValue;
 use crate::vm::vm::{Vm, VmError};
 
 thread_local! {
+    /// Satu struct milik tunggal berisi skalar yang baru dilepas `buang`, untuk dipakai ulang `bangun`.
+    static CADANGAN_STRUCT: Cell<Option<Arc<crate::vm::value::Peta>>> = const { Cell::new(None) };
     /// VM dan basis bingkai terluar yang sedang dijalankan kode native di thread ini.
     static KONTEKS: Cell<(*mut Vm, usize)> = const { Cell::new((std::ptr::null_mut(), 0)) };
     /// Panggilan langsung yang sedang berjalan (`masuk`/`keluar`): kedalaman bingkai pemanggil, basisnya,
@@ -57,11 +59,36 @@ fn tumbuh(vm: &mut Vm, i: usize) {
     }
 }
 
+/// Isi struct yang dipakai ulang ditulis dari posisi `rentang` (angka native atau nilai milik VM yang dipindah).
+#[inline(always)]
+fn isi_ulang(vm: &mut Vm, basis: usize, jenis: &[Jenis], nilai: &[i64], rentang: std::ops::Range<usize>, isi: &mut [VmValue]) {
+    for (j, i) in rentang.enumerate() {
+        // Angka atas angka sejenis (biasa: struct yang diperbarui per langkah): cuma isinya yang ditulis.
+        match (jenis[i], &mut isi[j]) {
+            (Jenis::Pecahan, VmValue::Float(x)) => { *x = f64::from_bits(nilai[i] as u64); continue }
+            (Jenis::Bulat, VmValue::Int(x)) => { *x = nilai[i] as i128; continue }
+            _ => {}
+        }
+        let v = match nilai_skalar(jenis[i], nilai[i]) {
+            Some(v) => v,
+            None => std::mem::replace(sediakan(vm, basis, i), VmValue::Nil),
+        };
+        timpa(&mut isi[j], v);
+    }
+}
+
+/// Isi tanpa destruktor: cuma struct seperti ini yang boleh disimpan di `CADANGAN_STRUCT`, jadi menahannya
+/// tidak memperpanjang umur pegangan apa pun (FFI, kanal) yang bisa diamati.
+#[inline(always)]
+fn skalar(v: &VmValue) -> bool {
+    matches!(v, VmValue::Nil | VmValue::Unit | VmValue::Bool(_) | VmValue::Int(_) | VmValue::Rune(_)
+        | VmValue::Float(_) | VmValue::Ptr(_))
+}
+
 /// `*tempat = v` tanpa memanggil `drop_glue` kalau isi lamanya skalar (yang biasa di posisi stack VM).
 #[inline(always)]
 fn timpa(tempat: &mut VmValue, v: VmValue) {
-    if matches!(tempat, VmValue::Nil | VmValue::Unit | VmValue::Bool(_) | VmValue::Int(_) | VmValue::Rune(_)
-        | VmValue::Float(_) | VmValue::Ptr(_)) {
+    if skalar(tempat) {
         unsafe { std::ptr::write(tempat, v) }
     } else {
         *tempat = v;
@@ -154,26 +181,25 @@ pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64,
             let VmValue::Map(m) = &mut lama else { unreachable!("diperiksa pakai_ulang") };
             let Some(crate::vm::peta::IsiPeta::Rapat { nilai: isi, .. }) = crate::vm::value::Peta::isi_tunggal(m)
                 else { unreachable!("diperiksa pakai_ulang") };
-            for (j, i) in (t - n..t).enumerate() {
-                // Angka atas angka sejenis (biasa: struct yang diperbarui per langkah): cuma isinya yang ditulis.
-                match (jenis[i], &mut isi[j]) {
-                    (Jenis::Pecahan, VmValue::Float(x)) => { *x = f64::from_bits(nilai[i] as u64); continue }
-                    (Jenis::Bulat, VmValue::Int(x)) => { *x = nilai[i] as i128; continue }
-                    _ => {}
-                }
-                let v = match nilai_skalar(jenis[i], nilai[i]) {
-                    Some(v) => v,
-                    None => std::mem::replace(sediakan(vm, basis, i), VmValue::Nil),
-                };
-                // Isi lama tanpa destruktor (angka) ditimpa tanpa memanggil `drop_glue`.
-                match &mut isi[j] {
-                    tempat @ (VmValue::Int(_) | VmValue::Float(_) | VmValue::Bool(_) | VmValue::Nil | VmValue::Unit) =>
-                        unsafe { std::ptr::write(tempat, v) },
-                    tempat => *tempat = v,
-                }
-            }
+            isi_ulang(vm, basis, jenis, nilai, t - n..t, isi);
             timpa(sediakan(vm, basis, t - n), lama);
             return;
+        }
+    }
+    // Struct sebentuk yang baru dilepas `buang` (isinya skalar semua): dipakai ulang, tanpa alokasi.
+    if let SitusBangun::Struktur(label, bentuk) | SitusBangun::StrukturUlang(label, bentuk) = situs {
+        if let Some(mut m) = CADANGAN_STRUCT.with(|c| c.take()) {
+            let sama_label = matches!((&m.label, label), (crate::vm::value::Label::Struct(a), crate::vm::value::Label::Struct(b))
+                if Arc::ptr_eq(a, b) || a == b);
+            if let (true, Some(crate::vm::peta::IsiPeta::Rapat { bentuk: b, nilai: isi })) =
+                (sama_label, crate::vm::value::Peta::isi_tunggal(&mut m)) {
+                if Arc::ptr_eq(b, bentuk) && isi.len() == n {
+                    isi_ulang(vm, basis, jenis, nilai, t - n..t, isi);
+                    timpa(sediakan(vm, basis, t - n), VmValue::Map(m));
+                    return;
+                }
+            }
+            CADANGAN_STRUCT.with(|c| c.set(Some(m)));
         }
     }
     // Rentang berukuran pasti: `collect` mengalokasi sekali tanpa cek kapasitas per elemen.
@@ -1145,7 +1171,18 @@ pub extern "C" fn buka_lebar(p: i64, keluar: *mut i64) -> i32 {
 /// Posisi `p` dilepas (`Pop` atas nilai milik VM).
 pub extern "C" fn buang(p: i64) {
     let (vm, basis) = konteks();
-    if let Some(v) = vm.stack.get_mut(basis + p as usize) { *v = VmValue::Nil; }
+    let Some(v) = vm.stack.get_mut(basis + p as usize) else { return };
+    if skalar(v) { return unsafe { std::ptr::write(v, VmValue::Nil) }; }
+    // Struct milik tunggal berisi skalar: disimpan untuk `bangun` berikutnya, bukan dibebaskan.
+    if let VmValue::Map(m) = v {
+        if matches!(m.label, crate::vm::value::Label::Struct(_)) && matches!(crate::vm::value::Peta::isi_tunggal(m),
+            Some(crate::vm::peta::IsiPeta::Rapat { nilai, .. }) if nilai.iter().all(skalar)) {
+            let VmValue::Map(m) = std::mem::replace(v, VmValue::Nil) else { unreachable!("baru diperiksa") };
+            CADANGAN_STRUCT.with(|c| c.set(Some(m)));
+            return;
+        }
+    }
+    *v = VmValue::Nil;
 }
 
 /// Truthiness posisi `p` (`VmValue::is_truthy`); `lepas` = posisinya dibuang sesudahnya.

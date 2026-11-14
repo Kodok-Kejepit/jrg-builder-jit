@@ -2342,3 +2342,45 @@ fn field_banyak_polimorf_sama_dengan_vm() {
     let j = jalankan(FIELD_BANYAK_POLIMORF, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
     assert!(j.stderr.contains("dikompilasi: jumlah, main"), "{}", j.stderr);
 }
+
+/// Cadangan struct (`buang` -> `bangun`): salinan yang disimpan di larik sebelum dilepas tetap utuh, field teks,
+/// tipe lain sebentuk, dict sebentuk, dan struct yang diubah sesudah dipakai ulang — sama dengan `--vm`.
+const CADANGAN_STRUCT: &str = r#"
+package main
+struct R { pub a: int, pub b: float }
+struct S { pub a: int, pub b: float }
+struct T { pub a: int, pub b: string }
+fn nilai(r: R) -> float { (r.a as float) + r.b }
+pub fn main() {
+    var simpan = []
+    var tot = 0.0
+    for i in 0..800 {
+        let r = R { a: i, b: 0.5 }
+        tot = tot + nilai(r)
+        if (i % 100 == 0) { simpan = simpan + [r] }
+        let s = S { a: i * 2, b: 1.5 }
+        tot = tot + (s.a as float) + s.b
+        let t = T { a: i, b: "x" + str(i % 3) }
+        if (i % 200 == 0) { wok(t.b) }
+        let d = dict { a: i, b: 2.5 }
+        tot = tot + d["b"]
+        var m = R { a: 1, b: 1.0 }
+        m.a = m.a + i
+        tot = tot + nilai(m)
+    }
+    wok(tot)
+    for k, r in simpan { wok(k, r.a, r.b) }
+}
+"#;
+
+#[test]
+fn cadangan_struct_tidak_teramati() {
+    let v = jalankan(CADANGAN_STRUCT, &["--vm"], &[]);
+    assert!(v.sukses && v.stdout.ends_with("7 700 0.5"), "{}", v.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(CADANGAN_STRUCT, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(CADANGAN_STRUCT, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
+    assert!(j.stderr.contains("dikompilasi: main, nilai"), "{}", j.stderr);
+}
