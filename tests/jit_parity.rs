@@ -2023,3 +2023,55 @@ fn field_sebaris_jatuh_ke_pembantu_bila_tak_pasti() {
     let baris = j.stderr.lines().find(|l| l.contains("dikompilasi:")).unwrap_or("");
     assert!(baris.contains("main") && baris.contains("baca"), "main/baca tidak dikompilasi:\n{}", j.stderr);
 }
+
+/// Struct yang langsung dikembalikan memakai ulang lokal sebentuk milik tunggal (J6 langkah 46). Yang tidak boleh
+/// teramati: salinan penerima yang masih dipegang pemanggil tetap utuh, tipe lain bernama field sama tidak ikut,
+/// struct yang memuat `self` tidak menimpa `self`, sel tangkapan tidak dipakai, dan deopt di tengahnya.
+const PAKAI_ULANG: &str = r#"
+package main
+struct P { pub x: int, pub y: f64 }
+struct Q { pub x: int, pub y: f64 }
+struct N { pub isi: P, pub n: int }
+impl P {
+    fn maju(self, d: f64) -> P { return P { x: self.x + 1, y: self.y + d } }
+    fn jadi_q(self) -> Q { return Q { x: self.x, y: self.y } }
+    fn bungkus(self) -> N { return N { isi: self, n: self.x } }
+}
+fn gabung(a: P, b: P) -> P { return P { x: a.x + b.x, y: a.y * b.y } }
+pub fn main() {
+    var p = P { x: 0, y: 0.5 }
+    var simpan = []
+    for i in 0..400 {
+        if (i % 100 == 0) { let lama = p; p = p.maju(0.25); simpan = arr::push(simpan, lama) } else { p = p.maju(0.25) }
+        if (i == 300) { p = P { x: 9223372036854775000, y: p.y } }
+    }
+    wok(p, simpan)
+    var q = Q { x: 0, y: 0.0 }
+    var n = N { isi: P { x: 0, y: 0.0 }, n: 0 }
+    var g = P { x: 1, y: 1.0 }
+    for i in 0..300 {
+        q = p.jadi_q()
+        n = P { x: i, y: 2.0 }.bungkus()
+        g = gabung(P { x: i, y: 1.5 }, P { x: 2, y: 2.0 })
+    }
+    wok(q, n, g)
+    var c = P { x: 5, y: 1.0 }
+    let lihat = || c.x
+    var s = 0
+    for i in 0..300 { c = c.maju(1.0); s = s + lihat() }
+    wok(c, s)
+}
+"#;
+
+#[test]
+fn struct_dipakai_ulang_tidak_teramati() {
+    let v = jalankan(PAKAI_ULANG, &["--vm"], &[]);
+    assert!(v.sukses, "{}", v.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(PAKAI_ULANG, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(PAKAI_ULANG, &["--jit"], &[STRES, ACAK, ("JRG_JIT_LOG", "ringkas")]);
+    let baris = j.stderr.lines().find(|l| l.contains("dikompilasi:")).unwrap_or("");
+    assert!(baris.contains("P::maju") && baris.contains("gabung"), "maju/gabung tidak dikompilasi:\n{}", j.stderr);
+}

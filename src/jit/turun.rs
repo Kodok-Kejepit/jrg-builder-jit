@@ -1089,6 +1089,10 @@ pub fn turunkan(
                 use super::lambat::SitusBangun;
                 let situs = SitusBangun::bocor(match ins.op {
                     OpCode::BuildStruct => match &f.chunk.constants[a] {
+                        // Langsung dikembalikan: lokal bingkai ini yang sebentuk dan milik tunggal boleh dipakai ulang.
+                        crate::vm::value::VmValue::Map(p) if kode.get(ip + 1).is_some_and(|i| i.op == OpCode::Return)
+                            && matches!(r.cara.get(ip + 1), Some(Cara::KembaliNilai)) =>
+                            SitusBangun::StrukturUlang(p.label.clone(), p.bentuk().expect("dijamin layak.rs")),
                         crate::vm::value::VmValue::Map(p) => SitusBangun::Struktur(p.label.clone(), p.bentuk().expect("dijamin layak.rs")),
                         _ => unreachable!("dijamin layak.rs"),
                     },
