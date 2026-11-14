@@ -57,6 +57,25 @@ fn tumbuh(vm: &mut Vm, i: usize) {
     }
 }
 
+/// `Vec::truncate` untuk bingkai callee: skalar tanpa destruktor dilewati tanpa memanggil `drop_glue`. Panjangnya
+/// dipendekkan lebih dulu, jadi destruktor yang panik membocorkan sisanya, bukan melepasnya dua kali.
+#[inline(always)]
+fn potong(stack: &mut Vec<VmValue>, n: usize) {
+    let len = stack.len();
+    if n >= len { return; }
+    unsafe {
+        stack.set_len(n);
+        let p = stack.as_mut_ptr();
+        for k in n..len {
+            let v = &mut *p.add(k);
+            if !matches!(v, VmValue::Nil | VmValue::Unit | VmValue::Bool(_) | VmValue::Int(_) | VmValue::Rune(_)
+                | VmValue::Float(_) | VmValue::Ptr(_)) {
+                std::ptr::drop_in_place(v);
+            }
+        }
+    }
+}
+
 /// Satu `match` atas jenisnya (sama artinya dengan `skalar_kode(j.kode())`, tanpa pembandingan `Lebar` dan
 /// kode antara): dipanggil per posisi di `bangun`, `masuk`, `bawaan`.
 #[inline(always)]
@@ -372,7 +391,7 @@ pub extern "C" fn keluar_ringan(st: i64, hasil: i64, titip: *const [usize; 9]) -
     };
     KONTEKS.with(|k| k.set((vm, basis)));
     // Hasilnya tepat di slot callee, juga kalau stack belum sepanjang itu (`masuk_ringan` tidak memanjangkannya).
-    vm.stack.truncate(slot);
+    potong(&mut vm.stack, slot);
     while vm.stack.len() < slot { vm.stack.push(VmValue::Nil); }
     vm.catat_hasil(&v);
     vm.stack.push(v);
