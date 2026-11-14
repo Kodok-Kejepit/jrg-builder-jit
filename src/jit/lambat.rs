@@ -776,6 +776,40 @@ fn lihat_lokal<T>(slot: i64, f: impl FnOnce(&VmValue) -> T) -> Option<T> {
     })
 }
 
+/// Pola-pola satu rantai lengan `match` (`turun::rantai_pola`), dicoba berurutan oleh `pola_pilih`.
+pub struct RantaiPola { situs: Box<[&'static SitusPola]> }
+
+impl RantaiPola {
+    /// Hidup selama kode yang memakainya (kode JIT tidak pernah dibebaskan).
+    pub fn bocor(situs: Vec<&'static SitusPola>) -> &'static RantaiPola {
+        Box::leak(Box::new(RantaiPola { situs: situs.into_boxed_slice() }))
+    }
+}
+
+/// Rantai lengan atas lokal `slot`: indeks lengan pertama yang cocok, banyaknya lengan kalau tidak ada,
+/// `1000 + k` kalau pola lengan ke-`k` galat (lengan sebelumnya tidak cocok). Urutannya sama dengan
+/// `pola_lokal` per lengan; lokal yang tak terbaca = galat di lengan pertama (VM yang menjalankan).
+pub extern "C" fn pola_pilih(slot: i64, rantai: *const RantaiPola) -> i32 {
+    let rantai = unsafe { &*rantai };
+    let (vm, basis) = konteks();
+    let Some(v) = vm.stack.get(basis + slot as usize) else { return 1000 };
+    let pilih = |v: &VmValue| {
+        for (k, situs) in rantai.situs.iter().enumerate() {
+            if situs.tolak(v) { continue; }
+            match situs.cocok(v) {
+                Ok(true) => return k as i32,
+                Ok(false) => {}
+                Err(_) => return 1000 + k as i32,
+            }
+        }
+        rantai.situs.len() as i32
+    };
+    match v {
+        VmValue::Cell(c) => pilih(&c.lock().unwrap_or_else(|p| p.into_inner())),
+        v => pilih(v),
+    }
+}
+
 /// `LoadLocal` + `CekEnum` tanpa menyalin lokalnya: 0/1 = hasil; 2 = VM yang menjalankan keduanya.
 pub extern "C" fn pola_lokal(slot: i64, situs: *const SitusPola) -> i32 {
     let situs = unsafe { &*situs };

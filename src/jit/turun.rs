@@ -83,7 +83,7 @@ pub fn tanda_tangan_umum(cc: CallConv, param: &[Type], hasil: Option<Type>) -> S
 pub struct ImporLambat {
     pub langkah: FuncId, pub muat: FuncId, pub buang: FuncId, pub benar: FuncId, pub buka: FuncId,
     pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
-    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub payload_angka: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub metode_tukar: FuncId, pub metode_lokal: FuncId, pub karakter_lokal: FuncId, pub konteks_mentah: FuncId, pub masuk_ringan: FuncId, pub keluar_ringan: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
+    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub payload_angka: FuncId, pub pola_pilih: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub metode_tukar: FuncId, pub metode_lokal: FuncId, pub karakter_lokal: FuncId, pub konteks_mentah: FuncId, pub masuk_ringan: FuncId, pub keluar_ringan: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
@@ -295,6 +295,54 @@ fn mati_sesudah(f: &VmFunction, r: &Rencana, ip: usize, a: usize) -> bool {
         j += 1;
     }
     false
+}
+
+/// Rantai lengan `match` atas satu lokal: kepala tiap lengan `LoadLocal a; CekEnum d; JumpFalse x` (digabung,
+/// tanpa sasaran lompat lain di antaranya) dan lengan berikutnya di ujung `Jump` tanpa syarat dari `x`, tiap
+/// titiknya berpendahulu tunggal. Hasil: ip kepala -> (nomor rantai, urutan); daftar ip kepala per rantai.
+fn rantai_pola(f: &VmFunction, r: &Rencana) -> (std::collections::HashMap<usize, (usize, usize)>, Vec<Vec<usize>>) {
+    use OpCode::*;
+    let kode = &f.chunk.code;
+    let n = kode.len();
+    let jalan = |ip: usize| r.keadaan.get(ip).is_some_and(|k| k.is_some()) && !r.keluar[ip] && r.wujud[ip].is_empty();
+    // Pendahulu tiap ip: sasaran lompat, tujuan `Cabang`, `TipeLipat`/`TipeSama`, dan jatuhan.
+    let mut datang = vec![0u32; n + 1];
+    for ip in 0..n {
+        if !jalan(ip) { continue; }
+        let op = kode[ip].op;
+        if matches!(op, Jump | JumpFalse | JumpTrue | JumpFalseKeep | JumpTrueKeep) {
+            datang[(kode[ip].arg as usize).min(n)] += 1;
+        }
+        if let Cara::Cabang { tujuan, .. } = &r.cara[ip] { for &t in tujuan.iter() { datang[t.min(n)] += 1; } }
+        if matches!(r.cara[ip], Cara::TipeLipat(_) | Cara::TipeSama(_)) { datang[(ip + 3).min(n)] += 1; }
+        if !matches!(op, Jump | Return | ReturnNil) { datang[ip + 1] += 1; }
+    }
+    let kepala = |h: usize| -> Option<usize> {
+        (h + 2 < n && kode[h].op == LoadLocal && r.cara.get(h + 1) == Some(&Cara::Pola) && kode[h + 2].op == JumpFalse
+            && (h..h + 3).all(jalan) && !r.pemimpin[h + 1] && !r.pemimpin[h + 2]
+            && (r.cara[h] == Cara::Muat || (r.cara[h] == Cara::Salinan
+                && matches!(r.keadaan[h + 1].as_ref().and_then(|k| k.last()), Some(Jenis::Salinan(_))))))
+            .then(|| kode[h + 2].arg as usize)
+    };
+    let mut peta = std::collections::HashMap::new();
+    let mut rantai: Vec<Vec<usize>> = Vec::new();
+    for h in 0..n {
+        if peta.contains_key(&h) || kepala(h).is_none() { continue; }
+        let a = kode[h].arg;
+        let mut daftar = vec![h];
+        let mut kini = h;
+        while let Some(mut x) = kepala(kini) {
+            while x < n && kode[x].op == Jump && datang[x] == 1 && jalan(x) { x = kode[x].arg as usize; }
+            if x >= n || datang[x] != 1 || kode[x].arg != a || kepala(x).is_none() || daftar.contains(&x) { break; }
+            daftar.push(x);
+            kini = x;
+        }
+        if daftar.len() >= 2 {
+            for (k, &ip) in daftar.iter().enumerate() { peta.insert(ip, (rantai.len(), k)); }
+            rantai.push(daftar);
+        }
+    }
+    (peta, rantai)
 }
 
 /// Lanjut di blok baru kalau `benar`, selain itu ke `lambat`.
@@ -831,8 +879,8 @@ pub fn turunkan(
     let [f_langkah, f_muat, f_buang, f_benar, f_buka, f_taruh, f_ambil, f_simpan, f_pola, f_payload] =
         [il.langkah, il.muat, il.buang, il.benar, il.buka, il.taruh, il.ambil, il.simpan, il.pola, il.payload]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let [f_pola_lokal, f_payload_lokal, f_buka_lokal, f_iter_ada, f_maju, f_cabang, f_sebar, f_payload_angka] =
-        [il.pola_lokal, il.payload_lokal, il.buka_lokal, il.iter_ada, il.maju, il.langkah_cabang, il.sebar, il.payload_angka]
+    let [f_pola_lokal, f_payload_lokal, f_buka_lokal, f_iter_ada, f_maju, f_cabang, f_sebar, f_payload_angka, f_pola_pilih] =
+        [il.pola_lokal, il.payload_lokal, il.buka_lokal, il.iter_ada, il.maju, il.langkah_cabang, il.sebar, il.payload_angka, il.pola_pilih]
         .map(|id| m.declare_func_in_func(id, b.func));
     let [f_pindah, f_muat_global, f_simpan_global, f_indeks, f_field, f_masuk, f_keluar, f_salin, f_tukar, f_cek_metode, f_bawaan, f_biner] =
         [il.pindah, il.muat_global, il.simpan_global, il.indeks, il.field, il.masuk, il.keluar, il.salin, il.tukar, il.cek_metode, il.bawaan, il.biner]
@@ -848,6 +896,14 @@ pub fn turunkan(
     b.ins().brif(terlalu, dalam, &[], mulai, &[]);
     b.switch_to_block(mulai);
     // Jalur sebaris larik (`tata_letak`): alamat VM dan basis dibaca sekali, cuma di fungsi yang memakainya.
+    // Rantai lengan `match`: satu `pola_pilih` di lengan pertama, lengan lain membandingkan indeksnya.
+    let (rantai_peta, rantai_daftar) = rantai_pola(f, r);
+    let rantai_var: Vec<Variable> = rantai_daftar.iter().map(|_| b.declare_var(types::I64)).collect();
+    let rantai_situs: Vec<i64> = rantai_daftar.iter().map(|d| {
+        let situs: Vec<&'static super::lambat::SitusPola> = d.iter()
+            .map(|&h| super::lambat::SitusPola::bocor(&f.chunk.constants[kode[h + 1].arg as usize])).collect();
+        super::lambat::RantaiPola::bocor(situs) as *const _ as i64
+    }).collect();
     let sebaris = super::tata_letak::tata_letak().filter(|_| kode.iter().enumerate()
         .any(|(i, x)| r.keadaan[i].as_ref().is_some_and(|s| !r.keluar[i] && match x.op {
             OpCode::IndeksLokal | OpCode::TulisIndexLokal => true,
@@ -1017,6 +1073,25 @@ pub fn turunkan(
                     continue;
                 }
                 match r.cara.get(ip + 1) {
+                    Some(Cara::Pola) if gabung && rantai_peta.contains_key(&ip) => {
+                        let (ri, kk) = rantai_peta[&ip];
+                        if kk == 0 {
+                            let rp = i64c(&mut b, rantai_situs[ri]);
+                            let c = b.ins().call(f_pola_pilih, &[d, rp]);
+                            let c = b.inst_results(c)[0];
+                            let c = b.ins().uextend(types::I64, c);
+                            b.def_var(rantai_var[ri], c);
+                        }
+                        let idx = b.use_var(rantai_var[ri]);
+                        // Galat jumlah sub-pola di lengan ini: deopt di sini, VM yang melapor (lengan sebelumnya tidak cocok).
+                        let salah = b.ins().icmp_imm_u(IntCC::Equal, idx, 1000 + kk as i64);
+                        jaga(&mut b, &k, &var, salah, ip, s);
+                        let v = b.ins().icmp_imm_u(IntCC::Equal, idx, kk as i64);
+                        let v = b.ins().uextend(types::I64, v);
+                        b.def_var(var[t], v);
+                        lewati = true;
+                        continue;
+                    }
                     Some(Cara::Pola) if gabung => {
                         let situs = super::lambat::SitusPola::bocor(&f.chunk.constants[kode[ip + 1].arg as usize]);
                         let desc = i64c(&mut b, situs as *const _ as i64);
@@ -1239,6 +1314,25 @@ pub fn turunkan(
                 b.ins().brif(v, ya, &[], tidak, &[]);
                 isi_tepi(&mut b, &k, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
                 terbuka = false;
+                continue;
+            }
+            // Lengan rantai atas salinan maya (`rantai_pola`; kepalanya `LoadLocal` di `ip - 1`).
+            Cara::Pola if ip > 0 && rantai_peta.contains_key(&(ip - 1)) && matches!(s[t - 1], Jenis::Salinan(_)) => {
+                let Jenis::Salinan(l) = s[t - 1] else { unreachable!("baru diperiksa") };
+                let (ri, kk) = rantai_peta[&(ip - 1)];
+                if kk == 0 {
+                    let (lv, rp) = (i64c(&mut b, l as i64), i64c(&mut b, rantai_situs[ri]));
+                    let c = b.ins().call(f_pola_pilih, &[lv, rp]);
+                    let c = b.inst_results(c)[0];
+                    let c = b.ins().uextend(types::I64, c);
+                    b.def_var(rantai_var[ri], c);
+                }
+                let idx = b.use_var(rantai_var[ri]);
+                let salah = b.ins().icmp_imm_u(IntCC::Equal, idx, 1000 + kk as i64);
+                jaga(&mut b, &k, &var, salah, ip, s);
+                let v = b.ins().icmp_imm_u(IntCC::Equal, idx, kk as i64);
+                let v = b.ins().uextend(types::I64, v);
+                b.def_var(var[t - 1], v);
                 continue;
             }
             Cara::Pola => {

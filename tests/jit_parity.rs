@@ -2502,3 +2502,58 @@ fn payload_angka_sama_dengan_vm() {
     let j = jalankan(PAYLOAD_ANGKA, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
     assert!(j.stderr.contains("dikompilasi: ambil, main, pecahan"), "{}", j.stderr);
 }
+
+/// Rantai lengan `match` (`rantai_pola`/`pola_pilih`): lengan berpenjaga dan pola alternatif (rantai putus di
+/// titik berpendahulu dua), payload tuple diikat satu nama, dan galat jumlah sub-pola di lengan kelima sesudah
+/// empat lengan tidak cocok — jawaban dan tempat galatnya sama dengan `--vm`.
+const RANTAI_POLA: &str = r#"
+package main
+enum Op { Push(int), Add(int), Neg, Swap, Stop(int, int) }
+fn langkah(o: Op, acc: int) -> int {
+    match o {
+        Op::Push(k) if k > 50 => k * 2,
+        Op::Push(k) => k,
+        Op::Add(k) if k % 2 == 0 => acc + k,
+        Op::Add(k) => acc - k,
+        Op::Neg | Op::Swap => -acc,
+        Op::Stop(a, b) => a * b,
+    }
+}
+fn salah(o: Op) -> int {
+    match o {
+        Op::Neg => 1,
+        Op::Swap => 2,
+        Op::Push(k) => k,
+        Op::Stop(a) => 7,
+        Op::Add(x, y) => x,
+    }
+}
+pub fn main() {
+    var acc = 1
+    for i in 0..1200 {
+        let o = if (i % 5 == 0) { Op::Push(i % 100) } else if (i % 5 == 1) { Op::Add(i % 9) } else if (i % 5 == 2) { Op::Neg } else if (i % 5 == 3) { Op::Swap } else { Op::Stop(i % 7, 3) }
+        acc = (langkah(o, acc) + acc) % 100003
+    }
+    wok(acc)
+    var s = 0
+    for i in 0..600 {
+        let o = if (i % 4 == 0) { Op::Neg } else if (i % 4 == 1) { Op::Swap } else if (i % 4 == 2) { Op::Push(i) } else { Op::Stop(i, 2) }
+        s = s + salah(o)
+    }
+    wok(s)
+    s = s + salah(Op::Add(3))
+    wok(s)
+}
+"#;
+
+#[test]
+fn rantai_pola_sama_dengan_vm() {
+    let v = jalankan(RANTAI_POLA, &["--vm"], &[]);
+    assert!(v.stdout == "6\n46500" && v.stderr.contains("butuh 1 sub-pola, dapat 2"), "{} {}", v.stdout, v.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(RANTAI_POLA, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(RANTAI_POLA, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
+    assert!(j.stderr.contains("dikompilasi: langkah, main, salah"), "{}", j.stderr);
+}
