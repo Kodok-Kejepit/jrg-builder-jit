@@ -746,6 +746,11 @@ include!("bersama/paritas_llvm.rs");
 // ───────────────────────────────────────────
 
 const BELUM_DIDUKUNG_LLVM: &[(&str, &str, &str)] = &[
+    // Fase AMAN-43: acuan menjawab struct ber-field tambahan; dulu kalimat pertamanya "tipe `unit`
+    // tidak punya method `y`" dan kalimat yang benar menunjuk `<lapis>`, bukan panggilan pemakai.
+    ("json::merge atas struct ditolak di situs panggil",
+     "package main\nstruct P { pub x: int, pub y: int }\npub fn main() { let q = json::merge(dict { y: 2 }, P { x: 1, y: 0 })\n wok(q.y) }",
+     "`json::merge` atas struct `P` belum bisa di backend LLVM"),
     // Fase POTONG-BERTAG (#848): tipe elemennya tidak diketahui dari tag; dulu ditolak saat kompilasi.
     ("potong: array di dalam nilai bertag",
      "package main\npub fn main() { let v = len(env::args()) > 99 $ 5 : [1, 2, 3]\n wok(v[0:2]) }",
@@ -876,6 +881,17 @@ pub fn main() {
 
 /// `(nama, program, kata-kunci-interpreter, kata-kunci-llvm)`
 const DITOLAK_INTERP_DAN_LLVM: &[(&str, &str, &str, &str)] = &[
+    // Keputusan pemilik 2026-11-14: `let`/`const` LOKAL bernama varian telanjang milik berkas ditolak parser,
+    // seperti `fn`/`const`/`var` tingkat atas — dulu `let A = E::A` lolos tanpa mengikat, `const` mengikat.
+    ("let lokal bernama varian unit milik berkas", "enum E { A, B }\nlet A = E::A\nwok(\"ok\")\n",
+     "`A` sudah jadi nama varian `E::A` di berkas ini, sekarang sebagai `let`", "`A` sudah jadi nama varian `E::A` di berkas ini, sekarang sebagai `let`"),
+    ("const lokal bernama varian unit milik berkas", "package main\nenum W { Merah, Isi(int) }\npub fn main() { const Merah = 5; wok(Merah) }\n",
+     "`Merah` sudah jadi nama varian `W::Merah` di berkas ini, sekarang sebagai `const`", "`Merah` sudah jadi nama varian `W::Merah` di berkas ini, sekarang sebagai `const`"),
+    ("let dan const lokal bernama varian ber-payload, di closure dan fungsi bersarang", "package main\nenum W { Merah, Isi(int) }\nfn f() { fn g() { let Isi = 2; Isi }  g() }\npub fn main() { let h = || { const Isi = 1; Isi }\n wok(h(), f()) }\n",
+     "`Isi` sudah jadi nama varian `W::Isi` di berkas ini, sekarang sebagai `let`", "`Isi` sudah jadi nama varian `W::Isi` di berkas ini, sekarang sebagai `const`"),
+    ("var dan := lokal bernama varian milik berkas (keputusan 2026-11-15, satu aturan untuk semua deklarasi lokal)",
+     "package main\nenum E { A, B(int) }\npub fn main() { var A = 5\n B := 7\n wok(A, B) }\n",
+     "`A` sudah jadi nama varian `E::A` di berkas ini, sekarang sebagai `var`", "`B` sudah jadi nama varian `E::B` di berkas ini, sekarang sebagai `:=`"),
     // Fase KUNCI-LLVM (#821): path yang tidak ada, dipanggil maupun sebagai nilai, kalimat acuan beserta sarannya.
     ("path: salah ketik builtin disarankan", "package main\npub fn main() {\n wok(math::sqr(4.0))\n}",
      "`math::sqr` tidak ditemukan — maksudnya `math::sqrt`?", "`math::sqr` tidak ditemukan — maksudnya `math::sqrt`?"),

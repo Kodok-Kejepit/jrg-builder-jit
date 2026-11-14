@@ -195,23 +195,28 @@ impl Codegen {
         for (i, arm) in arms.iter().enumerate() {
             let next_lbl = self.fresh_label("match.next.");
             self.push_scope();
-            self.try_arm(arm, &splace, &sty, &next_lbl)?;
-            let bv = match &arm.body {
-                MatchBody::Expr(e) => self.codegen_expr(e, if need_result { Some(&result_ty) } else { None })?,
-                MatchBody::Block(b) => self.codegen_block_expr(b, if need_result { Some(&result_ty) } else { None })?,
-            };
-            if !need_result && rekam && !self.is_terminated() && !matches!(bv.ty, JrgType::Unit | JrgType::Never) {
-                self.lengan_terlihat = Some(match &self.lengan_terlihat {
-                    Some(lama) => super::codegen_any::satukan_jenis(lama, &bv.ty),
-                    None => bv.ty.clone(),
-                });
-            }
-            if !self.is_terminated() {
-                if need_result {
-                    let bv2 = self.coerce(&bv, &result_ty);
-                    self.emit(format!("store {} {}, ptr {}", result_ty.llvm_ty(), bv2.text, result_slot.clone().unwrap()));
+            // Lengan yang PASTI tidak cocok (`Some(n)` atas dict) tidak diturunkan: pengikatnya tidak pernah ada.
+            if !arm.patterns.is_empty() && arm.patterns.iter().all(|p| Self::pola_varian_mustahil(p, &sty)) {
+                self.terminate(format!("br label %{}", next_lbl));
+            } else {
+                self.try_arm(arm, &splace, &sty, &next_lbl)?;
+                let bv = match &arm.body {
+                    MatchBody::Expr(e) => self.codegen_expr(e, if need_result { Some(&result_ty) } else { None })?,
+                    MatchBody::Block(b) => self.codegen_block_expr(b, if need_result { Some(&result_ty) } else { None })?,
+                };
+                if !need_result && rekam && !self.is_terminated() && !matches!(bv.ty, JrgType::Unit | JrgType::Never) {
+                    self.lengan_terlihat = Some(match &self.lengan_terlihat {
+                        Some(lama) => super::codegen_any::satukan_jenis(lama, &bv.ty),
+                        None => bv.ty.clone(),
+                    });
                 }
-                self.terminate(format!("br label %{}", merge_lbl));
+                if !self.is_terminated() {
+                    if need_result {
+                        let bv2 = self.coerce(&bv, &result_ty);
+                        self.emit(format!("store {} {}, ptr {}", result_ty.llvm_ty(), bv2.text, result_slot.clone().unwrap()));
+                    }
+                    self.terminate(format!("br label %{}", merge_lbl));
+                }
             }
             self.pop_scope();
             self.start_block(next_lbl);
@@ -401,10 +406,14 @@ impl Codegen {
     // ── binding-free condition (used for `pat1 | pat2 | ...`) ────────────
 
     fn pattern_condition_only(&mut self, pat: &Pattern, place: &str, ty: &JrgType) -> Result<String, String> {
+        if let JrgType::Kotak(t) = ty {
+            let p = self.isi_kotak(place);
+            return self.pattern_condition_only(pat, &p, t);
+        }
         match pat {
             Pattern::Wildcard(_) => Ok("true".to_string()),
             Pattern::Ident { name, .. } if name == "_" => Ok("true".to_string()),
-            Pattern::Literal { lit, .. } => self.literal_pattern_cond(lit, place, ty),
+            Pattern::Literal { lit, span } => self.literal_pattern_cond(lit, place, ty, *span),
             Pattern::Range { lo, hi, inclusive, .. } => self.range_pattern_cond(lo, hi, *inclusive, place, ty),
             Pattern::Ref { inner, .. } => self.pattern_condition_only(inner, place, ty),
             Pattern::Or { pats, .. } => {
@@ -515,8 +524,8 @@ impl Codegen {
                 Ok(())
             }
             Pattern::Ref { inner, .. } => self.test_pattern(inner, place, ty, on_fail),
-            Pattern::Literal { lit, .. } => {
-                let cond = self.literal_pattern_cond(lit, place, ty)?;
+            Pattern::Literal { lit, span } => {
+                let cond = self.literal_pattern_cond(lit, place, ty, *span)?;
                 self.branch_or_fail(cond, on_fail);
                 Ok(())
             }
@@ -689,6 +698,16 @@ impl Codegen {
         }
     }
 
+    /// Pola varian atas nilai yang tipenya pasti bukan enum (bukan bertag atau kotak) — acuannya tidak pernah cocok.
+    fn pola_varian_mustahil(pat: &Pattern, ty: &JrgType) -> bool {
+        match pat {
+            Pattern::Enum { .. } => !matches!(ty, JrgType::Enum(_) | JrgType::Any | JrgType::Kotak(_)),
+            Pattern::Binding { inner, .. } => Self::pola_varian_mustahil(inner, ty),
+            Pattern::Or { pats, .. } => !pats.is_empty() && pats.iter().all(|p| Self::pola_varian_mustahil(p, ty)),
+            _ => false,
+        }
+    }
+
     fn test_enum_tag(&mut self, place: &str, ty: &JrgType, variant: &EnumVariantLayout, on_fail: &str) {
         let tagp = self.fresh("etp.");
         self.emit(format!("{} = getelementptr {}, ptr {}, i32 0, i32 0", tagp, ty.llvm_ty(), place));
@@ -737,69 +756,10 @@ impl Codegen {
         Ok(r)
     }
 
-    fn literal_pattern_cond(&mut self, lit: &LitKind, place: &str, ty: &JrgType) -> Result<String, String> {
-        if *ty == JrgType::Any {
-            let bulat = matches!(lit, LitKind::Int(_));
-            return self.kondisi_pola_any(lit, bulat, place, &|cg, p, t| cg.literal_pattern_cond(lit, p, t));
-        }
+    fn literal_pattern_cond(&mut self, lit: &LitKind, place: &str, ty: &JrgType, span: Span) -> Result<String, String> {
         let v = self.load_place(place, ty);
-        match lit {
-            LitKind::Int(n) => {
-                if ty.is_float() {
-                    let target = fmt_hexfloat(*n as f64);
-                    let r = self.fresh("plc.");
-                    self.emit(format!(
-                        "{} = fcmp{} oeq {} {}, {}",
-                        r,
-                        self.fast_math_flag(),
-                        ty.llvm_ty(),
-                        v.text,
-                        target
-                    ));
-                    Ok(r)
-                } else {
-                    let r = self.fresh("plc.");
-                    self.emit(format!("{} = icmp eq {} {}, {}", r, ty.llvm_ty(), v.text, n));
-                    Ok(r)
-                }
-            }
-            LitKind::Float(f) => {
-                let target = fmt_hexfloat(*f);
-                let r = self.fresh("plc.");
-                self.emit(format!(
-                    "{} = fcmp{} oeq {} {}, {}",
-                    r,
-                    self.fast_math_flag(),
-                    ty.llvm_ty(),
-                    v.text,
-                    target
-                ));
-                Ok(r)
-            }
-            LitKind::Bool(b) => {
-                let r = self.fresh("plc.");
-                self.emit(format!("{} = icmp eq i8 {}, {}", r, v.text, if *b { 1 } else { 0 }));
-                Ok(r)
-            }
-            LitKind::Str(s) | LitKind::RawStr(s) => {
-                self.ensure_extern("declare i32 @jrg_str_eq(ptr, i64, ptr, i64)", "jrg_str_eq");
-                let sv = self.intern_string(s);
-                let (ap, al) = self.split_str(&v);
-                let (bp, bl) = self.split_str(&sv);
-                let r0 = self.fresh("plc0.");
-                self.emit(format!("{} = call i32 @jrg_str_eq(ptr {}, i64 {}, ptr {}, i64 {})", r0, ap, al, bp, bl));
-                let r = self.fresh("plc.");
-                self.emit(format!("{} = icmp ne i32 {}, 0", r, r0));
-                Ok(r)
-            }
-            LitKind::Rune(c) => {
-                let r = self.fresh("plc.");
-                self.emit(format!("{} = icmp eq {} {}, {}", r, ty.llvm_ty(), v.text, *c as u32));
-                Ok(r)
-            }
-            LitKind::Imag(_) => Err("pola bilangan kompleks tidak didukung".into()),
-            LitKind::Nil => Err("pola `nil` tidak didukung".into()),
-        }
+        let sama = self.bandingkan_eq_literal(v, lit, span)?;
+        Ok(self.to_i1(&sama))
     }
 
     fn range_pattern_cond(&mut self, lo: &Option<Box<Pattern>>, hi: &Option<Box<Pattern>>, inclusive: bool, place: &str, ty: &JrgType) -> Result<String, String> {

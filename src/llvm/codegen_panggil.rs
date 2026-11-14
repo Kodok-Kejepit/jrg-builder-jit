@@ -301,6 +301,24 @@ impl Codegen {
                 let isi = self.lokal_sementara(ptr, v.ty, span);
                 if let Some(kunci) = kunci { return self.call_named_function(&kunci, &[isi], expected, span); }
             }
+            // Acuan menjawab STRUCT yang boleh membawa field tambahan dari dict; tata letak struct di sini
+            // tetap, jadi ditolak di situs panggil pemakai, bukan dari dalam lapis dengan tipe yang salah.
+            if ns == "json" && item == "merge" && args.len() == 2 {
+                for a in args {
+                    let n = match (a, self.peek_expr_type(a)) {
+                        (_, Some(JrgType::Struct(n))) => Some(n),
+                        (Expr::Struct { ty: crate::parser::TypeExpr::Named(nt), .. }, _)
+                            if nt.package.is_none() && self.tables.structs.contains_key(&nt.name) => Some(nt.name.clone()),
+                        _ => None,
+                    };
+                    if let Some(n) = n {
+                        return Err(crate::llvm::galat::tandai(span, format!(
+                            "`json::merge` atas struct `{0}` belum bisa di backend LLVM: hasilnya struct `{0}` yang bisa \
+                             membawa field tambahan, dan tata letak struct di sini tetap — ubah dulu jadi dict, \
+                             mis. `dict {{ ...p }}`", crate::ruang_tipe::bersih(&n))));
+                    }
+                }
+            }
             let pertama = args.first().and_then(|a| self.peek_expr_type(a));
             if let Some(kunci) = self.kunci_lapis_menurut(ns, item, pertama.as_ref()) {
                 // `rune` di `str::` adalah teks satu karakter, seperti acuan: `::str(r)` sebelum masuk lapis.
@@ -930,7 +948,12 @@ impl Codegen {
                 &["push", "contains", "sum", "reverse", "sort", "min", "max"];
             if METODE_ARR.contains(&method) {
                 let mut semua = Vec::with_capacity(args.len() + 1);
-                semua.push(obj.clone());
+                let penerima = if matches!(obj, Expr::Array { elems, .. } if elems.is_empty()) {
+                    obj.clone()
+                } else {
+                    self.lokal_sementara(optr.clone(), oty.clone(), span)
+                };
+                semua.push(penerima);
                 semua.extend(args.iter().cloned());
                 if let Some(r) = self.coba_builtin_arr(
                     &format!("arr::{}", method), &semua, span)
@@ -947,7 +970,7 @@ impl Codegen {
                 &["len", "is_empty", "has", "get", "keys", "values", "remove", "merge"];
             if METODE_DICT.contains(&method) {
                 let mut semua = Vec::with_capacity(args.len() + 1);
-                semua.push(obj.clone());
+                semua.push(self.lokal_sementara(optr.clone(), oty.clone(), span));
                 semua.extend(args.iter().cloned());
                 if let Some(r) = self.coba_builtin_dict(
                     &format!("dict::{}", method), &semua, None, span)

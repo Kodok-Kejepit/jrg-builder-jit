@@ -1,6 +1,10 @@
 // Tabel bersama `tests/llvm_parity.rs` dan `tests/jit_parity.rs`; disisipkan lewat `include!`.
 
 const GAGAL_SAAT_JALAN: &[(&str, &str, &str, &str)] = &[
+    // #1011: kanal tertutup ditolak di semua lengan `select` sebelum mencoba, juga di LLVM.
+    ("select: lengan kedua tertutup ditolak walau lengan pertama siap",
+     "let t = make_chan(int, 1)\nt.close()\nlet d = make_chan(int, 1)\nd <- 1\nwok(\"sebelum\")\nselect {\n    case x := <-d: { wok(\"tak boleh\", x) }\n    case y := <-t: { wok(\"tak boleh juga\", y) }\n}\n",
+     "sebelum", "channel sudah ditutup dan kosong: tidak akan ada nilai lagi"),
     // Fase SEBAR-VARIAN (#975): basis sebar yang tidak cocok dengan varian sasaran gagal saat jalan.
     ("sebar varian: field wajib tidak dibawa basis", "package main\nenum E { V { a: int, b: int }, W { a: int } }\npub fn main() {\n wok(\"mulai\")\n wok(E::V { a: 1, ...E::W { a: 3 } })\n}",
      "mulai", "varian `E::V` butuh field `b`"),
@@ -988,5 +992,31 @@ pub fn main() {
 }"#,
         "sebelum",
         "`8 << 200` — integer JRG cuma 128 bit",
+    ),
+    (
+        "handle: struct Ptr milik pengguna ditolak jawa::get",
+        r#"package main
+struct Ptr { pub id: int, pub kind: string }
+pub fn main() {
+    let asli = jawa::alloc(99)
+    let palsu = Ptr { id: 1, kind: "single" }
+    wok("sebelum", jawa::get(asli))
+    wok(jawa::get(palsu))
+}"#,
+        "sebelum 99",
+        "jawa::get: butuh Ptr (dari jawa::alloc/array/buffer), dapat `struct:Ptr`",
+    ),
+    (
+        "handle: menulis field .id pada handle asli tetap ditolak walau ada struct Ptr pengguna",
+        r#"package main
+struct Ptr { pub id: int, pub kind: string }
+pub fn main() {
+    let _p = Ptr { id: 1, kind: "single" }
+    var asli = jawa::alloc(99)
+    wok("sebelum")
+    asli.id = 2
+}"#,
+        "sebelum",
+        "`Ptr` adalah handle buatan pustaka — field `id` tidak bisa ditulis",
     ),
 ];

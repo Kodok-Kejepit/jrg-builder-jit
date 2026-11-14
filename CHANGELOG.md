@@ -8,6 +8,15 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
 
 ### Memutus
 
+- **`dok::serve` mendengar di `127.0.0.1` kalau alamatnya tidak ditulis** (dulu `0.0.0.0`). Server di belakang
+  proxy di mesin yang sama tetap jalan; untuk membukanya ke jaringan tulis `dok::serve(r, port, "0.0.0.0")`.
+- **WebSocket dari peramban ditolak 403 kalau host `Origin`-nya lain dari `Host`** (port boleh beda), supaya halaman
+  dari situs lain tidak bisa membuka koneksi atas nama pengunjung. Klien tanpa `Origin` tetap diterima.
+- **`select` dengan beberapa lengan yang siap sekaligus memilih secara acak** di semua mesin (dulu `--vm` dan
+  `--emit-llvm` selalu memilih yang pertama).
+- **`let`/`const` lokal yang bernama sama dengan varian enum milik berkasnya ditolak**, dengan kalimat yang sama
+  seperti di tingkat atas — nama telanjangnya selalu berarti varian.
+
 - **Klien HTTP (`http::`, `dok::http_request`) menolak kepala `Content-Length`, `Transfer-Encoding` dan
   `Connection` dari pemakai**, dan `Host` yang ditulis dua kali — keduanya dulu terkirim di samping milik klien
   sendiri, sehingga server dan proxy bisa membaca batas permintaan berbeda. `Host` yang ditulis sekali sekarang
@@ -170,6 +179,10 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
 
 ### Kinerja
 
+- **`let r = arr::pop(a)` lalu `a = r[0]`, dan `a, x = a.pop()`, sekarang linear** di interpreter dan `--vm`
+  (dulu menyalin seluruh larik tiap langkah: 16 000 pop 2,2 s → 38 ms).
+- `xml::parse` linear dalam jumlah atribut (160 ribu atribut 34 s → 0,24 s).
+
 - **`--vm` 2–28% lebih cepat** di kernel acuan: membaca dan menulis `a[i]` atas larik yang dimiliki satu variabel
   tidak lagi mengunci, `x + 1`/`i % k`/`a * b` atas bilangan bulat dan langkah maju `for` dikerjakan sebagai satu
   instruksi, dan memanggil fungsi tanpa `defer` tidak lagi membayar pemeriksaannya.
@@ -181,6 +194,24 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
 
 ### Diperbaiki
 
+- `wasm::muat`/`wasm::panggil` atas modul yang menyebut jumlah parameter, lokal atau cabang `br_table` raksasa
+  menjawab `Err`; dulu berkas 17 byte mematikan proses (alokasi 4 GB). Batasnya sama dengan Wasmtime.
+- Biner `--emit-llvm`: `json::merge` atas struct ditolak di baris panggilannya dengan jalan keluarnya
+  (`dict { ...p }`); dulu kalimatnya salah alamat.
+- Biner `--emit-llvm`: `const` lokal dan `fn` di dalam blok polos tidak lagi dibuang atau salah dibaca.
+- Pesan galat klien HTTP dan `url::parse` tidak lagi memuat sandi dari URL (`user:sandi@host` jadi `***@host`).
+
+- `struct Ptr`, `struct Task`, `struct DokRouter` (dan nama handle pustaka lain) yang dideklarasikan program sendiri
+  tidak lagi bisa memalsukan handle pustaka atau membuka tulis `.id` pada handle asli; `Task::spawn` dan `Future::new`
+  tetap bisa dipanggil dari berkas yang mendeklarasikan struct bernama sama.
+- Biner `--emit-llvm`: `var` modul array yang didorong elemen berjenis lain (`A = A.push(ubah())`), variabel `Result`
+  yang berganti jenis muatan (`r = Ok(1)` lalu `r = Ok("s")` atau `r = Ok(r)`), dan kunci dict bertipe `nil`, `array`,
+  `tuple`, `struct`, `enum`, atau `dict` sekarang berjalan sama dengan interpreter dan `--vm`; penerima method array
+  dan dict (`f().push(x)`, `A.push(ubah())`) dievaluasi tepat sekali di atas salinan yang aman dari mutasi argumen.
+- Keamanan jaringan dan pelayan HTTP: `dok::router_static` menolak tautan simbolik yang keluar dari folder dasar
+  (`fs::safe_join`, 403); `http::unduh` membatasi panjang dan jumlah baris kepala jawaban serta memeriksa penutup CRLF
+  tiap potongan `Transfer-Encoding: chunked`; `dok::ws_recv` menolak frame klien tanpa mask dan urutan fragmen yang
+  melanggar RFC 6455 (kode 1002).
 - `--vm`: `f.floor` atas bilangan (tanpa `()`) menjawab nilainya seperti interpreter, dulu `<native fn>`; method
   yang tidak ada (`x.uper(f())`) ditolak SESUDAH argumennya dievaluasi; memanggil field yang bukan fungsi
   (`p.x(2)`) menyebut field yang ada, dulu "`int` bukan fungsi".

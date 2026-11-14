@@ -26,7 +26,8 @@ impl Codegen {
         match stmt {
             Stmt::Let(l) => self.codegen_let(l),
             Stmt::Var(v) => self.codegen_var(v),
-            Stmt::Const(_) => Ok(()), // module-level consts folded at use; local consts: treat as let
+            // `const` lokal sudah jadi `let` di `modul::muat` (`Ruang::const_lokal_jadi_let`).
+            Stmt::Const(c) => Err(super::galat::tandai(c.span, "bug di jrgc: `const` lokal tidak ditulis ulang jadi `let`")),
             // An `if` in statement position keeps the original statement lowering: no
             // result slot and no cross-branch type unification, so `if c { 1 } else { …
             Stmt::Expr(e) => self.codegen_expr_discarding(e),
@@ -49,7 +50,7 @@ impl Codegen {
             Stmt::Break(b) => self.codegen_break(b),
             Stmt::Continue(c) => self.codegen_continue(c),
             Stmt::Block(b) => { self.push_scope(); self.codegen_stmt_block(b)?; self.pop_scope(); Ok(()) }
-            // Fungsi bersarang bernama: didukung interpreter, belum di backend LLVM.
+            // Fungsi bersarang bernama sudah diangkat `hoist_fn_bersarang` di awal bloknya.
             Stmt::Fn(_) => Ok(()),
             Stmt::Spawn(s) => self.codegen_spawn(s),
             Stmt::Select(s) => self.codegen_select(s),
@@ -357,6 +358,9 @@ impl Codegen {
 
     /// Tipe tempat sasaran `a[i]`/`p.x`/`d[k]`, tanpa memancarkan apa pun.
     fn tipe_tempat(&self, e: &Expr) -> Option<JrgType> {
+        if let Expr::Field { obj, .. } | Expr::Index { obj, .. } = e {
+            if self.tipe_jalur(obj).is_some_and(|t| Self::nama_handle_pustaka(&t).is_some()) { return None; }
+        }
         if let Expr::Index { obj, .. } = e {
             if let Some(JrgType::Dict(v)) = self.tipe_jalur(obj) { return Some(*v); }
         }
@@ -406,6 +410,9 @@ impl Codegen {
         // Sasaran `.f` atas nilai tanpa field, dan `[...]` atas yang tak bisa ditulis, juga dicari
         // sesudah sisi kanan: gagalnya saat jalan.
         let tunda_ya = tunda.is_some() || matches!((a.targets.as_slice(), a.values.len()),
+            ([Expr::Field { obj, .. } | Expr::Index { obj, .. }], 1)
+                if self.tipe_jalur(obj).is_some_and(|t| Self::nama_handle_pustaka(&t).is_some()))
+            || matches!((a.targets.as_slice(), a.values.len()),
             ([Expr::Field { obj, .. }], 1) if self.tipe_jalur(obj).is_some_and(|t| Self::bukan_pemilik_field(&t)))
             || matches!((a.targets.as_slice(), a.values.len()),
             ([Expr::Index { obj, .. }], 1) if self.tipe_jalur(obj).is_some_and(|t| !Self::bisa_ditulis_index(&t)));
@@ -413,7 +420,7 @@ impl Codegen {
         for t in &a.targets {
             // `_` membuang nilainya: tidak ada tempat untuk ditulis (membacanya ditolak parser).
             let buang = matches!(t, Expr::Ident(n, _) if n == "_");
-            place_ptrs.push(if buang || tunda_ya { None } else { Some(self.get_place(t)?) });
+            place_ptrs.push(if buang || tunda_ya { None } else { Some(self.tempat_tulis(t)?) });
         }
         let mut new_vals = Vec::with_capacity(a.values.len());
         for (i, val_expr) in a.values.iter().enumerate() {
@@ -445,7 +452,7 @@ impl Codegen {
             let v = if milik { v } else { self.ambil_milik(val_expr, v)? };
             new_vals.push(v);
         }
-        if tunda_ya { place_ptrs[0] = Some(self.get_place(&a.targets[0])?); }
+        if tunda_ya { place_ptrs[0] = Some(self.tempat_tulis(&a.targets[0])?); }
         for (i, (tempat, rhs)) in place_ptrs.into_iter().zip(new_vals.into_iter()).enumerate() {
             let Some((ptr, ty)) = tempat else { continue };
             let rhs_final = if matches!(a.op, AssignOp::Eq) {

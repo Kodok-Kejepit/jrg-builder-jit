@@ -4419,4 +4419,148 @@ pub fn main() {
     for k, v in e["p"] { wok(k, v) }
 }"#),
     ("jawa::stats dari registry biner sendiri", "package main\npub fn main() { let a = jawa::alloc(1)\n let b = jawa::array(3, 0)\n wok(jawa::stats().alive_total, jawa::stats())\n jawir::free(a)\n wok(jawa::stats().alive_total, typeof(jawa::stats()))\n jawir::free(b) }"),
+    ("struct pengguna bernama Ptr/Task/DokRouter terpisah dari handle pustaka", r#"package main
+struct Ptr { pub id: int, pub kind: string }
+struct Task { pub id: int }
+struct DokRouter { pub id: int }
+pub fn main() {
+    var p = Ptr { id: 7, kind: "single" }
+    p.id = 8
+    let asli = jawa::alloc(99)
+    wok(p, p.id, typeof(p), jawa::get(asli), typeof(asli))
+    jawir::free(asli)
+    let t = Task { id: 3 }
+    let h = Task::spawn(|| 42)
+    wok(t.id, task::join(h))
+    let r = DokRouter { id: 5 }
+    wok(r.id, typeof(dok::router_new()))
+}"#),
+    ("var modul array didorong elemen berjenis lain dan penerima method dievaluasi sekali", r#"package main
+var A = [1]
+var H = 0
+fn ubah() { A[0] = 55; return [8] }
+fn buat() -> []int { H = H + 1; return [10, 20] }
+pub fn main() {
+    A = A + ubah()
+    wok(A)
+    A = A.push(ubah())
+    wok(A)
+    A = A.concat(ubah())
+    wok(A)
+    wok(buat().push(30), H)
+}"#),
+    ("lokal Result berganti jenis muatan Ok/Err jadi nilai bertag", r#"package main
+pub fn main() {
+    var r = Ok(1)
+    r = Ok("s")
+    wok(r, r.is_ok(), r.unwrap())
+    var s = Ok(1)
+    s = Ok(s)
+    wok(s)
+    match s { Ok(v) => wok(v), Err(e) => wok(e) }
+    var e = Err(1)
+    e = Err("gagal")
+    wok(e, e.is_err(), e.unwrap_or(9))
+}"#),
+    ("kunci dict bertipe nil, array, tuple, struct, enum, dan dict", r#"package main
+struct P { pub x: int }
+enum E { A, B(int) }
+pub fn main() {
+    var d = {"awal": 0}
+    d[nil] = 10
+    d[[1, 2]] = 20
+    d[(3, 4)] = 30
+    d[P { x: 5 }] = 40
+    d[E::B(6)] = 50
+    wok(d[nil], d[[1, 2]], d[(3, 4)], d[P { x: 5 }], d[E::B(6)])
+    wok(dict::has(d, [1, 2]), dict::get_or(d, nil, 0))
+}"#),
+    ("pola literal berjenis lain dan NaN mengikuti aturan ==", r#"package main
+fn pecah_atas_bulat(v: int) -> string {
+    match v {
+        -5.0 => "min5",
+        0.0 => "nol",
+        2.0 => "dua",
+        3 => "tiga",
+        _ => "lain",
+    }
+}
+fn bulat_atas_pecah(v: float) -> string {
+    match v {
+        -5 => "min5",
+        0 => "nol",
+        2 => "dua",
+        2.5 => "setengah",
+        _ => "lain",
+    }
+}
+fn bulat_atas_f32(v: f32) -> string {
+    match v {
+        -5 => "min5",
+        2 => "dua",
+        _ => "lain",
+    }
+}
+fn kelas(v) -> string {
+    match v {
+        -5.0 => "min5f",
+        0 => "nol",
+        2.0 => "dua",
+        "a" => "str_a",
+        'a' => "rune_a",
+        true => "bool_t",
+        nil => "nil",
+        _ => "lain",
+    }
+}
+fn bertag_campur(v) -> string {
+    match v {
+        -5 => "min5i",
+        0.0 => "nol_f",
+        2 => "dua_i",
+        97 => "int_97",
+        1 => "int_1",
+        _ => "lain",
+    }
+}
+fn u8_pola(x: u8) -> string {
+    match x {
+        -5 => "neg",
+        300 => "besar",
+        2.0 => "dua",
+        5 => "lima",
+        _ => "lain",
+    }
+}
+pub fn main() {
+    wok(pecah_atas_bulat(-5), pecah_atas_bulat(0), pecah_atas_bulat(2), pecah_atas_bulat(3), pecah_atas_bulat(5))
+    wok(bulat_atas_pecah(-5.0), bulat_atas_pecah(-0.0), bulat_atas_pecah(2.0), bulat_atas_pecah(2.5), bulat_atas_pecah(math::NAN))
+    wok(bulat_atas_f32(-5.0 as f32), bulat_atas_f32(2.0 as f32), bulat_atas_f32(1.5 as f32))
+    wok(kelas(-5), kelas(-5.0), kelas(0.0), kelas(2), kelas(2.0), kelas("a"), kelas('a'), kelas(true), kelas(nil))
+    wok(kelas(97), kelas(1), kelas(false), kelas(math::NAN))
+    wok(bertag_campur(-5.0), bertag_campur(0), bertag_campur(2.0), bertag_campur('a'), bertag_campur(true), bertag_campur(math::NAN))
+    wok(u8_pola(2 as u8), u8_pola(5 as u8), u8_pola(9 as u8))
+    let m = (2, "x")
+    wok(match m { (2.0, "x") => "ok", _ => "no" })
+    let t = (1, 2)
+    wok(match t { 2 => "a", _ => "b" })
+    let x = 2
+    wok(match x { 1.0 | 2.0 | 3.0 => "ya", _ => "tdk" })
+    let nan = math::NAN
+    wok(match nan { 0 | 0.0 | 2 | 2.0 => "cocok", _ => "tdk" })
+}"#),
+    // `const` lokal dan fungsi bernama di ekor blok: LLVM dulu membuang `const` lokal (pakai
+    // `const` modul yang bernama sama), VM membaca fungsi modul dari ekor blok `for`/`if`/`{ }`.
+    ("const lokal: membayangi const modul, cakupan blok, closure, fungsi bersarang, anotasi",
+     "package main\nconst KOTA = \"jakarta\"\nconst K = 1\nfn tanpa_anotasi() { const K = 7; K * 2 }\nfn dalam() -> int { fn bantu() -> int { const Q = 3; Q + 1 }  bantu() }\npub fn main() {\n  const KOTA = \"bogor\"\n  wok(KOTA)\n  let n = 1\n  { const n = 2; wok(n) }\n  wok(n)\n  let f = |x| { const T = 10; x + T + K }\n  wok(f(5))\n  const S = \"luar\"\n  let g = || S\n  wok(g(), tanpa_anotasi(), dalam())\n  for i in 0..2 { const L = i * 10; wok(L) }\n  let m = match 2 { 2 => { const Q = \"lengan\"; Q }, _ => \"x\" }\n  const A: float = 2.5\n  wok(m, A + 1.0, K)\n}\n"),
+    ("fungsi bernama di blok dipanggil dari ekor blok: blok polos, for, if, if bernilai, lengan match",
+     "package main\nfn sapa() -> string { \"modul\" }\npub fn main() {\n  { fn a() -> int { b() + 1 }  fn b() -> int { 40 }  wok(a()) }\n  { fn sapa() -> string { \"blok\" }  wok(sapa()) }\n  for i in 0..1 { fn sapa() -> string { \"for\" } wok(sapa()) }\n  if true { fn sapa() -> string { \"if\" } wok(sapa()) }\n  while true { fn sapa() -> string { \"while\" }  wok(sapa()); break }\n  let v = if true { fn h() -> int { 9 } h() } else { 0 }\n  let m = match 2 { 2 => { fn j() -> string { \"lengan\" } j() }, _ => \"x\" }\n  wok(v, m, sapa())\n}\n"),
+    ("fungsi bernama di blok polos sebagai ekor main",
+     "package main\nfn sapa() -> string { \"modul\" }\npub fn main() { { fn sapa() -> string { \"blok\" }  wok(sapa()) } }\n"),
+    // Pola varian atas nilai yang pasti bukan enum tidak pernah cocok — LLVM dulu menurunkan badannya dan
+    // menolak "`n` tidak ditemukan"; `json::` baca atas struct dulu gagal di dalam `<lapis>`.
+    ("pola varian atas dict/bulat/teks/array: lengannya dilewati, juga if let, alternatif, @",
+     "fn cek(v) { if let Some(n) = v { return n } else { return 0 } }\nfn bagian(x) { match x { Some(a) | Ok(a) => a, n @ Some(_) => 1, _ => 9 } }\npub fn main() {\n  let d = {\"a\": 2}\n  wok(match d { Some(n) => n, _ => -1 })\n  let x = 5\n  wok(match x { Some(n) => n, Ok(k) => k, _ => -2 })\n  wok(match \"t\" { Some(n) => n + \"!\", _ => \"lain\" })\n  wok(match [1] { None => \"kosong\", _ => \"isi\" })\n  wok(cek(\"t\"), cek(3), bagian([1]))\n}\n"),
+    ("json::keys/values/has/get atas struct membaca field-nya",
+     "struct P { pub z: int, pub a: int, pub m: string = \"s\" }\npub fn main() {\n  let p = P { z: 1, a: 2 }\n  wok(json::keys(p), json::keys({\"b\": 1, \"a\": 2}))\n  wok(json::values(p), json::has(p, \"a\"), json::has(p, \"q\"), json::get(p, \"z\"), json::get(p, \"q\"))\n}\n"),
 ];

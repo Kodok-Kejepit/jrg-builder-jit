@@ -727,8 +727,6 @@ pub fn main() {
      "wok(match 5 { 1.0..=9.0 => \"f\", _ => \"lain\" }, match 9 { 1..9 => \"i\", _ => \"lain\" }, match 1 { ..1.5 => \"bawah\", _ => \"lain\" })\n"),
     ("let: literal yang cocok mengikat sisanya",
      "let (a, 5) = (1, 5)\nlet None = Option::None\nlet [x, 2] = [1, 2]\nlet 7 = 7\nwok(a, x)\n"),
-    ("let: varian unit milik pemakai sebagai pola let",
-     "enum E { A, B }\nlet A = E::A\nwok(\"ok\")\n"),
     ("parameter dan for: pola cocok tetap jalan",
      "fn f((a, 5)) { return a }\nwok(f((9, 5)))\nfor _, (p, 1) in [(3, 1), (4, 1)] { wok(p) }\n"),
     // ── Fase TERM: lebar tampil, mode tanpa terminal, dan `exit` ─────────
@@ -2733,4 +2731,25 @@ pub fn main() {
      "struct B { pub f0: int = 0, pub f1: int = 1, pub f2: int = 2, pub f3: int = 3, pub f4: int = 4, pub f5: int = 5, pub f6: int = 6, pub f7: int = 7, pub f8: int = 8, pub f9: int = 9, pub f10: int = 10, pub f11: int = 11, pub f12: int = 12, pub f13: int = 13, pub f14: int = 14, pub f15: int = 15, pub f16: int = 16, pub f17: int = 17, pub f18: int = 18, pub f19: int = 19 }\nstruct P { pub x: int, pub y: int }\npub fn main() {\n    var b = B { f3: 30, f19: 190 }\n    b.f7 = b.f3 + b.f19\n    wok(b.f0, b.f3, b.f7, b.f19, len(json::keys(b)))\n    let c = B { f1: 11, ...b }\n    wok(c.f1, c.f7, c == b, B {} == B {})\n    let p = P { x: 1, y: 2 }\n    let q = json::merge(dict { y: 2 }, P { x: 1, y: 0 })\n    wok(p, q, p == P { y: 2, x: 1 }, q.y)\n    let d = dict { a: 1, b: 2 }\n    wok(d, typeof(d), d[\"a\"] + d.b)\n    var r = P { x: 5, y: 6 }\n    r.y = r.x * r.y\n    wok(r, r.y)\n}\n"),
     ("pola literal adalah uji == (2 cocok dengan 2.0, seperti rentang), juga di lengan atau",
      "fn k(v) { match v { 2 => 7, _ => 13 } }\nfn f(v) { match v { 2.0 => 7, _ => 13 } }\nfn s(v) { match v { \"a\" => 1, \"x\" => 2, _ => 3 } }\nfn n(v) { match v { -5 => 1, 0 => 2, _ => 3 } }\nfn c(v) { match v { 'a' => 1, 97 => 2, _ => 3 } }\nfn b(v) { match v { true => 1, 1 => 2, _ => 3 } }\nwok(k(2.0), k(2), f(2), f(2.0), f(2.5))\nwok(s(\"a\"), s(\"x\"), s(1))\nwok(n(-5), n(-5.0), n(0.0), n(nil))\nwok(c('a'), c(97), c(97.0))\nwok(b(true), b(1), b(1.0), b(false))\nlet x = 2.0\nwok(match x { 1 | 2 | 3 => \"dua\", 4..=8 => \"rentang\", _ => \"lain\" })\n"),
+    // `const` lokal dan fungsi bernama di ekor blok: LLVM dulu membuang `const` lokal (pakai
+    // `const` modul yang bernama sama), VM membaca fungsi modul dari ekor blok `for`/`if`/`{ }`.
+    ("const lokal: membayangi const modul, cakupan blok, closure, fungsi bersarang, anotasi",
+     "package main\nconst KOTA = \"jakarta\"\nconst K = 1\nfn tanpa_anotasi() { const K = 7; K * 2 }\nfn dalam() -> int { fn bantu() -> int { const Q = 3; Q + 1 }  bantu() }\npub fn main() {\n  const KOTA = \"bogor\"\n  wok(KOTA)\n  let n = 1\n  { const n = 2; wok(n) }\n  wok(n)\n  let f = |x| { const T = 10; x + T + K }\n  wok(f(5))\n  const S = \"luar\"\n  let g = || S\n  wok(g(), tanpa_anotasi(), dalam())\n  for i in 0..2 { const L = i * 10; wok(L) }\n  let m = match 2 { 2 => { const Q = \"lengan\"; Q }, _ => \"x\" }\n  const A: float = 2.5\n  wok(m, A + 1.0, K)\n}\n"),
+    ("fungsi bernama di blok dipanggil dari ekor blok: blok polos, for, if, if bernilai, lengan match",
+     "package main\nfn sapa() -> string { \"modul\" }\npub fn main() {\n  { fn a() -> int { b() + 1 }  fn b() -> int { 40 }  wok(a()) }\n  { fn sapa() -> string { \"blok\" }  wok(sapa()) }\n  for i in 0..1 { fn sapa() -> string { \"for\" } wok(sapa()) }\n  if true { fn sapa() -> string { \"if\" } wok(sapa()) }\n  while true { fn sapa() -> string { \"while\" }  wok(sapa()); break }\n  let v = if true { fn h() -> int { 9 } h() } else { 0 }\n  let m = match 2 { 2 => { fn j() -> string { \"lengan\" } j() }, _ => \"x\" }\n  wok(v, m, sapa())\n}\n"),
+    ("fungsi bernama di blok polos sebagai ekor main",
+     "package main\nfn sapa() -> string { \"modul\" }\npub fn main() { { fn sapa() -> string { \"blok\" }  wok(sapa()) } }\n"),
+    // Fase AMAN-43: `let r = arr::pop(a)` yang `a`-nya ditimpa pernyataan berikutnya memindahkan `a`; yang dibaca lagi,
+    // ditangkap closure, atau disebut di kanan tetap salinan.
+    ("pop yang ditimpa sesudahnya memindahkan larik, yang dibaca lagi tidak",
+     "pub fn main() {\n  var a = [1, 2, 3]\n  let r = arr::pop(a)\n  wok(a, r)\n  let q = a.pop()\n  a = q[0]\n  wok(a, q[1])\n  var b = [4, 5]\n  let t = b.pop()\n  b = b + t[0]\n  wok(b)\n  var c = [7, 8]\n  let f = || len(c)\n  let u = arr::pop(c)\n  c = u[0]\n  wok(c, f())\n  var d = []\n  let w = arr::pop(d)\n  d = w[0]\n  wok(d, w[1])\n  var e = [1, 2, 3]\n  var x = Option::None\n  e, x = e.pop()\n  wok(e, x)\n  var g = [9]\n  for i in 0..3 { let z = arr::pop(g)\n    g = z[0] + [i]\n    if i == 1 { continue } }\n  wok(g)\n}\n"),
+    // Fase AMAN-41 (kelas CVE-2026-123871 Node.js): sandi di URL tidak sampai ke pesan galat.
+    ("kredensial URL disamarkan di pesan galat klien dan url::parse",
+     "pub fn main() {\n  for _, u in [\"http://andi:SANDIRAHASIA@127.0.0.1:1/x\", \"https://SANDIRAHASIA@h/\", \"http://a:SANDIRAHASIA@@h/\"] {\n    match http::get(u) { Ok(_) => wok(\"ok?\")  Err(e) => wok(str::contains(e, \"SANDIRAHASIA\"), e) }\n    match dok::http_get(u) { Ok(_) => wok(\"ok?\")  Err(e) => wok(str::contains(e, \"SANDIRAHASIA\"), e) }\n    match url::parse(u) { Ok(x) => wok(\"parse\", x.host)  Err(e) => wok(str::contains(e, \"SANDIRAHASIA\"), e) }\n  }\n}\n"),
+    // Keputusan pemilik 2026-11-14: `select` dengan beberapa lengan siap memilih ACAK di empat mesin (dulu
+    // `--vm`/`--jit`/LLVM selalu lengan pertama); LLVM dulu mengevaluasi ekspresi kanal tiap putaran tunggu.
+    ("select: tiap lengan siap pernah terpilih, default tidak selagi ada yang siap, break di lengan",
+     "pub fn main() {\n  let a = make_chan(int, 1)\n  let b = make_chan(int, 1)\n  let c = make_chan(int, 1)\n  var n = [0, 0, 0, 0]\n  for i in 0..600 {\n    a <- 1\n    b <- 2\n    select {\n      case x := <-a: { n[0] += 1\n        <-b }\n      case y := <-b: { n[1] += 1\n        <-a }\n      case c <- 9: { n[2] += 1\n        <-c\n        <-a\n        <-b }\n      default: { n[3] += 1 }\n    }\n  }\n  wok(\"tiap lengan siap terpilih 100+ dari 600, default tak pernah:\", n[0] > 100 && n[1] > 100 && n[2] > 100 && n[3] == 0)\n  var s = 0\n  for i in 0..10 {\n    a <- i\n    select {\n      case x := <-a: { if x == 5 { break }\n        s += x }\n      default: { s += 1000 }\n    }\n  }\n  wok(\"break di lengan:\", s)\n}\n"),
+    ("select: ekspresi kanal dievaluasi sekali walau select menunggu",
+     "package main\nvar N = 0\nfn kanal(c) { N = N + 1\n  return c }\npub fn main() {\n  let a = make_chan(int)\n  spawn { time::sleep_ms(50)\n    a <- 1 }\n  select { case x := <-kanal(a): { wok(\"dapat\", x) } }\n  wok(\"ekspresi kanal dievaluasi\", N == 1 $ \"sekali\" : \"berulang\")\n}\n"),
 ];
