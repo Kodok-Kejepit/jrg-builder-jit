@@ -2,7 +2,8 @@
 // (`jit::lambat::satu`), tanpa masuk loop dispatch: satu definisi untuk keduanya.
 
 use super::opcode::OpCode;
-use super::value::{Peta, VmValue};
+use super::peta::IsiPeta;
+use super::value::{Label, Peta, VmValue};
 use super::vm::*;
 
 impl Vm {
@@ -88,9 +89,34 @@ impl Vm {
         let bentuk = proto.bentuk().ok_or_else(|| VmError::at("BuildStruct: prototipe tanpa bentuk", sp))?;
         let start = self.stack.len().checked_sub(bentuk.nama.len()).ok_or_else(|| VmError::at("BuildStruct: stack kurang", sp))?;
         let label = proto.label.clone();
+        // Langsung dikembalikan (`Return` sesudahnya, bingkai tanpa `defer`): lokal sebentuk milik tunggal dipakai ulang.
+        let ulang = f.chunk().code.get(f.ip).is_some_and(|i| i.op == OpCode::Return) && f.defers.is_empty();
+        let basis = f.slot + 1;
+        if let Some(p) = ulang.then(|| self.calon_pakai_ulang(basis, start - basis, &label, &bentuk)).flatten() {
+            let mut lama = std::mem::replace(&mut self.stack[basis + p], VmValue::Nil);
+            let VmValue::Map(m) = &mut lama else { unreachable!("diperiksa calon_pakai_ulang") };
+            let Some(IsiPeta::Rapat { nilai, .. }) = Peta::isi_tunggal(m) else { unreachable!("diperiksa calon_pakai_ulang") };
+            for (tempat, v) in nilai.iter_mut().zip(self.stack.drain(start..)) { *tempat = v; }
+            self.stack.push(lama);
+            return Ok(());
+        }
         let nilai: Vec<VmValue> = self.stack.drain(start..).collect();
         self.stack.push(VmValue::Map(Peta::struktur_arc(label, bentuk, nilai)));
         Ok(())
+    }
+
+    /// Lokal bingkai (posisi `basis + p`, `p < batas`, delapan pertama) yang struct rapat berbentuk `bentuk`, berlabel
+    /// `label`, dan milik tunggal: struct yang langsung dikembalikan boleh menimpanya — sesudah `Return` lokal itu
+    /// tidak terlihat siapa pun. Satu definisi untuk VM (`op_build_struct`) dan JIT (`SitusBangun::StrukturUlang`).
+    #[inline]
+    pub(crate) fn calon_pakai_ulang(&mut self, basis: usize, batas: usize, label: &Label, bentuk: &std::sync::Arc<crate::vm::peta::Bentuk>) -> Option<usize> {
+        let Label::Struct(nama) = label else { return None };
+        (0..batas.min(8)).find(|&p| match self.stack.get_mut(basis + p) {
+            Some(VmValue::Map(m)) => matches!(&m.label, Label::Struct(n) if n == nama)
+                && matches!(Peta::isi_tunggal(m), Some(IsiPeta::Rapat { bentuk: b, nilai })
+                    if std::sync::Arc::ptr_eq(b, bentuk) && nilai.len() == bentuk.nama.len()),
+            _ => false,
+        })
     }
 
     /// Aritmetika dan banding atas operand yang bukan dua bulat: operator milik pemakai dulu, lalu

@@ -113,7 +113,7 @@ pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64,
         return;
     }
     if let SitusBangun::StrukturUlang(label, bentuk) = situs {
-        if let Some(p) = pakai_ulang(vm, basis, t - n, label, bentuk) {
+        if let Some(p) = vm.calon_pakai_ulang(basis, t - n, label, bentuk) {
             let mut lama = std::mem::replace(&mut vm.stack[basis + p], VmValue::Nil);
             let VmValue::Map(m) = &mut lama else { unreachable!("diperiksa pakai_ulang") };
             let Some(crate::vm::peta::IsiPeta::Rapat { nilai: isi, .. }) = crate::vm::value::Peta::isi_tunggal(m)
@@ -141,19 +141,6 @@ pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64,
         SitusBangun::Varian(_) => unreachable!("ditangani di atas"),
     };
     *sediakan(vm, basis, t - n) = v;
-}
-
-/// Lokal bingkai ini (posisi di bawah `batas`) yang struct rapat berbentuk `bentuk`, berlabel `label`, dan milik
-/// tunggal — calon `SitusBangun::StrukturUlang`. Sel tangkapan tidak pernah (isinya terlihat closure).
-fn pakai_ulang(vm: &mut Vm, basis: usize, batas: usize, label: &crate::vm::value::Label, bentuk: &Arc<crate::vm::peta::Bentuk>) -> Option<usize> {
-    use crate::vm::value::{Label, Peta};
-    let Label::Struct(nama) = label else { return None };
-    (0..batas.min(8)).find(|&p| match vm.stack.get_mut(basis + p) {
-        Some(VmValue::Map(m)) => matches!(&m.label, Label::Struct(n) if n == nama)
-            && matches!(Peta::isi_tunggal(m), Some(crate::vm::peta::IsiPeta::Rapat { bentuk: b, nilai })
-                if Arc::ptr_eq(b, bentuk) && nilai.len() == bentuk.nama.len()),
-        _ => false,
-    })
 }
 
 /// `Typeof; Const; Eq` atas posisi `p` milik VM: nama jenisnya (`VmValue::type_name`, sama dengan opcode
