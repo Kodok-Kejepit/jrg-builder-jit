@@ -430,7 +430,8 @@ pub extern "C" fn keluar_ringan(st: i64, hasil: i64, titip: *const [usize; 9]) -
     // Hasilnya tepat di slot callee, juga kalau stack belum sepanjang itu (`masuk_ringan` tidak memanjangkannya).
     potong(&mut vm.stack, slot);
     while vm.stack.len() < slot { vm.stack.push(VmValue::Nil); }
-    vm.catat_hasil(&v);
+    // Tanpa `catat_hasil`: `ip` bingkai pemanggil basi di sini (`masuk_ringan` tidak menulisnya), jadi umpannya
+    // jatuh ke situs lain; pemanggilnya sudah terkompilasi, dan VM mencatat sendiri kalau spekulasinya gagal.
     vm.stack.push(v);
     0
 }
