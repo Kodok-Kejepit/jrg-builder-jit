@@ -3379,8 +3379,9 @@ fn upval_pendek_sama_dengan_vm() {
     }
 }
 
-/// Method pembaruan sebaris (`Cara::UbahLokal`/`Cara::Ubah`, langkah 81): pembaruan biasa, salinan yang dibagi,
-/// field bulat yang dibaca rumus (deopt) atau cuma ditulis, lokal yang ditangkap closure, hasil ke lokal lain.
+/// Method berumus sebaris (`Cara::UbahLokal`/`Ubah`/`RumusLokal`, langkah 81–82): pembaruan biasa, salinan yang
+/// dibagi, field bulat yang dibaca rumus (deopt) atau cuma ditulis, lokal yang ditangkap closure, hasil ke lokal
+/// lain, rumus nilai dengan field bulat dan field yang jenisnya berganti.
 const UBAH: &str = r#"struct P { pub x: f64, pub v: f64, pub nama: string, pub n: int }
 
 impl P {
@@ -3446,6 +3447,23 @@ fn lain() {
     wok(a.x, t)
 }
 
+// Rumus nilai (`Cara::RumusLokal`): field bulat lewat `as f64`; field berjenis lain di tengah jalan.
+struct R { pub a: f64, pub w: int }
+
+impl R {
+    fn skor(self) -> f64 { return self.a * (1.0 + (self.w as f64) * 0.01) - 0.5 }
+}
+
+fn nilai_rumus(x) {
+    var t = 0.0
+    for i in 0..3000 {
+        var r = R { a: (i as f64) * 0.5, w: i % 7 }
+        if i == 2000 { r = R { a: x, w: 3 } }
+        t = t + r.skor()
+    }
+    wok(t)
+}
+
 fn main() {
     biasa()
     dibagi()
@@ -3453,18 +3471,20 @@ fn main() {
     tulis_saja()
     tangkap()
     lain()
+    nilai_rumus(2)
 }
 "#;
 
 #[test]
 fn ubah_sama_dengan_vm() {
     let v = jalankan(UBAH, &["--vm"], &[]);
-    assert!(v.sukses && v.stdout.lines().count() == 6, "{}{}", v.stdout, v.stderr);
+    assert!(v.sukses && v.stdout.lines().count() == 7, "{}{}", v.stdout, v.stderr);
     for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
         let j = jalankan(UBAH, &["--jit"], env);
         assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
     // Kelima pembaruan di tempat dan satu ke lokal lain memang lewat rumus (bukan panggilan biasa).
     let r = jalankan(UBAH, &["--jit"], &[("JRG_JIT_LOG", "rencana")]);
-    assert!(r.stderr.matches("UbahLokal").count() >= 5 && r.stderr.contains(" Ubah("), "{}", r.stderr);
+    assert!(r.stderr.matches("UbahLokal").count() >= 5 && r.stderr.contains(" Ubah(") && r.stderr.contains("RumusLokal"),
+        "{}", r.stderr);
 }

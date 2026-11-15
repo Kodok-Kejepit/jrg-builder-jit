@@ -13,9 +13,10 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
 
 ### Kinerja
 
-- **`--jit` menghitung method pembaruan di tempat**: `x = x.m(dt)` dengan `m` yang membangun `Self` dari rumus pecahan
+- **`--jit` menghitung method berumus di tempat**: `x = x.m(dt)` dengan `m` yang membangun `Self` dari rumus pecahan
   atas field-nya tidak lagi memanggil method dan membangun struct baru — field dibaca, dihitung di register, lalu
-  ditulis ke struct yang sama. `struct_particles` 12,9 → 3,7 s.
+  ditulis ke struct yang sama; method yang cuma mengembalikan rumus pecahan atas field-nya (`rec.score()`) juga
+  dihitung di tempat. `struct_particles` 12,9 → 3,3 s, `mixed_report` 2,2 → 1,4 s.
 
 ## [0.5.0] — 2026-11-16
 

@@ -890,18 +890,19 @@ fn rumus_baca(
 }
 
 /// Simpul rumus yang dipakai dihitung sekali, berurutan (operandnya selalu simpul sebelumnya); nilai field
-/// yang berubah ke penyangga `wb` (bit pecahan), argumen ke-`j` dari `arg`.
+/// yang berubah ke penyangga `wb` (bit pecahan), argumen ke-`j` dari `arg`; hasil rumus nilai sebagai bit pecahan.
 fn rumus_hitung(
     b: &mut FunctionBuilder, rm: &super::layak::Rumus, wb: StackSlot, ptr: Type,
     arg: impl Fn(&mut FunctionBuilder, usize) -> Value,
-) {
+) -> Option<Value> {
     let mut perlu = vec![false; rm.simpul.len()];
     for &(_, v) in &rm.tulis { perlu[v] = true; }
+    if let Some(v) = rm.hasil { perlu[v] = true; }
     for v in (0..rm.simpul.len()).rev() {
         if !perlu[v] { continue; }
         match rm.simpul[v] {
             Simpul::Biner(_, l, r) => { perlu[l] = true; perlu[r] = true; }
-            Simpul::Neg(x) => perlu[x] = true,
+            Simpul::Neg(x) | Simpul::KeF64(x) => perlu[x] = true,
             _ => {}
         }
     }
@@ -909,10 +910,12 @@ fn rumus_hitung(
     for v in 0..rm.simpul.len() {
         if !perlu[v] { continue; }
         let h = match rm.simpul[v] {
+            // Field bulat tetap `I64` (selalu dibungkus `KeF64`), pecahan dibaca bitnya.
             Simpul::Field(i) => {
                 let x = b.ins().stack_load(ptr, types::I64, wb, (i * 8) as i32);
-                b.ins().bitcast(types::F64, MemFlagsData::new(), x)
+                if rm.baca[i].1 == 5 { b.ins().bitcast(types::F64, MemFlagsData::new(), x) } else { x }
             }
+            Simpul::KeF64(x) => b.ins().fcvt_from_sint(types::F64, nilai[x].expect("simpul sebelumnya")),
             Simpul::Arg(j) => arg(b, j),
             Simpul::Konst(x) => b.ins().f64const(x),
             Simpul::Neg(x) => b.ins().fneg(nilai[x].expect("simpul sebelumnya")),
@@ -932,6 +935,7 @@ fn rumus_hitung(
         let x = dari_f64(b, nilai[v].expect("simpul tulis dihitung"));
         b.ins().stack_store(ptr, x, wb, (j * 8) as i32);
     }
+    rm.hasil.map(|v| dari_f64(b, nilai[v].expect("simpul hasil dihitung")))
 }
 
 pub fn turunkan(
@@ -1593,6 +1597,21 @@ pub fn turunkan(
                     let pk = b.ins().stack_addr(ptr, wb, 0);
                     b.ins().call(f_ubah_tulis_lokal, &[lv, sv, pk]);
                 }
+                let ke = tepi(&mut b, r, &blok, ip, ip + lebar, &mut tunda);
+                b.ins().jump(ke, &[]);
+                isi_tepi(&mut b, &k, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
+                terbuka = false;
+                continue;
+            }
+            Cara::RumusLokal { rumus, lebar } => {
+                let rm = &r.ubah[*rumus];
+                let situs = super::lambat::SitusUbah::bocor(rm);
+                let (wb, _, _) = rumus_baca(&mut b, &k, &var, f_ubah_baca, rm, situs, a, ip, s);
+                let h = rumus_hitung(&mut b, rm, wb, ptr, |b, j| match rm.sumber[j - 1] {
+                    super::layak::Sumber::Lokal(x) => { let v = b.use_var(var[x]); b.ins().bitcast(types::F64, MemFlagsData::new(), v) }
+                    super::layak::Sumber::Konst(x) => b.ins().f64const(x),
+                }).expect("rumus nilai");
+                b.def_var(var[t], h);
                 let ke = tepi(&mut b, r, &blok, ip, ip + lebar, &mut tunda);
                 b.ins().jump(ke, &[]);
                 isi_tepi(&mut b, &k, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);

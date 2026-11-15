@@ -217,64 +217,125 @@ pub extern "C" fn bangun(situs: *const SitusBangun, jenis: *const Jenis, t: i64,
     timpa(sediakan(vm, basis, t - n), v);
 }
 
-/// Situs `Cara::Ubah`, disiapkan saat kompilasi dari `layak::Rumus`.
+/// Pemasangan bentuk tembolok situs (`SitusUbah::pasang`), jarang dan dingin.
+static PASANG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Situs `Cara::Ubah*`/`Cara::RumusLokal`, disiapkan saat kompilasi dari `layak::Rumus`: label penerima, bentuknya
+/// (dari prototipe, atau monomorfik saat jalan seperti `SitusBanyak`), posisi dan jenis field bacaan, posisi tulisan.
 pub struct SitusUbah {
-    label: crate::vm::value::Label,
-    bentuk: Arc<crate::vm::peta::Bentuk>,
-    baca: Box<[usize]>,
+    label: Arc<str>,
+    bentuk: std::sync::atomic::AtomicPtr<crate::vm::peta::Bentuk>,
+    nama: Box<[String]>,
+    jenis: Box<[u8]>,
+    indeks: Box<[std::sync::atomic::AtomicUsize]>,
     tulis: Box<[usize]>,
+    /// Semua field bacaannya pecahan: lingkar baca tanpa melihat jenis per field.
+    pecahan: bool,
 }
 
 impl SitusUbah {
     /// Hidup selama kode yang memakainya (kode JIT tidak pernah dibebaskan).
     pub fn bocor(rm: &super::layak::Rumus) -> &'static SitusUbah {
+        use std::sync::atomic::{AtomicPtr, AtomicUsize};
+        let bentuk = rm.prototipe.as_ref().map(|p| p.bentuk().expect("dijamin rumus_ubah"));
+        let indeks = rm.baca.iter().map(|(n, _)| AtomicUsize::new(bentuk.as_ref().and_then(|b| b.posisi(n.as_str())).unwrap_or(0))).collect();
         Box::leak(Box::new(SitusUbah {
-            label: rm.prototipe.label.clone(), bentuk: rm.prototipe.bentuk().expect("dijamin rumus_ubah"),
-            baca: rm.baca.clone().into_boxed_slice(), tulis: rm.tulis.iter().map(|w| w.0).collect(),
+            label: Arc::clone(&rm.label),
+            bentuk: AtomicPtr::new(bentuk.map_or(std::ptr::null_mut(), |b| Arc::into_raw(b) as *mut _)),
+            nama: rm.baca.iter().map(|(n, _)| n.clone()).collect(), jenis: rm.baca.iter().map(|(_, j)| *j).collect(),
+            indeks, tulis: rm.tulis.iter().map(|w| w.0).collect(), pecahan: rm.baca.iter().all(|(_, j)| *j == 5),
         }))
+    }
+
+    /// Bentuk `b` dikenali situs ini (yang pertama dipasang bila belum ada).
+    #[inline(always)]
+    fn kenal(&self, b: &Arc<crate::vm::peta::Bentuk>) -> bool {
+        use std::sync::atomic::Ordering::Acquire;
+        let kini = self.bentuk.load(Acquire);
+        if std::ptr::eq(kini, Arc::as_ptr(b)) { return true; }
+        kini.is_null() && self.pasang(b)
+    }
+
+    /// Bentuk pertama yang dilihat: posisi field-nya diisi dulu, lalu bentuknya dipasang (referensi kuat). Dua
+    /// thread yang memasang bersamaan diurutkan `PASANG`, jadi posisi milik bentuk yang terpasang.
+    #[cold]
+    fn pasang(&self, b: &Arc<crate::vm::peta::Bentuk>) -> bool {
+        use std::sync::atomic::Ordering::{Relaxed, Release};
+        let _k = PASANG.lock().unwrap_or_else(|p| p.into_inner());
+        let kini = self.bentuk.load(Relaxed);
+        if !kini.is_null() { return std::ptr::eq(kini, Arc::as_ptr(b)); }
+        let pos: Option<Vec<usize>> = self.nama.iter().map(|n| b.posisi(n.as_str())).collect();
+        let Some(pos) = pos else { return false };
+        for (q, i) in pos.into_iter().zip(self.indeks.iter()) { i.store(q, Relaxed); }
+        self.bentuk.store(Arc::into_raw(b.clone()) as *mut _, Release);
+        true
     }
 }
 
-/// Penerima `Cara::Ubah` di posisi `p` (atau lokal `Cara::UbahLokal`; sel tangkapan bukan): berlabel dan berbentuk prototipenya, field `baca` pecahan semua (bitnya
-/// ke `keluar`). 1 = bukan, belum ada yang berubah.
+/// Field bacaan situs dari isi rapat `isi` ke `keluar` (pecahan: bitnya, bulat: muat 64 bit); `false` = bentuk
+/// lain atau jenis lain.
+#[inline(always)]
+fn ubah_isi_baca(situs: &SitusUbah, bentuk: &Arc<crate::vm::peta::Bentuk>, isi: &[VmValue], keluar: *mut i64) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    if !situs.kenal(bentuk) { return false; }
+    if situs.pecahan {
+        for (j, i) in situs.indeks.iter().enumerate() {
+            let VmValue::Float(x) = isi[i.load(Relaxed)] else { return false };
+            unsafe { *keluar.add(j) = x.to_bits() as i64 };
+        }
+        return true;
+    }
+    for (j, i) in situs.indeks.iter().enumerate() {
+        let n = match (&isi[i.load(Relaxed)], situs.jenis[j]) {
+            (VmValue::Float(x), 5) => x.to_bits() as i64,
+            (VmValue::Int(n), 1) => match i64::try_from(*n) { Ok(n) => n, Err(_) => return false },
+            _ => return false,
+        };
+        unsafe { *keluar.add(j) = n };
+    }
+    true
+}
+
+/// Label struct `m` sama dengan label situs (diintern: alamatnya dulu).
+#[inline(always)]
+fn ubah_label(m: &crate::vm::value::Peta, situs: &SitusUbah) -> bool {
+    matches!(&m.label, crate::vm::value::Label::Struct(a) if Arc::ptr_eq(a, &situs.label) || **a == *situs.label)
+}
+
+/// Penerima `Cara::Ubah` di posisi `p` (atau lokal `Cara::RumusLokal`; sel tangkapan bukan): struct berlabel dan
+/// berbentuk situsnya, field bacaannya ke `keluar` (`ubah_isi_baca`). 1 = bukan, belum ada yang berubah.
 pub extern "C" fn ubah_baca(p: i64, situs: *const SitusUbah, keluar: *mut i64) -> i32 {
     let (vm, basis) = konteks();
     let situs = unsafe { &*situs };
     let Some(VmValue::Map(m)) = vm.stack.get_mut(basis + p as usize) else { return 1 };
-    let sama = matches!((&m.label, &situs.label), (crate::vm::value::Label::Struct(a), crate::vm::value::Label::Struct(b))
-        if Arc::ptr_eq(a, b) || a == b);
-    if !sama { return 1; }
+    if !ubah_label(m, situs) { return 1; }
     let kunci;
     let g: &crate::vm::peta::IsiPeta = match crate::vm::value::Peta::isi_tunggal(m) {
         Some(isi) => isi,
         None => { kunci = m.lock().unwrap_or_else(|p| p.into_inner()); &kunci }
     };
     let crate::vm::peta::IsiPeta::Rapat { bentuk, nilai } = g else { return 1 };
-    if !Arc::ptr_eq(bentuk, &situs.bentuk) { return 1; }
-    for (j, &q) in situs.baca.iter().enumerate() {
-        let VmValue::Float(x) = nilai[q] else { return 1 };
-        unsafe { *keluar.add(j) = x.to_bits() as i64 };
-    }
-    0
+    (!ubah_isi_baca(situs, bentuk, nilai, keluar)) as i32
 }
 
-/// `Cara::UbahLokal` dengan tata letak diketahui: `ubah_baca` atas lokal `slot`, lalu struct-nya dijadikan milik
-/// tunggal dan tiap field `tulis` berisi pecahan (yang lain diganti `0.0`: segera ditimpa kode JIT lewat alamat
-/// yang dijawab, isi nilai-nilainya). Null = gagal, belum ada yang berubah.
+/// `Cara::UbahLokal` dengan tata letak diketahui: struct lokal `slot` dijadikan milik tunggal (yang dibagi disalin;
+/// isinya sama, jadi tidak terlihat kalau penjaganya lalu gagal), diperiksa seperti `ubah_baca`, tiap field `tulis`
+/// berisi pecahan (yang lain diganti `0.0`: segera ditimpa kode JIT lewat alamat isi yang dijawab). Null = gagal.
 pub extern "C" fn ubah_siap(slot: i64, situs: *const SitusUbah, keluar: *mut i64) -> *mut VmValue {
-    if ubah_baca(slot, situs, keluar) != 0 { return std::ptr::null_mut(); }
     let (vm, basis) = konteks();
     let situs = unsafe { &*situs };
-    let VmValue::Map(m) = &mut vm.stack[basis + slot as usize] else { unreachable!("diperiksa ubah_baca") };
+    let Some(VmValue::Map(m)) = vm.stack.get_mut(basis + slot as usize) else { return std::ptr::null_mut() };
+    if !ubah_label(m, situs) { return std::ptr::null_mut(); }
     if crate::vm::value::Peta::isi_tunggal(m).is_none() {
-        let isi = match &*m.lock().unwrap_or_else(|p| p.into_inner()) {
-            crate::vm::peta::IsiPeta::Rapat { nilai, .. } => nilai.clone(),
-            _ => unreachable!("diperiksa ubah_baca"),
+        let (isi, bentuk) = match &*m.lock().unwrap_or_else(|p| p.into_inner()) {
+            crate::vm::peta::IsiPeta::Rapat { nilai, bentuk } => (nilai.clone(), Arc::clone(bentuk)),
+            _ => return std::ptr::null_mut(),
         };
-        *m = crate::vm::value::Peta::struktur_arc(m.label.clone(), Arc::clone(&situs.bentuk), isi);
+        *m = crate::vm::value::Peta::struktur_arc(m.label.clone(), bentuk, isi);
     }
-    let Some(crate::vm::peta::IsiPeta::Rapat { nilai, .. }) = crate::vm::value::Peta::isi_tunggal(m)
-        else { unreachable!("baru dijadikan milik tunggal") };
+    let Some(crate::vm::peta::IsiPeta::Rapat { bentuk, nilai }) = crate::vm::value::Peta::isi_tunggal(m)
+        else { return std::ptr::null_mut() };
+    if !ubah_isi_baca(situs, bentuk, nilai, keluar) { return std::ptr::null_mut(); }
     for &q in situs.tulis.iter() {
         if !matches!(nilai[q], VmValue::Float(_)) { nilai[q] = VmValue::Float(0.0); }
     }
@@ -299,12 +360,12 @@ fn ubah_isi(m: &mut Arc<crate::vm::value::Peta>, situs: &SitusUbah, nilai: *cons
     match crate::vm::value::Peta::isi_tunggal(m) {
         Some(crate::vm::peta::IsiPeta::Rapat { nilai: isi, .. }) => tulis(isi),
         _ => {
-            let mut isi = match &*m.lock().unwrap_or_else(|p| p.into_inner()) {
-                crate::vm::peta::IsiPeta::Rapat { nilai, .. } => nilai.clone(),
+            let (mut isi, bentuk) = match &*m.lock().unwrap_or_else(|p| p.into_inner()) {
+                crate::vm::peta::IsiPeta::Rapat { nilai, bentuk } => (nilai.clone(), Arc::clone(bentuk)),
                 _ => unreachable!("diperiksa ubah_baca"),
             };
             tulis(&mut isi);
-            *m = crate::vm::value::Peta::struktur_arc(m.label.clone(), Arc::clone(&situs.bentuk), isi);
+            *m = crate::vm::value::Peta::struktur_arc(m.label.clone(), bentuk, isi);
         }
     }
 }
