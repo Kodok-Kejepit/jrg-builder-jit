@@ -3259,3 +3259,42 @@ fn tambah_teks_sama_dengan_vm() {
         assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// Geser konstan atas bulat 128 bit di register (dua geser 64 bit): `>>` dan `<<` 1 sampai 63, bilangan negatif besar,
+/// dan `<<` yang membuang bit sampai `-1` — sama dengan VM.
+const GESER_LEBAR: &str = r#"package main
+
+fn geser(n: int) -> int {
+    var x: uint = 305419896
+    var y = -170141183460469231731687303715884105
+    var tot = 0
+    for i in 0..n {
+        x = math::wrap_add(math::wrap_mul(x, 1664525), 1013904223) ^ (x >> 13)
+        let a = (x >> 1) ^ (x >> 63) ^ (x << 3)
+        let b = (y >> 7) + (y >> 63) + (y >> 1)
+        y = y + 1
+        let c = (x << 63) >> 60
+        tot = (tot + (a % 1000) + (b % 1000) + (c % 1000)) % 1000000007
+    }
+    return tot
+}
+
+pub fn main() {
+    wok(geser(20000))
+    var z = 1
+    for i in 0..200 {
+        z = (z << 1) + 1
+        if i % 37 == 0 { wok(i, z >> 5) }
+    }
+}
+"#;
+
+#[test]
+fn geser_lebar_sama_dengan_vm() {
+    let v = jalankan(GESER_LEBAR, &["--vm"], &[]);
+    assert!(v.sukses && v.stdout.starts_with("9685561\n0 0\n37 17179869183"), "{}", v.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(GESER_LEBAR, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}
