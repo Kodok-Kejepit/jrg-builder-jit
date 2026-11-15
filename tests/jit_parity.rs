@@ -2765,3 +2765,130 @@ fn jumlah_karakter_sama_dengan_interpreter() {
         assert_eq!((i.sukses, &i.stdout), (j.sukses, &j.stdout), "{arg} {env:?}");
     }
 }
+
+/// Elemen tuple lewat jalur larik (`lambat::baca`): payload varian berfield banyak, indeks negatif, tuple di
+/// sel tangkapan, elemen bukan bulat (spekulasi gagal), dan galat di luar batas seperti VM.
+const TUPLE_INDEKS: &str = r#"package main
+
+enum E {
+    Dua(int, int),
+    Tiga(int, float, int),
+    Campur(int, string),
+}
+
+fn nilai(e: E, k: int) -> int {
+    match e {
+        E::Dua(a, b) => a * 3 + b + k,
+        E::Tiga(a, x, c) => a + (x as int) + c,
+        E::Campur(a, s) => a + len(s),
+    }
+}
+
+fn pilih(t, i: int) -> int {
+    return t[i] + t[-1]
+}
+
+pub fn main() {
+    var tot = 0
+    for r in 0..5000 {
+        let e = r % 3 == 0 $ E::Dua(r, r % 7) : (r % 3 == 1 $ E::Tiga(r, 2.5, 4) : E::Campur(r, "abc"))
+        tot = (tot + nilai(e, r)) % 1000000007
+        let t = (r, r * 2, r % 5)
+        tot = tot + pilih(t, r % 3) + pilih(t, -(r % 3) - 1)
+    }
+    wok(tot)
+    var c = (1, 2, 3)
+    let f = |i| c[i]
+    for r in 0..2000 {
+        if r == 1000 { c = (4, 5, 6) }
+        tot = tot + f(r % 3) + c[r % 3]
+    }
+    wok(tot)
+    var m = (1, "x", 3)
+    for r in 0..3000 {
+        if r == 1500 { m = (1, 2, 3) }
+        tot = tot + pilih(m, 2) + (r % 2 == 0 $ 1 : 0)
+    }
+    wok(tot)
+    for r in 0..3000 {
+        let t = (r, r)
+        tot = tot + pilih(t, r % 4)
+    }
+    wok(tot)
+}
+"#;
+
+#[test]
+fn tuple_indeks_sama_dengan_vm() {
+    let v = jalankan(TUPLE_INDEKS, &["--vm"], &[]);
+    assert!(!v.sukses && v.stdout == "50041662\n50055660\n50075160", "{}", v.stdout);
+    assert!(v.stderr.contains("tuple ini isinya 2 elemen"), "{}", v.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(TUPLE_INDEKS, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(TUPLE_INDEKS, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
+    assert!(j.stderr.contains("main, nilai, pilih"), "{}", j.stderr);
+}
+
+/// Pemeriksaan jenis dan panjang payload langsung dari lokal (`Cara::PayloadSama`/`PayloadPanjang`): varian
+/// berfield satu sampai tiga, payload tuple, teks, varian tanpa payload, `Option` atas tuple, enum di sel tangkapan.
+const PAYLOAD_GABUNG: &str = r#"package main
+
+enum B {
+    Satu(int),
+    Dua(int, int),
+    Tiga(int, int, int),
+    Tup((int, int)),
+    Teks(string, int),
+    Kosong,
+}
+
+fn nilai(b: B) -> int {
+    match b {
+        B::Satu(a) => a,
+        B::Dua(a, c) => a * 2 + c,
+        B::Tiga(a, c, d) => a + c * 3 + d,
+        B::Tup(t) => t[0] - t[1],
+        B::Teks(s, k) => len(s) * k,
+        B::Kosong => 7,
+    }
+}
+
+fn opsi(o) -> int {
+    match o {
+        Some(x) => typeof(x) == "tuple" $ x[0] + x[1] : x,
+        None => -1,
+    }
+}
+
+pub fn main() {
+    var tot = 0
+    for r in 0..6000 {
+        let k = r % 6
+        let b = k == 0 $ B::Satu(r) : (k == 1 $ B::Dua(r, 3) : (k == 2 $ B::Tiga(r, 1, 2) : (k == 3 $ B::Tup((r, 5)) : (k == 4 $ B::Teks("abé", r) : B::Kosong))))
+        tot = (tot + nilai(b)) % 1000000007
+        tot = tot + opsi(r % 3 == 0 $ Some((r, 1)) : (r % 3 == 1 $ Some(r) : None))
+    }
+    wok(tot)
+    var c = B::Dua(1, 2)
+    let f = || nilai(c)
+    for r in 0..2000 {
+        if r == 1000 { c = B::Tiga(1, 2, 3) }
+        tot = tot + f()
+    }
+    wok(tot)
+}
+"#;
+
+#[test]
+fn payload_gabung_sama_dengan_vm() {
+    let v = jalankan(PAYLOAD_GABUNG, &["--vm"], &[]);
+    assert!(v.sukses && v.stdout == "36001000\n36015000", "{}", v.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(PAYLOAD_GABUNG, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(PAYLOAD_GABUNG, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
+    assert!(j.stderr.contains("dikompilasi: <closure>, main, nilai, opsi"), "{}", j.stderr);
+}

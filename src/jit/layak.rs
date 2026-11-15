@@ -179,6 +179,24 @@ pub enum Cara {
     KembaliNilai,
     /// `ReturnNil` (masuk dari VM).
     KembaliUnit,
+    /// `AmbilPayload; Typeof; Const "<nama>"; Eq` atas salinan maya lokal ini (`lambat::payload_jenis_sama`):
+    /// bool asli, lanjut di `ip + 4`; bukan enum berpayload = deopt.
+    PayloadSama(u32, usize),
+    /// `AmbilPayload; Len` atas salinan maya lokal ini (`lambat::payload_panjang`): bulat asli, lanjut di
+    /// `ip + 2`; gagal = deopt.
+    PayloadPanjang(u32),
+}
+
+impl Cara {
+    /// Banyaknya instruksi yang dijalankan cara ini sekaligus (yang dilewati tidak punya keadaan).
+    pub fn lebar(&self) -> usize {
+        match self {
+            Cara::TipeLipat(_) | Cara::TipeSama(_) => 3,
+            Cara::PayloadSama(..) => 4,
+            Cara::PayloadPanjang(_) => 2,
+            _ => 1,
+        }
+    }
 }
 
 pub const KEMBALI_TIDAK: u8 = 0;
@@ -299,7 +317,8 @@ pub fn ringan(f: &VmFunction, r: &Rencana) -> bool {
                 }
             }
             Cara::Field => kode[ip].op == OpCode::GetField,
-            Cara::Asli | Cara::Buka(_) | Cara::TipeLipat(_) | Cara::TipeSama(_) | Cara::Panjang | Cara::PanjangLokal(_) | Cara::Salinan
+            Cara::Asli | Cara::Buka(_) | Cara::TipeLipat(_) | Cara::TipeSama(_) | Cara::Panjang | Cara::PanjangLokal(_)
+            | Cara::PayloadSama(..) | Cara::PayloadPanjang(_) | Cara::Salinan
             | Cara::Bangun(_) | Cara::Geser | Cara::Indeks | Cara::Salin | Cara::Tukar | Cara::Muat
             | Cara::Konstanta | Cara::Ambil | Cara::Simpan | Cara::Pola | Cara::Payload | Cara::Benar
             | Cara::Buang | Cara::KembaliNilai | Cara::KembaliUnit => true,
@@ -449,7 +468,7 @@ fn analisis_sekali(
     // operand); kode yang kebanyakan langkah lebih lambat dari VM sendiri.
     let jalan = |ip: usize| r.keadaan[ip].is_some() && !r.keluar[ip];
     let asli = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Asli | Cara::Buka(_) | Cara::TipeLipat(_)
-        | Cara::TipeSama(_) | Cara::Panjang | Cara::PanjangLokal(_))).count();
+        | Cara::TipeSama(_) | Cara::Panjang | Cara::PanjangLokal(_) | Cara::PayloadSama(..) | Cara::PayloadPanjang(_))).count();
     // Pintu masuk bingkai callee (`Call` ke fungsi VM) dibayar VM juga; yang ditambah cuma langkahnya.
     let langkah_vm = (0..n).filter(|&ip| jalan(ip) && matches!(r.cara[ip], Cara::Langkah { .. } | Cara::Cabang { .. })).count();
     // Mode stres memaksa jalur native sebanyak mungkin, untung atau tidak.
@@ -488,7 +507,7 @@ fn analisis_sekali(
         if let (true, Cara::Cabang { tujuan, .. }) = (jalan(ip), &r.cara[ip]) {
             for t in *tujuan { r.pemimpin[t] = true; }
         }
-        if let (true, Cara::TipeLipat(_) | Cara::TipeSama(_)) = (jalan(ip), &r.cara[ip]) { r.pemimpin[ip + 3] = true; }
+        if jalan(ip) && r.cara[ip].lebar() > 1 { r.pemimpin[ip + r.cara[ip].lebar()] = true; }
     }
     // `JumpFalse` dkk. bercabang ke instruksi sesudahnya juga.
     for ip in 0..n.saturating_sub(1) {
@@ -520,6 +539,11 @@ fn langkah(
         return Some(vec![(ip + 3, s2)]);
     }
     if r.kembali != KEMBALI_BULAT {
+        if let Some((cara, s2)) = payload_gabung(f, ip, &s) {
+            let lanjut = ip + cara.lebar();
+            r.cara[ip] = cara;
+            return Some(vec![(lanjut, s2)]);
+        }
         if let Some(s2) = tipe_sama(f, ip, &s) {
             r.cara[ip] = Cara::TipeSama(f.chunk.code[ip + 1].arg as usize);
             return Some(vec![(ip + 3, s2)]);
@@ -533,6 +557,27 @@ fn langkah(
     let (cara, p) = langkah_lambat(f, cari, r, ip, s)?;
     r.cara[ip] = cara;
     Some(p)
+}
+
+/// Pemeriksaan pola varian berfield banyak atas salinan maya: `AmbilPayload` yang langsung diperiksa jenisnya
+/// (`Typeof; Const; Eq`) atau panjangnya (`Len`), tanpa payload disalin ke stack VM. Yang dilewati bukan
+/// sasaran lompat.
+fn payload_gabung(f: &VmFunction, ip: usize, s: &[Jenis]) -> Option<(Cara, Vec<Jenis>)> {
+    let kode = &f.chunk.code;
+    let Jenis::Salinan(l) = *s.last()? else { return None };
+    if kode[ip].op != OpCode::AmbilPayload { return None; }
+    let sasaran = |k: usize| kode.iter().any(|i| matches!(i.op, OpCode::Jump | OpCode::JumpFalse | OpCode::JumpTrue
+        | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep) && (ip + 1..=ip + k).contains(&(i.arg as usize)));
+    let mut s2 = s.to_vec();
+    if kode.get(ip + 1)?.op == OpCode::Len && !sasaran(1) {
+        *s2.last_mut()? = Jenis::Bulat;
+        return Some((Cara::PayloadPanjang(l), s2));
+    }
+    let (ty, c, eq) = (kode.get(ip + 1)?, kode.get(ip + 2)?, kode.get(ip + 3)?);
+    if ty.op != OpCode::Typeof || c.op != OpCode::Const || eq.op != OpCode::Eq || sasaran(3)
+        || !matches!(f.chunk.constants.get(c.arg as usize)?, VmValue::Str(_)) { return None; }
+    *s2.last_mut()? = Jenis::Bool;
+    Some((Cara::PayloadSama(l, c.arg as usize), s2))
 }
 
 /// Pemeriksaan jenis pola atas nilai milik VM (payload, field): satu pembantu, bukan tiga langkah VM.

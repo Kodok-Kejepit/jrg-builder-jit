@@ -84,6 +84,7 @@ pub struct ImporLambat {
     pub langkah: FuncId, pub muat: FuncId, pub buang: FuncId, pub benar: FuncId, pub buka: FuncId,
     pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
     pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub payload_angka: FuncId, pub pola_pilih: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub metode_tukar: FuncId, pub metode_lokal: FuncId, pub karakter_lokal: FuncId, pub konteks_mentah: FuncId, pub masuk_ringan: FuncId, pub keluar_ringan: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId, pub panjang_lokal: FuncId,
+    pub payload_jenis_sama: FuncId, pub payload_panjang: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
@@ -314,7 +315,7 @@ fn rantai_pola(f: &VmFunction, r: &Rencana) -> (std::collections::HashMap<usize,
             datang[(kode[ip].arg as usize).min(n)] += 1;
         }
         if let Cara::Cabang { tujuan, .. } = &r.cara[ip] { for &t in tujuan.iter() { datang[t.min(n)] += 1; } }
-        if matches!(r.cara[ip], Cara::TipeLipat(_) | Cara::TipeSama(_)) { datang[(ip + 3).min(n)] += 1; }
+        if r.cara[ip].lebar() > 1 { datang[(ip + r.cara[ip].lebar()).min(n)] += 1; }
         if !matches!(op, Jump | Return | ReturnNil) { datang[ip + 1] += 1; }
     }
     let kepala = |h: usize| -> Option<usize> {
@@ -888,7 +889,8 @@ pub fn turunkan(
     let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun, f_baca_pecahan, f_jenis_sama, f_panjang, f_field_banyak, f_metode_tukar, f_metode_lokal, f_karakter_lokal, f_masuk_ringan, f_keluar_ringan] =
         [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun, il.baca_pecahan, il.jenis_sama, il.panjang, il.field_banyak, il.metode_tukar, il.metode_lokal, il.karakter_lokal, il.masuk_ringan, il.keluar_ringan]
         .map(|id| m.declare_func_in_func(id, b.func));
-    let f_panjang_lokal = m.declare_func_in_func(il.panjang_lokal, b.func);
+    let [f_panjang_lokal, f_payload_jenis_sama, f_payload_panjang] =
+        [il.panjang_lokal, il.payload_jenis_sama, il.payload_panjang].map(|id| m.declare_func_in_func(id, b.func));
     let dalam = b.create_block();
     b.set_cold_block(dalam);
     // Kedalaman native dijaga di pintu masuk; parameter dimuat dari penyangga argumen.
@@ -1386,6 +1388,33 @@ pub fn turunkan(
                 if let Some((_, daftar)) = &benih {
                     for &(nama, j, cv) in daftar { cse.push(((t - n, nama, false, j), cv)); }
                 }
+                continue;
+            }
+            Cara::PayloadSama(l, ci) => {
+                let (lv, kv) = (i64c(&mut b, *l as i64), i64c(&mut b, &f.chunk.constants[*ci] as *const _ as i64));
+                let c = b.ins().call(f_payload_jenis_sama, &[lv, kv]);
+                let c = b.inst_results(c)[0];
+                let galat = b.ins().icmp_imm_s(IntCC::Equal, c, 2);
+                jaga(&mut b, &k, &var, galat, ip, s);
+                let v = b.ins().uextend(types::I64, c);
+                b.def_var(var[t - 1], v);
+                let ke = tepi(&mut b, r, &blok, ip, ip + 4, &mut tunda);
+                b.ins().jump(ke, &[]);
+                isi_tepi(&mut b, &k, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
+                terbuka = false;
+                continue;
+            }
+            Cara::PayloadPanjang(l) => {
+                let (lv, pk) = (i64c(&mut b, *l as i64), b.ins().stack_addr(ptr, wadah, 0));
+                let c = b.ins().call(f_payload_panjang, &[lv, pk]);
+                let st = b.inst_results(c)[0];
+                jaga(&mut b, &k, &var, st, ip, s);
+                let v = b.ins().stack_load(ptr, types::I64, wadah, 0);
+                b.def_var(var[t - 1], v);
+                let ke = tepi(&mut b, r, &blok, ip, ip + 2, &mut tunda);
+                b.ins().jump(ke, &[]);
+                isi_tepi(&mut b, &k, r, &blok, &var, &mut tunda, f_tulis_vm, f_taruh);
+                terbuka = false;
                 continue;
             }
             Cara::TipeSama(ci) => {
