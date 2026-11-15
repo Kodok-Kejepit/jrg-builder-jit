@@ -422,6 +422,20 @@ pub extern "C" fn masuk_ringan(
     0
 }
 
+/// `keluar_ringan` di situs yang hasilnya milik VM (tanpa spekulasi angka): `BERHASIL_NILAI` dipindah dari posisi
+/// callee ke slot tanpa `match` status dan kode deopt di jalur panasnya; status lain lewat `keluar_ringan`.
+pub extern "C" fn keluar_ringan_nilai(st: i64, hasil: i64, titip: *const [usize; 9]) -> i32 {
+    if st != super::turun::BERHASIL_NILAI { return keluar_ringan(st, hasil, titip); }
+    let (vm, _) = konteks();
+    let [_, basis, slot, ..] = unsafe { *titip };
+    let v = std::mem::replace(&mut vm.stack[slot + 1 + hasil as usize], VmValue::Nil);
+    KONTEKS.with(|k| k.set((vm, basis)));
+    potong(&mut vm.stack, slot);
+    while vm.stack.len() < slot { vm.stack.push(VmValue::Nil); }
+    vm.stack.push(v);
+    0
+}
+
 /// `keluar_ringan` di situs yang memakai hasil berstatus `kode` (bulat/pecahan) dari register: hasil itu tidak
 /// ditaruh di slot (posisinya berjenis native di pemanggil); status lain lewat `keluar_ringan`.
 pub extern "C" fn keluar_ringan_angka(st: i64, hasil: i64, titip: *const [usize; 9], kode: i64) -> i32 {
