@@ -36,6 +36,10 @@ $ curl "localhost:8080/api/kuadrat?n=12"
 `"127.0.0.1"`, jadi cuma bisa diakses dari mesin sendiri (atau lewat proxy seperti Caddy/nginx di mesin yang sama);
 tulis `"0.0.0.0"` untuk membukanya ke jaringan.
 
+`dok::router_static` tidak menyajikan berkas atau folder yang namanya diawali titik (`.env`, `.git/`,
+`.htpasswd`) — dijawab 404 seperti berkas yang tidak ada, supaya rahasia yang kebetulan ikut di folder publik tidak
+bocor. Pengecualiannya `.well-known/`, yang memang publik (mis. tantangan sertifikat ACME).
+
 | Request (`req`) | Isi |
 |---|---|
 | `method`, `path` | `"GET"`, `"/sapa/Ani"` |
@@ -43,6 +47,7 @@ tulis `"0.0.0.0"` untuk membukanya ke jaringan.
 | `query` | pasangan dari `?a=1&b=2`; ambil dengan `dok::query_get(req.query, "a")` |
 | `headers` | ambil dengan `dok::header_get(req.headers, "Content-Type")` |
 | `body`, `body_bytes` | badan sebagai teks; kalau bukan teks UTF-8, `body` bernilai `nil` dan isinya di `body_bytes` |
+| `remote_addr` | alamat soket peminta, `"127.0.0.1:51234"` — kepala `X-Forwarded-For` ditulis klien sendiri, jadi untuk pembatas laju atau log pakai ini, kecuali di belakang proxy milikmu |
 
 Handler boleh mengembalikan teks (jadi `200 text/plain`), hasil `dok::text`, `dok::html`, `dok::json_response`,
 `dok::redirect`, `dok::response(kode, isi)`, `dok::binary(byte)`, atau `Result` (`Err` jadi 500).
@@ -119,6 +124,9 @@ true false
 
 - Sesi **ditandatangani**, tidak dienkripsi: isinya bisa dibaca siapa pun, tapi tidak bisa diubah tanpa kuncinya.
   Simpan kuncinya di variabel lingkungan, bukan di kode.
+- Sesi membawa **cap waktu** yang ikut ditandatangani: `dok::session_decode` menolak sesi yang lebih tua dari
+  14 hari, atau dari argumen ketiga dalam detik (`dok::session_decode(cookie, KUNCI, 3600)` = satu jam). Cookie
+  curian tidak berlaku selamanya.
 - `password_hash` memakai PBKDF2-HMAC-SHA256 dengan garam acak per sandi.
 - `dok::cookie_set(resp, nama, nilai, opsi)` memasang cookie dengan `HttpOnly` dan `SameSite=Lax` secara bawaan;
   `dok::cookie_get(req, nama)` membacanya.
