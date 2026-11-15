@@ -2118,6 +2118,24 @@ pub fn turunkan(
                 let h = b.block_params(gabung)[0];
                 b.def_var(var[t - 3], h);
             }
+            OpCode::Call if a == 1 && s[t - 2].bungkus(super::layak::BUNGKUS_KE_BULAT) && s[t - 1] == Jenis::Lebar => {
+                let x = b.use_var(k.v128[t - 1]);
+                if nama_bawaan(f, s[t - 2]) == Some("uint") {
+                    let nol = b.ins().iconst(types::I64, 0);
+                    let nol = b.ins().sextend(types::I128, nol);
+                    let neg = b.ins().icmp(IntCC::SignedLessThan, x, nol);
+                    jaga(&mut b, &k, &var, neg, ip, s);
+                }
+                if r.keadaan[ip + 1].as_ref().and_then(|j| j.get(t - 2).copied()) == Some(Jenis::Bulat) {
+                    let lo = b.ins().ireduce(types::I64, x);
+                    let balik = b.ins().sextend(types::I128, lo);
+                    let lepas = b.ins().icmp(IntCC::NotEqual, balik, x);
+                    jaga_spek(&mut b, &k, &var, lepas, ip, s);
+                    b.def_var(var[t - 2], lo);
+                } else {
+                    b.def_var(k.v128[t - 2], x);
+                }
+            }
             OpCode::Call if a == 1 && s[t - 2].bungkus(super::layak::BUNGKUS_KE_BULAT) => {
                 let v = b.use_var(var[t - 1]);
                 // `uint` atas bulat negatif: VM yang melaporkannya.
