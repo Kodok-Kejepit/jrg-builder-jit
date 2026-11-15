@@ -681,7 +681,12 @@ pub extern "C" fn simpan(ke: i64, dari: i64, nilai: i64, jenis: i32, pindah: i32
             if pindah != 0 { std::mem::replace(t, VmValue::Nil) } else { t.clone() }
         }
     };
-    vm.simpan_lokal(basis + ke as usize, v);
+    // `Vm::simpan_lokal` di tempat: binding yang sudah jadi sel ditulis menembus selnya, selain itu `timpa`.
+    match vm.stack.get_mut(basis + ke as usize) {
+        Some(VmValue::Cell(c)) => *c.lock().unwrap_or_else(|p| p.into_inner()) = v,
+        Some(tempat) => timpa(tempat, v),
+        None => {}
+    }
 }
 
 /// `CekEnum` atas posisi `p` milik VM dengan pola `desc` (konstanta chunk): 0/1 = hasilnya, posisinya
