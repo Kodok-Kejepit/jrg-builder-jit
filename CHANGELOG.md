@@ -6,6 +6,11 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
 
 ## [Belum dirilis]
 
+### Baru
+
+- **`jrgm run --jit`, `jrgm exec --jit` dan `jrgm test --jit`**: proyek bisa dijalankan dan diuji lewat mesin keempat
+  (VM yang mengompilasi bagian panas jadi kode mesin), sama dengan `jrgc --jit`; `--watch` ikut meneruskannya.
+
 ## [0.5.0] — 2026-11-16
 
 ### Memutus

@@ -1,7 +1,7 @@
 // docs/aset/jrg-web.js — DIBANGUN `perkakas/bangun_praktik.sh`; jangan disunting.
 // Interpreter JRG yang sama dengan `jrgc` (crate `web/`), dalam WebAssembly.
 window.JRG_WEB = {
-  sidik: "d76b1be4dbe1903217b30836d03765466038f683d3878524653602992e90e336",
+  sidik: "f48b0057e56d0086e8042a012c0595bcd03876935c21743cb8e0b159594461a4",
   pekerja: function pekerjaJrg() {
   self.onmessage = function (ev) {
     const modul = ev.data.modul, sumber = ev.data.sumber;
