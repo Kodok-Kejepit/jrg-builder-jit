@@ -2609,3 +2609,69 @@ fn pop_pindah_tidak_teramati() {
     let j = jalankan(POP_PINDAH, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
     assert!(j.stderr.contains("dikompilasi: buang_akhir, jumlah, main"), "{}", j.stderr);
 }
+
+/// `len(lokal)` dibaca dari lokal asalnya (`Cara::PanjangLokal`) dan `char_at` atas teks lokal: teks ASCII,
+/// non-ASCII di awal dan di ujung, kosong, larik, tuple, dict, sel tangkapan, lokal berganti jenis, dan galat
+/// `len(5)` yang dilaporkan VM di tempat yang sama.
+const LEN_LOKAL: &str = r#"package main
+
+fn hitung(s) -> int {
+    var n = 0
+    for i in 0..len(s) {
+        n = n + 1
+    }
+    return n + len(s)
+}
+
+fn kar(s: str) -> int {
+    var acc = 0
+    for i in 0..len(s) {
+        acc = acc * 31 + (str::char_at(s, i) as int)
+        acc = acc % 1000003
+    }
+    return acc
+}
+
+pub fn main() {
+    var tot = 0
+    let teks = ["abc", "", "héllo wörld", "日本語テキスト", "abcdefghijklmnopqrstuvwxyz0123456789", "aé", "1234567é"]
+    for r in 0..3000 {
+        let s = teks[r % 7]
+        tot = tot + hitung(s) + kar(s)
+        tot = tot + hitung([1, 2, r]) + hitung((1, 2)) + hitung(dict { a: 1, b: r })
+    }
+    wok(tot)
+    var c = "tangkap"
+    let f = || len(c)
+    for r in 0..2000 {
+        if r == 1000 { c = "tangkapé!" }
+        tot = tot + f() + len(c)
+    }
+    wok(tot)
+    var x = "awal"
+    for r in 0..3000 {
+        if r == 2500 { x = [1, 2, 3, 4] }
+        tot = tot + len(x)
+    }
+    wok(tot)
+    var y = "ok"
+    for r in 0..3000 {
+        if r == 2900 { y = 5 }
+        tot = tot + len(y)
+    }
+    wok(tot)
+}
+"#;
+
+#[test]
+fn len_lokal_sama_dengan_vm() {
+    let v = jalankan(LEN_LOKAL, &["--vm"], &[]);
+    assert!(!v.sukses && v.stdout == "762344621\n762376621\n762388621", "{}", v.stdout);
+    assert!(v.stderr.contains("tidak bisa ukur `int`"), "{}", v.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(LEN_LOKAL, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(LEN_LOKAL, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
+    assert!(j.stderr.contains("dikompilasi: <closure>, hitung, kar, main"), "{}", j.stderr);
+}

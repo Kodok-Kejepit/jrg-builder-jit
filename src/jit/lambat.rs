@@ -237,6 +237,18 @@ pub extern "C" fn panjang(p: i64, keluar: *mut i64) -> i32 {
     }
 }
 
+/// `len(x)` atas lokal `slot` (sel tangkapan: isinya) lewat `Vm::vm_len`, tanpa menyalinnya ke stack VM:
+/// panjangnya di `*keluar`; 1 = galat, VM yang melaporkannya.
+pub extern "C" fn panjang_lokal(slot: i64, keluar: *mut i64) -> i32 {
+    let (vm, basis) = konteks();
+    let n = match vm.stack.get(basis + slot as usize) {
+        Some(VmValue::Cell(c)) => vm.vm_len(&c.lock().unwrap_or_else(|p| p.into_inner()), None),
+        Some(v) => vm.vm_len(v, None),
+        None => return 1,
+    };
+    match n { Ok(n) => { unsafe { *keluar = n as i64 }; 0 } Err(_) => 1 }
+}
+
 /// `str::char_at(teks, i)` atas posisi `p` milik VM: kode karakternya; −1 = jalur bawaan umum (indeks negatif
 /// atau di luar batas, bukan teks — yang juga melapor galatnya). Prefiks ASCII lewat indeks byte.
 pub extern "C" fn karakter(p: i64, i: i64) -> i64 {
@@ -251,12 +263,35 @@ pub extern "C" fn karakter(p: i64, i: i64) -> i64 {
 /// `karakter` atas teks di lokal `slot` (salinan maya, `Jenis::Salinan`), dibaca di tempat.
 pub extern "C" fn karakter_lokal(slot: i64, i: i64) -> i64 {
     if i < 0 { return -1; }
-    lihat_lokal(slot, |v| {
-        let VmValue::Str(s) = v else { return -1 };
+    let (vm, basis) = konteks();
+    if let Some(VmValue::Str(s)) = vm.stack.get(basis + slot as usize) {
         let (b, i) = (s.as_bytes(), i as usize);
-        if i < b.len() && b[..=i].is_ascii() { return b[i] as i64; }
-        s.chars().nth(i).map_or(-1, |c| c as i64)
+        if i < b.len() && prefiks_ascii(b, i + 1) { return b[i] as i64; }
+    }
+    karakter_lambat(slot, i as usize)
+}
+
+/// Sisa `karakter_lokal`: sel tangkapan, teks bukan ASCII sebelum `i`, di luar batas, bukan teks.
+#[cold]
+#[inline(never)]
+fn karakter_lambat(slot: i64, i: usize) -> i64 {
+    lihat_lokal(slot, |v| match v {
+        VmValue::Str(s) => s.chars().nth(i).map_or(-1, |c| c as i64),
+        _ => -1,
     }).unwrap_or(-1)
+}
+
+/// `b[..n]` ASCII (`0 < n <= b.len()`), delapan byte sekali baca; ekornya jendela delapan byte yang berakhir
+/// di `n` (bertumpang dengan yang sudah diperiksa), atau awal teks bertopeng kalau `n < 8`.
+#[inline(always)]
+fn prefiks_ascii(b: &[u8], n: usize) -> bool {
+    const M: u64 = 0x8080_8080_8080_8080;
+    let kata = |k: usize| u64::from_le_bytes(b[k..k + 8].try_into().unwrap());
+    if b.len() < 8 { return b[..n].iter().all(|&c| c < 0x80); }
+    if n < 8 { return kata(0) & (M >> (8 * (8 - n))) == 0; }
+    let mut k = 0;
+    while k + 8 < n { if kata(k) & M != 0 { return false; } k += 8; }
+    kata(n - 8) & M == 0
 }
 
 /// VM menjalankan instruksi `ip` bingkai terluar. Stack VM dipotong ke `t` posisi dan `tumpah` posisi

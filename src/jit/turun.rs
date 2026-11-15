@@ -83,7 +83,7 @@ pub fn tanda_tangan_umum(cc: CallConv, param: &[Type], hasil: Option<Type>) -> S
 pub struct ImporLambat {
     pub langkah: FuncId, pub muat: FuncId, pub buang: FuncId, pub benar: FuncId, pub buka: FuncId,
     pub taruh: FuncId, pub ambil: FuncId, pub simpan: FuncId, pub pola: FuncId, pub payload: FuncId,
-    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub payload_angka: FuncId, pub pola_pilih: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub metode_tukar: FuncId, pub metode_lokal: FuncId, pub karakter_lokal: FuncId, pub konteks_mentah: FuncId, pub masuk_ringan: FuncId, pub keluar_ringan: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId,
+    pub pola_lokal: FuncId, pub payload_lokal: FuncId, pub payload_angka: FuncId, pub pola_pilih: FuncId, pub buka_lokal: FuncId, pub field_lokal: FuncId, pub field_banyak: FuncId, pub metode_tukar: FuncId, pub metode_lokal: FuncId, pub karakter_lokal: FuncId, pub konteks_mentah: FuncId, pub masuk_ringan: FuncId, pub keluar_ringan: FuncId, pub karakter: FuncId, pub bangun: FuncId, pub baca_pecahan: FuncId, pub jenis_sama: FuncId, pub panjang: FuncId, pub panjang_lokal: FuncId,
     pub iter_ada: FuncId, pub maju: FuncId, pub langkah_cabang: FuncId, pub sebar: FuncId,
     pub pindah: FuncId, pub muat_global: FuncId, pub simpan_global: FuncId, pub indeks: FuncId, pub field: FuncId,
     pub masuk: FuncId, pub keluar: FuncId, pub salin: FuncId, pub tukar: FuncId, pub cek_metode: FuncId,
@@ -888,6 +888,7 @@ pub fn turunkan(
     let [f_muat_upval, f_simpan_upval, f_tulis_vm, f_field_lokal, f_karakter, f_bangun, f_baca_pecahan, f_jenis_sama, f_panjang, f_field_banyak, f_metode_tukar, f_metode_lokal, f_karakter_lokal, f_masuk_ringan, f_keluar_ringan] =
         [il.muat_upval, il.simpan_upval, il.tulis_vm, il.field_lokal, il.karakter, il.bangun, il.baca_pecahan, il.jenis_sama, il.panjang, il.field_banyak, il.metode_tukar, il.metode_lokal, il.karakter_lokal, il.masuk_ringan, il.keluar_ringan]
         .map(|id| m.declare_func_in_func(id, b.func));
+    let f_panjang_lokal = m.declare_func_in_func(il.panjang_lokal, b.func);
     let dalam = b.create_block();
     b.set_cold_block(dalam);
     // Kedalaman native dijaga di pintu masuk; parameter dimuat dari penyangga argumen.
@@ -1406,6 +1407,15 @@ pub fn turunkan(
                 jaga(&mut b, &k, &var, st, ip, s);
                 let v = b.ins().stack_load(ptr, types::I64, wadah, 0);
                 b.def_var(var[t - 1], v);
+                continue;
+            }
+            Cara::PanjangLokal(l) => {
+                let (lv, pk) = (i64c(&mut b, *l as i64), b.ins().stack_addr(ptr, wadah, 0));
+                let c = b.ins().call(f_panjang_lokal, &[lv, pk]);
+                let st = b.inst_results(c)[0];
+                jaga(&mut b, &k, &var, st, ip, s);
+                let v = b.ins().stack_load(ptr, types::I64, wadah, 0);
+                b.def_var(var[t - 2], v);
                 continue;
             }
             Cara::TipeLipat(ya) => {
