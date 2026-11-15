@@ -3340,3 +3340,41 @@ fn pintu_vm_sama_dengan_vm() {
         assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// Closure pendek yang cuma membaca tangkapan (`MuatUpval`) ikut dikompilasi: tangkapan bulat, pecahan dan teks yang
+/// berubah di antara panggilan, `map`/`filter`/`reduce`, dan tangkapan yang berganti jenis (galat yang sama dengan VM).
+const UPVAL_PENDEK: &str = r#"package main
+
+pub fn main() {
+    var k = 3
+    var f = 0.5
+    var nama = "ab"
+    let tambah = |x| x * 2 + k
+    let kali = |x| x * f
+    let panjang = |x| x + len(nama)
+    let xs = range(0, 5000)
+    let ys = xs.map(|x| x * 2 + k).filter(|x| x % 3 == 0)
+    wok(ys.reduce(|a, b| a + b, 0))
+    var tot = 0
+    var tf = 0.0
+    for i in 0..30000 {
+        tot = (tot + tambah(i) + panjang(i)) % 1000000007
+        tf = tf + kali(i as float)
+        if i % 7000 == 0 { k = k + 1; f = f * 2.0; nama = nama + "c" }
+        if i == 20000 { k = "teks" }
+        if i == 20001 { k = 4 }
+    }
+    wok(tot, tf)
+}
+"#;
+
+#[test]
+fn upval_pendek_sama_dengan_vm() {
+    let v = jalankan(UPVAL_PENDEK, &["--vm"], &[]);
+    assert!(!v.sukses && v.stdout == "8336667", "{}", v.stdout);
+    assert!(v.stderr.contains("tidak bisa `%` antara `string` dan `int`"), "{}", v.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(UPVAL_PENDEK, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}

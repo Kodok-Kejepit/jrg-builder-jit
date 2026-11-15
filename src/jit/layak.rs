@@ -492,7 +492,8 @@ fn analisis_sekali(
     // Panggilan native langsung (rekursi `fib`) membawa kerja sebanyak apa pun; badan yang murni angka
     // sudah untung walau pendek. Yang tersisa: badan pendek yang hidup dari pembantu nilai VM.
     let memanggil = (0..n).any(|ip| jalan(ip) && kode[ip].op == OpCode::Call && matches!(r.cara[ip], Cara::Asli | Cara::Langsung(_)));
-    let pembantu = (0..n).any(|ip| jalan(ip) && !matches!(r.cara[ip], Cara::Asli | Cara::Buka(_)));
+    // Membaca tangkapan closure (`MuatUpval`) murah; badan angka pendek di sekitarnya tetap untung.
+    let pembantu = (0..n).any(|ip| jalan(ip) && !matches!(r.cara[ip], Cara::Asli | Cara::Buka(_) | Cara::MuatUpval));
     if kembali == KEMBALI_SKALAR && !langsung && !berulang && !memanggil && pembantu && dikerjakan < 32 && !stres {
         return Err(format!("cuma {dikerjakan} instruksi tanpa loop, lebih murah di VM"));
     }
