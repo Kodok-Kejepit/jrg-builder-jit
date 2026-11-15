@@ -265,7 +265,7 @@ pub extern "C" fn karakter_lokal(slot: i64, i: i64) -> i64 {
     let (vm, basis) = konteks();
     if let (true, Some(VmValue::Str(s))) = (i >= 0, vm.stack.get(basis + slot as usize)) {
         let (b, i) = (s.as_bytes(), i as usize);
-        if i < b.len() && prefiks_ascii(b, i + 1) { return b[i] as i64; }
+        if i < b.len() && crate::vm::value::prefiks_ascii(b, i + 1) { return b[i] as i64; }
     }
     karakter_lambat(slot, i)
 }
@@ -284,18 +284,6 @@ fn karakter_lambat(slot: i64, i: i64) -> i64 {
     }).unwrap_or(-1)
 }
 
-/// `b[..n]` ASCII (`0 < n <= b.len()`), delapan byte sekali baca; ekornya jendela delapan byte yang berakhir
-/// di `n` (bertumpang dengan yang sudah diperiksa), atau awal teks bertopeng kalau `n < 8`.
-#[inline(always)]
-fn prefiks_ascii(b: &[u8], n: usize) -> bool {
-    const M: u64 = 0x8080_8080_8080_8080;
-    let kata = |k: usize| u64::from_le_bytes(b[k..k + 8].try_into().unwrap());
-    if b.len() < 8 { return b[..n].iter().all(|&c| c < 0x80); }
-    if n < 8 { return kata(0) & (M >> (8 * (8 - n))) == 0; }
-    let mut k = 0;
-    while k + 8 < n { if kata(k) & M != 0 { return false; } k += 8; }
-    kata(n - 8) & M == 0
-}
 
 /// VM menjalankan instruksi `ip` bingkai terluar. Stack VM dipotong ke `t` posisi dan `tumpah` posisi
 /// teratas diisi dari `nilai` (posisi `Nilai` sudah di sana). `Some(sesudah)`: tinggi yang diharapkan,

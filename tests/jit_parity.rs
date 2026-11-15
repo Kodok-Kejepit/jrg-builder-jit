@@ -2727,3 +2727,41 @@ fn char_at_ringan_sama_dengan_vm() {
     let j = jalankan(CHAR_AT_RINGAN, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
     assert!(j.stderr.contains("ambil, jumlah, main"), "{}", j.stderr);
 }
+
+/// `len` teks lewat `vm::value::jumlah_karakter` (teks pendek ASCII lewat `prefiks_ascii`): karakter non-ASCII di
+/// tiap posisi teks 0 sampai 40 byte, lewat `len`, `s.len()`, `str::len` dan `char_at`, sama dengan interpreter.
+const JUMLAH_KARAKTER: &str = r#"package main
+
+fn cek(s: str) -> int {
+    var h = len(s) * 1000 + s.len()
+    for i in 0..len(s) {
+        h = (h * 31 + (str::char_at(s, i) as int)) % 1000003
+    }
+    return h
+}
+
+pub fn main() {
+    var tot = 0
+    for n in 0..41 {
+        var dasar = ""
+        for k in 0..n { dasar = dasar + "a" }
+        tot = (tot + cek(dasar)) % 1000000007
+        for p in 0..n {
+            var s = ""
+            for k in 0..n { s = s + (k == p $ "é" : "b") }
+            tot = (tot * 7 + cek(s) + str::len(s)) % 1000000007
+        }
+    }
+    wok(tot)
+}
+"#;
+
+#[test]
+fn jumlah_karakter_sama_dengan_interpreter() {
+    let i = jalankan(JUMLAH_KARAKTER, &[], &[]);
+    assert!(i.sukses && i.stdout == "908523536", "{}", i.stdout);
+    for (arg, env) in [("--vm", &[][..]), ("--jit", &[STRES][..]), ("--jit", &[STRES, ACAK][..]), ("--jit", &[][..])] {
+        let j = jalankan(JUMLAH_KARAKTER, &[arg], env);
+        assert_eq!((i.sukses, &i.stdout), (j.sukses, &j.stdout), "{arg} {env:?}");
+    }
+}
