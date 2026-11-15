@@ -2675,3 +2675,55 @@ fn len_lokal_sama_dengan_vm() {
     let j = jalankan(LEN_LOKAL, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
     assert!(j.stderr.contains("dikompilasi: <closure>, hitung, kar, main"), "{}", j.stderr);
 }
+
+/// `char_at` atas teks lokal di callee ringan (`karakter_lokal`, galat = deopt): indeks negatif, non-ASCII,
+/// sel tangkapan, dan galat di luar batas yang jejaknya menyebut pemanggil seperti VM.
+const CHAR_AT_RINGAN: &str = r#"package main
+
+fn jumlah(s: str, d: int) -> int {
+    var acc = 0
+    for i in 0..len(s) {
+        acc = acc * 7 + (str::char_at(s, i) as int) + (str::char_at(s, -1 - (i % len(s))) as int) * d
+        acc = acc % 1000003
+    }
+    return acc
+}
+
+fn ambil(s: str, i: int) -> int {
+    return str::char_at(s, i) as int
+}
+
+pub fn main() {
+    var tot = 0
+    let teks = ["abc", "héllo wörld", "日本語テキスト", "abcdefghijklmnopqrstuvwxyz0123456789", "aé", "1234567é", "x"]
+    for r in 0..4000 {
+        let s = teks[r % 7]
+        tot = (tot + jumlah(s, r % 3) + ambil(s, r % len(s)) + ambil(s, -1)) % 1000000007
+    }
+    wok(tot)
+    var c = "sél"
+    let f = |i| str::char_at(c, i)
+    for r in 0..2000 {
+        tot = tot + (f(r % 3) as int) + (f(-(r % 3) - 1) as int)
+    }
+    wok(tot)
+    for r in 0..3000 {
+        let s = teks[r % 7]
+        tot = tot + ambil(s, r % 40)
+    }
+    wok(tot)
+}
+"#;
+
+#[test]
+fn char_at_ringan_sama_dengan_vm() {
+    let v = jalankan(CHAR_AT_RINGAN, &["--vm"], &[]);
+    assert!(!v.sukses && v.stdout == "388542044\n389150125", "{}", v.stdout);
+    assert!(v.stderr.contains("index 4 di luar batas") && v.stderr.contains("`ambil` dipanggil"), "{}", v.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(CHAR_AT_RINGAN, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(CHAR_AT_RINGAN, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
+    assert!(j.stderr.contains("ambil, jumlah, main"), "{}", j.stderr);
+}

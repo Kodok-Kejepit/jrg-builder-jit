@@ -281,7 +281,7 @@ fn spek_hasil(f: &VmFunction, ip: usize) -> Option<Jenis> {
 
 /// Callee `Cara::Langsung` yang bisa jalan tanpa bingkai VM didorong dulu (`lambat::masuk_ringan`): pembantu
 /// basis-relatif atau native saja, kegagalannya deopt (`keluar_ringan` mewujudkan bingkainya). Yang membaca
-/// bingkai teratas (langkah VM, bawaan, operator VM, panggilan, upvalue, field privat, `char_at`) tidak.
+/// bingkai teratas (langkah VM, bawaan, operator VM, panggilan, upvalue, field privat, `char_at` atas nilai VM) tidak.
 pub fn ringan(f: &VmFunction, r: &Rencana) -> bool {
     if r.ada_defer || r.masuk != 0 { return false; }
     let kode = &f.chunk.code;
@@ -293,7 +293,8 @@ pub fn ringan(f: &VmFunction, r: &Rencana) -> bool {
                 let a = kode[ip].arg as usize;
                 a < s.len() && match s[s.len() - a - 1] {
                     Jenis::Fungsi(_) => true,
-                    Jenis::Bungkus(k, _) => k != BUNGKUS_CHAR_AT,
+                    // `char_at` atas teks lokal cuma `karakter_lokal` dan deopt; atas nilai VM lewat `bawaan`.
+                    Jenis::Bungkus(k, _) => k != BUNGKUS_CHAR_AT || matches!(s[s.len() - 2], Jenis::Salinan(_)),
                     _ => false,
                 }
             }

@@ -262,21 +262,24 @@ pub extern "C" fn karakter(p: i64, i: i64) -> i64 {
 
 /// `karakter` atas teks di lokal `slot` (salinan maya, `Jenis::Salinan`), dibaca di tempat.
 pub extern "C" fn karakter_lokal(slot: i64, i: i64) -> i64 {
-    if i < 0 { return -1; }
     let (vm, basis) = konteks();
-    if let Some(VmValue::Str(s)) = vm.stack.get(basis + slot as usize) {
+    if let (true, Some(VmValue::Str(s))) = (i >= 0, vm.stack.get(basis + slot as usize)) {
         let (b, i) = (s.as_bytes(), i as usize);
         if i < b.len() && prefiks_ascii(b, i + 1) { return b[i] as i64; }
     }
-    karakter_lambat(slot, i as usize)
+    karakter_lambat(slot, i)
 }
 
-/// Sisa `karakter_lokal`: sel tangkapan, teks bukan ASCII sebelum `i`, di luar batas, bukan teks.
+/// Sisa `karakter_lokal`: sel tangkapan, teks bukan ASCII sebelum `i`, indeks negatif (dari belakang,
+/// `normal_indeks`). −1 cuma untuk galat (di luar batas, bukan teks), yang dilaporkan VM.
 #[cold]
 #[inline(never)]
-fn karakter_lambat(slot: i64, i: usize) -> i64 {
+fn karakter_lambat(slot: i64, i: i64) -> i64 {
     lihat_lokal(slot, |v| match v {
-        VmValue::Str(s) => s.chars().nth(i).map_or(-1, |c| c as i64),
+        VmValue::Str(s) => {
+            let k = if i >= 0 { Some(i as usize) } else { crate::interpreter::normal_indeks(i as i128, s.chars().count(), false) };
+            k.and_then(|k| s.chars().nth(k)).map_or(-1, |c| c as i64)
+        }
         _ => -1,
     }).unwrap_or(-1)
 }

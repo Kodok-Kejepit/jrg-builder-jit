@@ -2024,6 +2024,16 @@ pub fn turunkan(
                 b.ins().return_(&[st]);
                 terbuka = false;
             }
+            // `str::char_at` atas teks lokal: `karakter_lokal` menjawab semua yang sah, −1 = galat, deopt (VM melapor).
+            OpCode::Call if a == 2 && s[t - 3].bungkus(super::layak::BUNGKUS_CHAR_AT) && matches!(s[t - 2], Jenis::Salinan(_)) => {
+                let Jenis::Salinan(l) = s[t - 2] else { unreachable!() };
+                let (lv, iv) = (i64c(&mut b, l as i64), b.use_var(var[t - 1]));
+                let c = b.ins().call(f_karakter_lokal, &[lv, iv]);
+                let h = b.inst_results(c)[0];
+                let galat = b.ins().icmp_imm_s(IntCC::SignedLessThan, h, 0);
+                jaga(&mut b, &k, &var, galat, ip, s);
+                b.def_var(var[t - 3], h);
+            }
             // `str::char_at` (`layak`: hasil `Rune`): dijawab di tempat, atau jalur bawaan umum di blok dingin.
             OpCode::Call if a == 2 && s[t - 3].bungkus(super::layak::BUNGKUS_CHAR_AT) => {
                 let salinan = match s[t - 2] { Jenis::Salinan(l) => Some(l), _ => None };
