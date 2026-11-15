@@ -3298,3 +3298,45 @@ fn geser_lebar_sama_dengan_vm() {
         assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// Pintu VM ke kode native (`panggil::jalankan`): bingkai lebih dari 32 posisi (penyangga argumen di heap), hasil
+/// teks milik VM, luapan 64 bit di dalamnya (deopt), dan closure yang dipanggil `arr::map`.
+const PINTU_VM: &str = r#"package main
+
+fn banyak(a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13, a14, a15, a16, a17, a18, a19, a20, a21, a22, a23, a24, a25, a26, a27, a28, a29, a30, a31, a32, a33, a34, a35) -> int {
+    var t = 0
+    for i in 0..3 { t = t + a0 + a1 + a2 + a3 + a4 + a5 + a6 + a7 + a8 + a9 + a10 + a11 + a12 + a13 + a14 + a15 + a16 + a17 + a18 + a19 + a20 + a21 + a22 + a23 + a24 + a25 + a26 + a27 + a28 + a29 + a30 + a31 + a32 + a33 + a34 + a35 }
+    return t
+}
+
+fn teks(n: int) {
+    var s = ""
+    for i in 0..n { s = s + "x" }
+    return s
+}
+
+fn luap(n: int) -> int {
+    var x = n
+    for i in 0..2 { x = x * 4611686018427387 }
+    return x % 1000003
+}
+
+pub fn main() {
+    var tot = 0
+    for r in 0..3000 {
+        tot = (tot + banyak(r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r, r) + len(teks(r % 9)) + luap(r)) % 1000000007
+    }
+    let f = |x| x * 2 + tot % 5
+    wok(tot, arr::sum(arr::map(range(0, 2000), f)))
+}
+"#;
+
+#[test]
+fn pintu_vm_sama_dengan_vm() {
+    let v = jalankan(PINTU_VM, &["--vm"], &[]);
+    assert!(v.sukses && v.stdout == "987727185 3998000", "{}", v.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(PINTU_VM, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}
