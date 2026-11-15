@@ -3378,3 +3378,93 @@ fn upval_pendek_sama_dengan_vm() {
         assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// Method pembaruan sebaris (`Cara::UbahLokal`/`Cara::Ubah`, langkah 81): pembaruan biasa, salinan yang dibagi,
+/// field bulat yang dibaca rumus (deopt) atau cuma ditulis, lokal yang ditangkap closure, hasil ke lokal lain.
+const UBAH: &str = r#"struct P { pub x: f64, pub v: f64, pub nama: string, pub n: int }
+
+impl P {
+    fn maju(self, dt: f64) -> P {
+        return P { x: self.x + self.v * dt, v: self.v - self.x * 0.5, nama: self.nama, n: self.n }
+    }
+    fn setel(self, k: f64) -> P {
+        return P { x: -self.x, v: k / 4.0, nama: self.nama, n: self.n }
+    }
+}
+
+// Pembaruan biasa di loop panas.
+fn biasa() {
+    var p = P { x: 1.0, v: 0.5, nama: "a", n: 3 }
+    for i in 0..3000 { p = p.maju(0.01) }
+    wok(p.x, p.v, p.nama, p.n)
+}
+
+// Salinan yang dibagi tidak ikut berubah.
+fn dibagi() {
+    var q = P { x: 2.0, v: 1.0, nama: "b", n: 4 }
+    var simpan = []
+    for i in 0..3000 {
+        if i % 1000 == 0 { simpan = simpan + [q] }
+        q = q.maju(0.02)
+    }
+    wok(q.x, simpan[0].x, simpan[1].x, simpan[2].x)
+}
+
+// Field bulat yang dibaca rumus: spekulasinya gagal di tengah jalan.
+fn bulat(x0) {
+    var r = P { x: 1.0, v: 2.0, nama: "c", n: 5 }
+    for i in 0..3000 {
+        if i == 2000 { r = P { x: x0, v: 2.0, nama: "c", n: 5 } }
+        r = r.maju(0.001)
+    }
+    wok(r.x, r.v)
+}
+
+// Field bulat yang cuma ditulis: diganti pecahan.
+fn tulis_saja() {
+    var w = P { x: 1.5, v: 7.0, nama: "d", n: 6 }
+    for i in 0..3000 {
+        if i == 2000 { w = P { x: 1.5, v: 7, nama: "d", n: 6 } }
+        w = w.setel(1.0)
+    }
+    wok(w.x, w.v, typeof(w.v))
+}
+
+// Lokal yang ditangkap closure: lewat sel, closure melihat pembaruannya.
+fn tangkap() {
+    var c = P { x: 3.0, v: 1.0, nama: "e", n: 7 }
+    let lihat = || c.x
+    for i in 0..3000 { c = c.maju(0.0001) }
+    wok(lihat(), c.x)
+}
+
+// Hasil ke lokal lain: penerimanya disalin, asalnya tetap.
+fn lain() {
+    let a = P { x: 1.0, v: 1.0, nama: "f", n: 8 }
+    var t = 0.0
+    for i in 0..3000 { let b = a.maju(0.1); t = t + b.x }
+    wok(a.x, t)
+}
+
+fn main() {
+    biasa()
+    dibagi()
+    bulat(1)
+    tulis_saja()
+    tangkap()
+    lain()
+}
+"#;
+
+#[test]
+fn ubah_sama_dengan_vm() {
+    let v = jalankan(UBAH, &["--vm"], &[]);
+    assert!(v.sukses && v.stdout.lines().count() == 6, "{}{}", v.stdout, v.stderr);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(UBAH, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    // Kelima pembaruan di tempat dan satu ke lokal lain memang lewat rumus (bukan panggilan biasa).
+    let r = jalankan(UBAH, &["--jit"], &[("JRG_JIT_LOG", "rencana")]);
+    assert!(r.stderr.matches("UbahLokal").count() >= 5 && r.stderr.contains(" Ubah("), "{}", r.stderr);
+}

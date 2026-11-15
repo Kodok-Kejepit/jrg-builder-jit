@@ -11,6 +11,12 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
 - **`jrgm run --jit`, `jrgm exec --jit` dan `jrgm test --jit`**: proyek bisa dijalankan dan diuji lewat mesin keempat
   (VM yang mengompilasi bagian panas jadi kode mesin), sama dengan `jrgc --jit`; `--watch` ikut meneruskannya.
 
+### Kinerja
+
+- **`--jit` menghitung method pembaruan di tempat**: `x = x.m(dt)` dengan `m` yang membangun `Self` dari rumus pecahan
+  atas field-nya tidak lagi memanggil method dan membangun struct baru — field dibaca, dihitung di register, lalu
+  ditulis ke struct yang sama. `struct_particles` 12,9 → 3,7 s.
+
 ## [0.5.0] — 2026-11-16
 
 ### Memutus

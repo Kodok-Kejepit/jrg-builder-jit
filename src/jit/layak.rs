@@ -149,6 +149,12 @@ pub enum Cara {
     /// `Call` ke fungsi native-layak dengan argumen bukan bulat: bingkai VM callee didorong
     /// (`lambat::masuk`), kode `Rencana::langsung[i]`-nya dipanggil langsung, lalu `lambat::keluar`.
     Langsung(usize),
+    /// `Call` method pembaruan sebaris (`Rencana::ubah[i]`): field penerima dibaca sekali (`lambat::ubah_baca`),
+    /// rumusnya dihitung di register, hasilnya ditulis ke struct penerima (`lambat::ubah_tulis`); gagal = deopt.
+    Ubah(usize),
+    /// `x = x.m(..)` dengan `m` method pembaruan, `lebar` instruksi sekaligus (`ubah_lokal`): lokal `x` dibaca
+    /// dan ditulis di tempat, argumennya dari lokal native atau konstanta (`Rumus::sumber`); gagal = deopt.
+    UbahLokal { rumus: usize, lebar: usize },
     /// `Call` atas fungsi bawaan yang diketahui (`Jenis::Bawaan`): `lambat::bawaan` memanggilnya
     /// langsung dengan argumen dari kode native, tanpa langkah VM.
     Bawaan,
@@ -201,6 +207,7 @@ impl Cara {
             Cara::TipeLipat(_) | Cara::TipeSama(_) => 3,
             Cara::PayloadSama(..) => 4,
             Cara::PayloadPanjang(_) => 2,
+            Cara::UbahLokal { lebar, .. } => *lebar,
             _ => 1,
         }
     }
@@ -269,6 +276,134 @@ pub struct Rencana {
     /// Posisi maya yang diwujudkan sebelum instruksi `ip`: `Salinan(l)` lewat `lambat::muat`, `Konst(i)` lewat
     /// `lambat::taruh` dari konstantanya.
     pub wujud: Vec<Vec<(usize, Jenis)>>,
+    /// Rumus method pembaruan tiap `Cara::Ubah`.
+    pub ubah: Vec<Rumus>,
+}
+
+/// Satu simpul rumus `Cara::Ubah`, semuanya pecahan: field penerima ke-`i` (`Rumus::baca`), argumen ke-`j`
+/// (posisi penerima + `j`), konstanta, atau operasi atas simpul sebelumnya.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Simpul { Field(usize), Arg(usize), Konst(f64), Biner(OpCode, usize, usize), Neg(usize) }
+
+/// Method `fn m(self, ..) -> Self { Self { f: <rumus pecahan atas field self dan argumen>, .. } }`: tanpa
+/// cabang, panggilan dan galat, jadi seluruh badannya cuma bacaan, aritmetika pecahan dan satu literal.
+#[derive(Clone, Debug)]
+pub struct Rumus {
+    /// Prototipe literalnya (label dan bentuk yang dijaga di penerima).
+    pub prototipe: Arc<crate::vm::value::Peta>,
+    /// Posisi field (di bentuk prototipe) yang dibaca sebagai pecahan.
+    pub baca: Vec<usize>,
+    pub simpul: Vec<Simpul>,
+    /// Field yang berubah: posisinya di bentuk dan simpul nilainya (yang menyalin dirinya sendiri dilewati).
+    pub tulis: Vec<(usize, usize)>,
+    /// `Cara::UbahLokal`: argumen ke-1.. dari lokal native (pecahan) atau konstanta.
+    pub sumber: Vec<Sumber>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Sumber { Lokal(usize), Konst(f64) }
+
+/// `AmbilLokal l; Dup; GetMethod; Swap; <argumen>; PeriksaArgMetode; Call; SimpanBuang l` dengan method pembaruan
+/// (`rumus_ubah`, method yang ditembolok situsnya) dan argumen pecahan satu instruksi masing-masing, tanpa sasaran
+/// lompat di dalamnya: stack sesudahnya sama dengan sebelumnya.
+fn ubah_lokal(f: &VmFunction, ip: usize, s: &[Jenis]) -> Option<(Cara, Rumus)> {
+    let kode = &f.chunk.code;
+    let l = kode[ip].arg as usize;
+    if kode[ip].op != OpCode::AmbilLokal || *s.get(l)? != Jenis::Nilai || f.chunk.kode_jit.spek_gagal_di(ip) { return None; }
+    let ops = [OpCode::Dup, OpCode::GetMethod, OpCode::Swap];
+    if (1..=3).any(|d| kode.get(ip + d).map(|i| i.op) != Some(ops[d - 1])) { return None; }
+    // Jumlah argumen dari `GetMethod`, atau (ditulis nanti) dari `PeriksaArgMetode` sesudah argumennya.
+    let am = match kode[ip + 2].arg >> 24 {
+        n if n == crate::vm::opcode::ARGC_NANTI as u32 => (0..8u32).find(|&n| kode.get(ip + 4 + n as usize)
+            .is_some_and(|i| i.op == OpCode::PeriksaArgMetode && i.arg >> 24 == n))?,
+        n => n,
+    };
+    let a = am as usize + 1;
+    let (label, g) = f.chunk.kode_jit.metode_di(ip + 2)?;
+    if g.chunk.tipe_self.as_deref() != Some(label.as_str()) { return None; }
+    let mut rm = rumus_ubah(&g, a)?;
+    for j in 1..a {
+        let i = kode.get(ip + 3 + j)?;
+        rm.sumber.push(match (i.op, f.chunk.constants.get(i.arg as usize)) {
+            (OpCode::LoadLocal, _) if s.get(i.arg as usize) == Some(&Jenis::Pecahan) => Sumber::Lokal(i.arg as usize),
+            (OpCode::Const, Some(VmValue::Float(x))) => Sumber::Konst(*x),
+            _ => return None,
+        });
+    }
+    let k = ip + 3 + a;
+    let (p, c, sb) = (kode.get(k)?, kode.get(k + 1)?, kode.get(k + 2)?);
+    if p.op != OpCode::PeriksaArgMetode || p.arg >> 24 != am || c.op != OpCode::Call || c.arg as usize != a
+        || sb.op != OpCode::SimpanBuang || sb.arg as usize != l { return None; }
+    let lebar = k + 3 - ip;
+    let sasaran = kode.iter().any(|i| matches!(i.op, OpCode::Jump | OpCode::JumpFalse | OpCode::JumpTrue
+        | OpCode::JumpFalseKeep | OpCode::JumpTrueKeep) && (ip + 1..ip + lebar).contains(&(i.arg as usize)));
+    if sasaran { return None; }
+    Some((Cara::UbahLokal { rumus: 0, lebar }, rm))
+}
+
+/// Rumus method `g` yang dipanggil dengan `a` argumen (penerima termasuk), kalau badannya berbentuk itu.
+pub fn rumus_ubah(g: &VmFunction, a: usize) -> Option<Rumus> {
+    if g.chunk.tipe_self.is_none() || g.is_closure || g.variadic || !g.upvals.is_empty()
+        || g.arity as usize != a || g.arity_min != g.arity || a == 0 { return None; }
+    let kode = &g.chunk.code;
+    let (mut simpul, mut tumpuk, mut nama): (Vec<Simpul>, Vec<usize>, Vec<&str>) = (Vec::new(), Vec::new(), Vec::new());
+    let mut ip = 0;
+    while ip < kode.len() {
+        let ins = kode[ip];
+        let x = ins.arg as usize;
+        match ins.op {
+            OpCode::LoadLocal if x == 0 && kode.get(ip + 1).is_some_and(|i| i.op == OpCode::GetField) => {
+                let n = g.chunk.names.get(kode[ip + 1].arg as usize)?.as_str();
+                let i = nama.iter().position(|m| *m == n).unwrap_or_else(|| { nama.push(n); nama.len() - 1 });
+                simpul.push(Simpul::Field(i));
+                ip += 1;
+            }
+            OpCode::LoadLocal if x >= 1 && x < a => simpul.push(Simpul::Arg(x)),
+            OpCode::Const => match g.chunk.constants.get(x)? {
+                VmValue::Float(f) => simpul.push(Simpul::Konst(*f)),
+                _ => return None,
+            },
+            OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div => {
+                let (r, l) = (tumpuk.pop()?, tumpuk.pop()?);
+                simpul.push(Simpul::Biner(ins.op, l, r));
+            }
+            OpCode::Neg => { let v = tumpuk.pop()?; simpul.push(Simpul::Neg(v)); }
+            // Sesudah `Return` cuma kode mati (badan tanpa lompatan).
+            OpCode::BuildStruct if kode.get(ip + 1).is_some_and(|i| i.op == OpCode::Return) => {
+                let VmValue::Map(p) = g.chunk.constants.get(x)? else { return None };
+                let crate::vm::value::Label::Struct(lbl) = &p.label else { return None };
+                if g.chunk.tipe_self.as_deref() != Some(lbl.as_ref()) { return None; }
+                let bentuk = p.bentuk()?;
+                if !bentuk.unik || tumpuk.len() != bentuk.nama.len() { return None; }
+                let pos: Vec<usize> = nama.iter().map(|n| bentuk.posisi(*n)).collect::<Option<_>>()?;
+                // Field yang ditulis dengan dirinya sendiri tidak dibaca dan tidak ditulis.
+                let diri = |j: usize, v: usize| matches!(simpul[v], Simpul::Field(i) if pos[i] == j);
+                let tulis: Vec<(usize, usize)> = tumpuk.iter().enumerate().filter(|&(j, &v)| !diri(j, v)).map(|(j, &v)| (j, v)).collect();
+                let mut dipakai = vec![false; nama.len()];
+                let mut tanda = vec![false; simpul.len()];
+                for &(_, v) in &tulis { tanda[v] = true; }
+                for v in (0..simpul.len()).rev() {
+                    if !tanda[v] { continue; }
+                    match simpul[v] {
+                        Simpul::Field(i) => dipakai[i] = true,
+                        Simpul::Biner(_, l, r) => { tanda[l] = true; tanda[r] = true; }
+                        Simpul::Neg(u) => tanda[u] = true,
+                        _ => {}
+                    }
+                }
+                let urut: Vec<usize> = (0..nama.len()).filter(|&i| dipakai[i]).collect();
+                let simpul = simpul.into_iter().map(|s| match s {
+                    Simpul::Field(i) => Simpul::Field(urut.iter().position(|&u| u == i).unwrap_or(usize::MAX)),
+                    s => s,
+                }).collect();
+                return Some(Rumus { prototipe: p.clone(), baca: urut.iter().map(|&i| pos[i]).collect(), simpul, tulis, sumber: Vec::new() });
+            }
+            _ => return None,
+        }
+        tumpuk.push(simpul.len() - 1);
+        ip += 1;
+    }
+    None
 }
 
 impl Rencana {
@@ -329,7 +464,7 @@ pub fn ringan(f: &VmFunction, r: &Rencana) -> bool {
             | Cara::PayloadSama(..) | Cara::PayloadPanjang(_) | Cara::TeksBulat | Cara::Salinan
             | Cara::Bangun(_) | Cara::Geser | Cara::Indeks | Cara::Salin | Cara::Tukar | Cara::Muat
             | Cara::Konstanta | Cara::Ambil | Cara::Simpan | Cara::Pola | Cara::Payload | Cara::Benar
-            | Cara::Buang | Cara::KembaliNilai | Cara::KembaliUnit => true,
+            | Cara::Buang | Cara::KembaliNilai | Cara::KembaliUnit | Cara::Ubah(_) | Cara::UbahLokal { .. } => true,
             _ => false,
         }
     })
@@ -399,6 +534,7 @@ fn analisis_sekali(
         cara: vec![Cara::Asli; n], callee_nilai: Vec::new(), wujud: vec![Vec::new(); n],
         ada_defer: kode.iter().any(|i| i.op == OpCode::DeferPush),
         langsung: Vec::new(),
+        ubah: Vec::new(),
         argc_call: kode.iter().map(|i| (i.op == OpCode::Call).then_some(i.arg as usize)).collect(),
         larang_bulat: larang_bulat.to_vec(),
         larang: larang.to_vec(),
@@ -574,6 +710,11 @@ fn langkah(
         return Some(vec![(ip + 3, s2)]);
     }
     if r.kembali != KEMBALI_BULAT {
+        if let Some((Cara::UbahLokal { lebar, .. }, rm)) = ubah_lokal(f, ip, &s) {
+            r.ubah.push(rm);
+            r.cara[ip] = Cara::UbahLokal { rumus: r.ubah.len() - 1, lebar };
+            return Some(vec![(ip + lebar, s)]);
+        }
         if let Some((cara, s2)) = payload_gabung(f, ip, &s) {
             let lanjut = ip + cara.lebar();
             r.cara[ip] = cara;
@@ -1040,6 +1181,19 @@ fn langkah_lambat(
         r.spek[ip] = spek_hasil(f, ip);
         s.push(r.spek[ip].unwrap_or(Nilai));
         return Some((Cara::Bawaan, vec![(lanjut, s)]));
+    }
+    // Method pembaruan (`rumus_ubah`) atas penerima milik VM dan argumen pecahan: dihitung sebaris.
+    if let (OpCode::Call, true) = (ins.op, a >= 1 && a < t) {
+        if let (Fungsi(i), Nilai) = (s[t - a - 1], s[t - a]) {
+            if s[t - a + 1..].iter().all(|j| *j == Pecahan) && !f.chunk.kode_jit.spek_gagal_di(ip) {
+                if let Some(rm) = rumus_ubah(&r.callee[i], a) {
+                    r.ubah.push(rm);
+                    s.truncate(t - a - 1);
+                    s.push(Nilai);
+                    return Some((Cara::Ubah(r.ubah.len() - 1), vec![(lanjut, s)]));
+                }
+            }
+        }
     }
     // Fungsi native-layak dengan argumen milik VM: bingkai VM-nya didorong, kodenya dipanggil langsung.
     if let (OpCode::Call, true) = (ins.op, a < t) {
