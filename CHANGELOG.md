@@ -6,6 +6,8 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
 
 ## [Belum dirilis]
 
+## [0.3.0] — 2026-11-15
+
 ### Memutus
 
 - **`dok::serve` mendengar di `127.0.0.1` kalau alamatnya tidak ditulis** (dulu `0.0.0.0`). Server di belakang
@@ -179,6 +181,10 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
 
 ### Kinerja
 
+- **`--jit` sekarang juga mengompilasi kode yang memegang struct, enum, larik dan teks**, bukan cuma bilangan
+  bulat: field dibaca lewat tembolok bentuk, `match` atas enum diputuskan sekali per rantai lengan, fungsi kecil
+  dipanggil tanpa bingkai VM, dan `len`/`str::char_at` atas teks lokal tanpa salinan. `string_ops` penuh
+  `--vm` 9,3 s, `--jit` 0,70 s.
 - **`let r = arr::pop(a)` lalu `a = r[0]`, dan `a, x = a.pop()`, sekarang linear** di interpreter dan `--vm`
   (dulu menyalin seluruh larik tiap langkah: 16 000 pop 2,2 s → 38 ms).
 - `xml::parse` linear dalam jumlah atribut (160 ribu atribut 34 s → 0,24 s).
