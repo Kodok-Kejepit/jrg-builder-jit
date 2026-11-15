@@ -1183,10 +1183,23 @@ pub extern "C" fn metode_tukar(p: i64, label: *const String) -> i32 {
 pub extern "C" fn metode_lokal(slot: i64, p: i64, label: *const Arc<str>, ambil: i32) -> i32 {
     let (vm, basis) = konteks();
     let i = basis + slot as usize;
-    let v = if ambil != 0 { vm.ambil_lokal(i) } else { vm.baca_lokal(i) }.unwrap_or(VmValue::Nil);
     let l: &str = unsafe { &**label };
     // Label struct dan label ini sama-sama diintern: alamatnya dulu, teksnya kalau beda (enum, label lain).
-    let sama = v.nama_tipe().is_some_and(|s| (s.as_ptr() == l.as_ptr() && s.len() == l.len()) || s == l);
+    let cocok = |v: &VmValue| v.nama_tipe().is_some_and(|s| (s.as_ptr() == l.as_ptr() && s.len() == l.len()) || s == l);
+    // Jalur panas: lokal biasa (bukan sel) yang labelnya cocok diperiksa di tempat lalu dipindah/disalin sekali,
+    // tanpa `Option` dan `nil` cadangan di antaranya.
+    if let Some(tempat) = vm.stack.get_mut(i) {
+        if !matches!(tempat, VmValue::Cell(_)) && cocok(tempat) {
+            let v = if ambil != 0 { std::mem::replace(tempat, VmValue::Nil) } else { tempat.clone() };
+            timpa(sediakan(vm, basis, p as usize), VmValue::Nil);
+            timpa(sediakan(vm, basis, p as usize + 1), v);
+            let j = basis + p as usize;
+            if !vm.galat_metode.is_empty() { vm.galat_metode.retain(|(x, _)| *x < j); }
+            return 0;
+        }
+    }
+    let v = if ambil != 0 { vm.ambil_lokal(i) } else { vm.baca_lokal(i) }.unwrap_or(VmValue::Nil);
+    let sama = cocok(&v);
     if !sama {
         let salinan = v.clone();
         timpa(sediakan(vm, basis, p as usize), v);
