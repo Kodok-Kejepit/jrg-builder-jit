@@ -3216,3 +3216,46 @@ fn bawaan_situs_sama_dengan_vm() {
     let j = jalankan(BAWAAN_SITUS, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
     assert!(j.stderr.contains("dikompilasi: label, main"), "{}", j.stderr);
 }
+
+/// `+` atas dua teks milik VM (`lambat::tambah_nilai`): sambungan berantai, teks yang tumbuh di tempat dan yang
+/// dipegang dua nama, lalu yang lewat `biner` — teks + bulat, teks + struct ber-`to_string`, operator `add`.
+const TAMBAH_TEKS: &str = r#"package main
+
+struct V {
+    pub x: int,
+}
+
+impl V {
+    fn to_string(self) -> string { return "V" + str(self.x) }
+    fn add(self, o: V) -> V { return V { x: self.x + o.x } }
+}
+
+pub fn main() {
+    var s = ""
+    var h = 0
+    let v = V { x: 3 }
+    var w = V { x: 0 }
+    for i in 0..3000 {
+        let a = "k" + str(i % 13)
+        let b = a + "-" + a
+        let salin = s
+        s = s + b
+        if i % 500 == 0 { s = "" }
+        let c = "v=" + v
+        let d = "n:" + (i % 5)
+        w = w + v
+        h = (h * 31 + len(b) + len(c) + len(d) + len(salin)) % 1000003
+    }
+    wok(h, len(s), w.x, "akhir" + w)
+}
+"#;
+
+#[test]
+fn tambah_teks_sama_dengan_vm() {
+    let v = jalankan(TAMBAH_TEKS, &["--vm"], &[]);
+    assert!(v.sukses && v.stdout == "393208 2723 9000 akhirV9000", "{}", v.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(TAMBAH_TEKS, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}

@@ -654,6 +654,31 @@ fn bawaan_cepat(vm: &Vm, basis: usize, jenis: &[Jenis], nilai: &[i64], t: usize,
     }
 }
 
+/// `+` (`biner`) atas dua posisi milik VM: dua teks disambung langsung lewat `VmValue::tambah_milik`, aturan
+/// `Vm::op_biner` untuk teks + teks (tanpa operator pemakai dan hook tampilan); selebihnya `biner`.
+pub extern "C" fn tambah_nilai(ip: i64, jenis: *const Jenis, t: i64, nilai: *const i64) -> i32 {
+    let (vm, basis) = konteks();
+    let p = t as usize;
+    let js = unsafe { std::slice::from_raw_parts(jenis, p) };
+    let i = basis + p - 2;
+    let teks = js[p - 2].di_vm() && js[p - 1].di_vm()
+        && matches!((vm.stack.get(i), vm.stack.get(i + 1)), (Some(VmValue::Str(_)), Some(VmValue::Str(_))));
+    if !teks { return biner(ip, jenis, t, nilai); }
+    let kanan = std::mem::replace(&mut vm.stack[i + 1], VmValue::Nil);
+    let kiri = std::mem::replace(&mut vm.stack[i], VmValue::Nil);
+    match kiri.tambah_milik(&kanan) {
+        Ok(v) => { timpa(&mut vm.stack[i], v); 0 }
+        Err(e) => {
+            let fr = vm.frames.last_mut().expect("bingkai terluar");
+            let ins = fr.func.chunk.code[ip as usize];
+            let sp = if ins.span == 0 { None } else { fr.func.chunk.spans.get(ins.span as usize).copied() };
+            fr.ip = ip as usize + 1;
+            GALAT.with(|g| *g.borrow_mut() = Some(VmError::at(e, sp)));
+            2
+        }
+    }
+}
+
 /// Aritmetika/banding instruksi `ip` atas posisi `t - 2`, `t - 1` (angka native atau milik VM, diambil),
 /// lewat `Vm::op_biner`. Aritmetika: hasilnya di posisi `t - 2`, 0 = selesai. Banding: 0/1. 2 = galat.
 pub extern "C" fn biner(ip: i64, jenis: *const Jenis, t: i64, nilai: *const i64) -> i32 {
