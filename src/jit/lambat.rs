@@ -637,7 +637,11 @@ pub extern "C" fn muat(dari: i64, ke: i64) {
     if let (Some(a), Some(b)) = (vm.stack.get(basis + dari as usize), vm.stack.get(basis + ke as usize)) {
         if sama_penyimpanan(a, b) { return; }
     }
-    let v = vm.baca_lokal(basis + dari as usize).unwrap_or(VmValue::Nil);
+    let v = match vm.stack.get(basis + dari as usize) {
+        Some(VmValue::Cell(c)) => c.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+        Some(v) => v.clone(),
+        None => VmValue::Nil,
+    };
     timpa(sediakan(vm, basis, ke as usize), v);
 }
 
@@ -666,7 +670,12 @@ pub extern "C" fn taruh(ke: i64, k: *const VmValue) {
 /// `AmbilLokal` atas lokal milik VM (`Vm::ambil_lokal`): posisi `ke` = isinya.
 pub extern "C" fn ambil(dari: i64, ke: i64) {
     let (vm, basis) = konteks();
-    let v = vm.ambil_lokal(basis + dari as usize).unwrap_or(VmValue::Nil);
+    // `Vm::ambil_lokal` di tempat (tanpa `Option` dan `nil` cadangan): sel cuma dibaca isinya.
+    let v = match vm.stack.get_mut(basis + dari as usize) {
+        Some(VmValue::Cell(c)) => c.lock().unwrap_or_else(|p| p.into_inner()).clone(),
+        Some(tempat) => std::mem::replace(tempat, VmValue::Nil),
+        None => VmValue::Nil,
+    };
     timpa(sediakan(vm, basis, ke as usize), v);
 }
 
