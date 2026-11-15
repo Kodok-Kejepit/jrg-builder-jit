@@ -2892,3 +2892,58 @@ fn payload_gabung_sama_dengan_vm() {
     let j = jalankan(PAYLOAD_GABUNG, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
     assert!(j.stderr.contains("dikompilasi: <closure>, main, nilai, opsi"), "{}", j.stderr);
 }
+
+/// Hasil angka callee ringan dipakai dari register (`keluar_ringan_angka`): bulat, pecahan, hasil yang kadang
+/// berganti jenis (jalur `keluar_ringan` biasa), dan luapan 64 bit di callee (deopt).
+const RINGAN_ANGKA: &str = r#"package main
+
+struct P {
+    pub x: float,
+    pub y: float,
+    pub z: float,
+}
+
+fn f(a: int, b: int) -> int {
+    return a * 3 + b
+}
+
+fn g(p: P, k: float) -> float {
+    return p.x * k + p.y - p.z
+}
+
+fn campur(a: int) {
+    if a % 97 == 0 { return 0.5 }
+    if a % 89 == 0 { return "t" }
+    return a + 1
+}
+
+fn besar(a: int) -> int {
+    return a * 4611686018427387
+}
+
+pub fn main() {
+    var tot = 0
+    var ft = 0.0
+    let p = P { x: 1.5, y: 2.25, z: 0.125 }
+    for i in 0..20000 {
+        tot = (tot + f(i, 7)) % 1000000007
+        ft = ft + g(p, i as float * 0.001)
+        let c = campur(i)
+        if typeof(c) == "int" { tot = tot + c } else { wok("lain", i, c) }
+        tot = (tot + besar(i % 3000) % 1000) % 1000000007
+    }
+    wok(tot, ft)
+}
+"#;
+
+#[test]
+fn ringan_angka_sama_dengan_vm() {
+    let v = jalankan(RINGAN_ANGKA, &["--vm"], &[]);
+    assert!(v.sukses && v.stdout.ends_with("805824533 342484.99999999994"), "{}", v.stdout);
+    for env in [&[STRES][..], &[STRES, ACAK][..], &[][..]] {
+        let j = jalankan(RINGAN_ANGKA, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let j = jalankan(RINGAN_ANGKA, &["--jit"], &[STRES, ("JRG_JIT_STRES", "1"), ("JRG_JIT_LOG", "ringkas")]);
+    assert!(j.stderr.contains("dikompilasi: besar, campur, f, g, main"), "{}", j.stderr);
+}
