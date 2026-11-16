@@ -80,6 +80,9 @@ pub fn periksa(f: &Fungsi) -> Result<(), String> {
                 Inst::TeksBulat { n, .. } => { pakai(*n, &ada)?; tipe(*n, Tipe::I)?; }
                 Inst::Pindah { .. } => {}
                 Inst::Bangun { isi, .. } => for (_, v) in isi { pakai(*v, &ada)?; },
+                Inst::Salin { .. } | Inst::Tukar { .. } => {}
+                Inst::CekMetode { jaga: j, .. } | Inst::Maju { jaga: j, .. } => jaga(j, &ada)?,
+                Inst::IterAda { hasil, jaga: j, .. } => { jaga(j, &ada)?; definisi(*hasil, &mut ada)?; tipe(*hasil, Tipe::I)?; }
                 Inst::TulisVm { nilai, .. } => if let Some(v) = nilai { pakai(*v, &ada)?; },
                 Inst::SimpanUpval { nilai, jaga: j, .. } => { if let Some(v) = nilai { pakai(*v, &ada)?; } jaga(j, &ada)?; }
                 Inst::Panggil { hasil, args, di, sesudah, .. } => {

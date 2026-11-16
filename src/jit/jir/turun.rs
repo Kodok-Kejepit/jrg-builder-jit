@@ -14,6 +14,7 @@ struct Pembantu {
     muat: FuncRef, ambil: FuncRef, simpan: FuncRef, buang: FuncRef, benar: FuncRef, taruh: FuncRef, langkah: FuncRef, buka: FuncRef,
     bawaan: FuncRef, biner: FuncRef, tambah_nilai: FuncRef, muat_upval: FuncRef, simpan_upval: FuncRef,
     teks_bulat: FuncRef, pindah: FuncRef, cabang: FuncRef, tulis_vm: FuncRef, bangun: FuncRef,
+    salin: FuncRef, tukar: FuncRef, cek_metode: FuncRef, iter_ada: FuncRef, maju: FuncRef,
 }
 
 struct Penurun<'a, 'b> {
@@ -63,11 +64,14 @@ pub fn turunkan(
     }
     let callee: Vec<Option<FuncRef>> = id_callee.iter().map(|i| i.map(|i| m.declare_func_in_func(i, b.func))).collect();
     let il = impor.lambat;
-    let [muat, ambil, simpan, buang, benar, taruh, langkah, buka, bawaan, biner, tambah_nilai, muat_upval, simpan_upval, teks_bulat, pindah, cabang, tulis_vm, bangun] =
+    let [muat, ambil, simpan, buang, benar, taruh, langkah, buka, bawaan, biner, tambah_nilai, muat_upval, simpan_upval, teks_bulat, pindah, cabang, tulis_vm, bangun,
+        salin, tukar, cek_metode, iter_ada, maju] =
         [il.muat, il.ambil, il.simpan, il.buang, il.benar, il.taruh, il.langkah, il.buka, il.bawaan, il.biner, il.tambah_nilai,
-            il.muat_upval, il.simpan_upval, il.teks_bulat, il.pindah, il.langkah_cabang, il.tulis_vm, il.bangun].map(|id| m.declare_func_in_func(id, b.func));
+            il.muat_upval, il.simpan_upval, il.teks_bulat, il.pindah, il.langkah_cabang, il.tulis_vm, il.bangun,
+            il.salin, il.tukar, il.cek_metode, il.iter_ada, il.maju].map(|id| m.declare_func_in_func(id, b.func));
     let lb = Pembantu {
         muat, ambil, simpan, buang, benar, taruh, langkah, buka, bawaan, biner, tambah_nilai, muat_upval, simpan_upval, teks_bulat, pindah, cabang, tulis_vm, bangun,
+        salin, tukar, cek_metode, iter_ada, maju,
     };
     let wadah = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
     let kedalaman1 = b.ins().iadd_imm_s(kedalaman, 1);
@@ -315,6 +319,35 @@ impl Penurun<'_, '_> {
                     self.b.ins().stack_addr(self.ptr, self.slot, 0),
                 ];
                 self.b.ins().call(self.lb.bangun, &args);
+            }
+            Inst::Salin { dari, ke } => {
+                let (d, k) = (self.i64c(*dari as i64), self.i64c(*ke as i64));
+                self.b.ins().call(self.lb.salin, &[d, k]);
+            }
+            Inst::Tukar { x, y } => {
+                let (a, b) = (self.i64c(*x as i64), self.i64c(*y as i64));
+                self.b.ins().call(self.lb.tukar, &[a, b]);
+            }
+            Inst::CekMetode { pos, label, jaga } => {
+                let (p, l) = (self.i64c(*pos as i64), self.i64c(*label));
+                let c = self.b.ins().call(self.lb.cek_metode, &[p, l]);
+                let c = self.b.inst_results(c)[0];
+                self.jaga(c, jaga);
+            }
+            Inst::IterAda { hasil, slot, jaga } => {
+                let p = self.i64c(*slot as i64);
+                let c = self.b.ins().call(self.lb.iter_ada, &[p]);
+                let c = self.b.inst_results(c)[0];
+                let salah = self.b.ins().icmp_imm_u(IntCC::Equal, c, 2);
+                self.jaga(salah, jaga);
+                let v = self.b.ins().uextend(types::I64, c);
+                self.tetapkan(*hasil, v);
+            }
+            Inst::Maju { slot, jaga } => {
+                let p = self.i64c(*slot as i64);
+                let c = self.b.ins().call(self.lb.maju, &[p]);
+                let c = self.b.inst_results(c)[0];
+                self.jaga(c, jaga);
             }
             Inst::Pindah { dari, ke } => {
                 let (d, k) = (self.i64c(*dari as i64), self.i64c(*ke as i64));

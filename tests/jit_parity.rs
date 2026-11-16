@@ -3766,3 +3766,56 @@ fn jir_tepi_sama_dengan_vm() {
     let r = jalankan(JIR_TEPI, &["--jit"], &[JIR, STRES, ("JRG_JIT_LOG", "jir")]);
     assert!(r.stderr.contains("tulis-vm"), "tepi pelebar tidak lewat JIR:\n{}", r.stderr);
 }
+
+/// JIR-1f (langkah 90): salinan lokal maya, `Muat` atas lokal yang isinya salinan (membaca lokal ASALNYA — sempat
+/// menjawab `nil` dan lengan `match` yang salah tanpa suara sebelum dibetulkan), `Salin`, `Tukar`, `Metode`,
+/// iterator milik VM.
+const JIR_SALINAN: [&str; 2] = [r#"package main
+struct P { pub a: int }
+impl P {
+  fn ubah(self) {
+    var g = self
+    g.a = 9
+    return g
+  }
+  fn salin(self) {
+    let x = self
+    x
+  }
+}
+pub fn main() {
+  wok(P { a: 1 }.ubah(), P { a: 2 }.salin())
+  for _, i in [1, 2, 3] {
+    if i == 2 {
+      continue
+    }
+    wok(i)
+  }
+}"#, r#"fn k(v) { match v { 2 => 7, _ => 13 } }
+fn f(v) { match v { 2.0 => 7, _ => 13 } }
+fn s(v) { match v { "a" => 1, "x" => 2, _ => 3 } }
+fn n(v) { match v { -5 => 1, 0 => 2, _ => 3 } }
+fn c(v) { match v { 'a' => 1, 97 => 2, _ => 3 } }
+fn b(v) { match v { true => 1, 1 => 2, _ => 3 } }
+wok(k(2.0), k(2), f(2), f(2.0), f(2.5))
+wok(s("a"), s("x"), s(1))
+wok(n(-5), n(-5.0), n(0.0), n(nil))
+wok(c('a'), c(97), c(97.0))
+wok(b(true), b(1), b(1.0), b(false))
+let x = 2.0
+wok(match x { 1 | 2 | 3 => "dua", 4..=8 => "rentang", _ => "lain" })
+"#];
+
+#[test]
+fn jir_salinan_sama_dengan_vm() {
+    for src in JIR_SALINAN {
+        let v = jalankan(src, &["--vm"], &[]);
+        assert!(v.sukses, "{}{}", v.stdout, v.stderr);
+        for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..]] {
+            let j = jalankan(src, &["--jit"], env);
+            assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+        }
+        let r = jalankan(src, &["--jit"], &[JIR, STRES, ("JRG_JIT_LOG", "ringkas")]);
+        assert!(r.stderr.contains("[jit] jir: "), "JIR tidak dipakai:\n{}", r.stderr);
+    }
+}

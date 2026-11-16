@@ -12,9 +12,10 @@ fn tipe_jenis(j: Jenis) -> Result<Option<Tipe>, String> {
     match j {
         Jenis::Bulat | Jenis::Bool => Ok(Some(Tipe::I)),
         Jenis::Pecahan => Ok(Some(Tipe::F)),
-        // Callee dan bawaan maya (nilainya tetap) dan nilai milik VM (di stack VM): tanpa isi native, dibangun atau
-        // dibiarkan `deopt::pulihkan` menurut jenisnya.
-        Jenis::Kosong | Jenis::Satuan | Jenis::Fungsi(_) | Jenis::Bawaan(_) | Jenis::Bungkus(..) | Jenis::Nilai => Ok(None),
+        // Tanpa isi native: callee/bawaan/konstanta maya, nilai milik VM, salinan lokal (diwujudkan lewat
+        // `Rencana::wujud`); `deopt::pulihkan` membangun atau membiarkannya menurut jenisnya.
+        Jenis::Kosong | Jenis::Satuan | Jenis::Fungsi(_) | Jenis::Bawaan(_) | Jenis::Bungkus(..) | Jenis::Nilai
+        | Jenis::Salinan(_) | Jenis::Konst(_) => Ok(None),
         lain => Err(format!("jenis {lain:?} di luar JIR-1")),
     }
 }
@@ -78,13 +79,13 @@ fn periksa_cakupan(f: &VmFunction, r: &Rencana) -> Result<(), String> {
     for (ip, ins) in f.chunk.code.iter().enumerate() {
         let Some(s) = &r.keadaan[ip] else { continue };
         for j in s { tipe_jenis(*j)?; }
-        if !r.wujud[ip].is_empty() { return Err("posisi maya diwujudkan".into()); }
         if r.keluar[ip] { continue; }
         match &r.cara[ip] {
             Cara::Asli | Cara::Buka(_) => if !opcode_dicakup(ins.op) { return Err(format!("{:?} di ip {ip}", ins.op)); },
             Cara::Konstanta | Cara::Muat | Cara::Ambil | Cara::Simpan | Cara::Buang | Cara::Benar | Cara::KembaliNilai
             | Cara::KembaliUnit | Cara::Langkah { .. } | Cara::Bawaan | Cara::Biner | Cara::MuatUpval | Cara::SimpanUpval
-            | Cara::TeksBulat | Cara::Geser | Cara::Cabang { .. } | Cara::Bangun(_) => {}
+            | Cara::TeksBulat | Cara::Geser | Cara::Cabang { .. } | Cara::Bangun(_) | Cara::Salinan | Cara::Salin | Cara::Tukar
+            | Cara::Metode(_) | Cara::IterAda | Cara::Maju => {}
             c => return Err(format!("{c:?} di ip {ip}")),
         }
         // `Return` cuma untuk titik masuk yang boleh kembali native.
@@ -158,6 +159,17 @@ impl Pembangun<'_> {
             }
             let Some((b, mut isi)) = kini.take() else { continue };
             if isi.len() != self.keadaan(ip).len() { return Err(format!("panjang stack di ip {ip} tidak cocok")); }
+            // Posisi maya yang tidak boleh melewati instruksi ini diwujudkan ke stack VM dulu.
+            for (p, j) in self.r.wujud[ip].clone() {
+                match j {
+                    Jenis::Salinan(l) => self.dorong(b, Inst::Muat { lokal: l as usize, ke: p, pindah: false }),
+                    j => {
+                        let k = j.konstanta().ok_or("wujud bukan salinan atau konstanta")? as usize;
+                        self.dorong(b, Inst::Taruh { pos: p, alamat: &self.f.chunk.constants[k] as *const _ as i64 });
+                    }
+                }
+                isi[p] = None;
+            }
             if self.acak {
                 let u = self.j.nilai_baru(Tipe::I);
                 self.dorong(b, Inst::Undi { hasil: u });
@@ -256,8 +268,12 @@ impl Pembangun<'_> {
                 isi.push(None);
             }
             Cara::Muat => {
-                let pindah = crate::jit::turun::mati_sesudah(self.f, self.r, ip, a);
-                self.dorong(b, Inst::Muat { lokal: a, ke: t, pindah });
+                // Lokal yang isinya salinan maya: lokal asalnya yang dibaca (disalin, tidak pernah dipindah).
+                let (lokal, pindah) = match s[a] {
+                    Jenis::Salinan(l) => (l as usize, false),
+                    _ => (a, crate::jit::turun::mati_sesudah(self.f, self.r, ip, a)),
+                };
+                self.dorong(b, Inst::Muat { lokal, ke: t, pindah });
                 isi.push(None);
             }
             Cara::Ambil => { self.dorong(b, Inst::Muat { lokal: a, ke: t, pindah: true }); isi.push(None); }
@@ -343,6 +359,38 @@ impl Pembangun<'_> {
                 self.dorong(b, Inst::Bangun { situs: situs as *const _ as i64, jenis, t, n, isi: isi_n, taruh: taruh_n });
                 isi.truncate(t - n);
                 isi.push(None);
+            }
+            Cara::Salinan => match ins.op {
+                // Salinan atau konstanta maya: cuma jenisnya yang berpindah.
+                OpCode::LoadLocal | OpCode::LokalHitung => isi.push(None),
+                OpCode::StoreLocal => isi[a] = None,
+                OpCode::SimpanBuang => { isi[a] = None; isi.pop(); }
+                op => return Err(format!("Cara::Salinan atas {op:?}")),
+            },
+            Cara::Salin => { self.dorong(b, Inst::Salin { dari: t - 1, ke: t }); isi.push(None); }
+            Cara::Tukar => {
+                let (x, y) = (t - 2, t - 1);
+                match (s[x].di_vm(), s[y].di_vm()) {
+                    (true, true) => self.dorong(b, Inst::Tukar { x, y }),
+                    (true, false) => self.dorong(b, Inst::Pindah { dari: x, ke: y }),
+                    _ => self.dorong(b, Inst::Pindah { dari: y, ke: x }),
+                }
+                isi.swap(x, y);
+            }
+            Cara::Metode(n) => {
+                let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: true, puncak_vm: false };
+                self.dorong(b, Inst::CekMetode { pos: t - 1, label: &self.r.metode[n] as *const String as i64, jaga });
+                isi[t - 1] = None;
+            }
+            Cara::IterAda => {
+                let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
+                let h = self.j.nilai_baru(Tipe::I);
+                self.dorong(b, Inst::IterAda { hasil: h, slot: a, jaga });
+                isi.push(Some(h));
+            }
+            Cara::Maju => {
+                let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
+                self.dorong(b, Inst::Maju { slot: a, jaga });
             }
             Cara::TeksBulat => {
                 let n = Self::ambil(isi, t - 1)?;

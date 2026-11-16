@@ -127,6 +127,17 @@ pub enum Inst {
     /// Literal atas `n` posisi teratas (`lambat::bangun`, situs `SitusBangun` di alamat `situs`), hasilnya milik VM
     /// di posisi `t - n`. Tumpahan seperti `Langkah`.
     Bangun { situs: i64, jenis: i64, t: usize, n: usize, isi: Vec<(usize, Nilai)>, taruh: Vec<(usize, i64)> },
+    /// Posisi `dari` milik VM disalin ke `ke` (`lambat::salin`).
+    Salin { dari: usize, ke: usize },
+    /// Dua posisi milik VM ditukar (`lambat::tukar`).
+    Tukar { x: usize, y: usize },
+    /// Label tipe nilai VM di `pos` harus `label` (alamat `Rencana::metode[n]`, `lambat::cek_metode`); lain = deopt
+    /// spekulasi. Posisinya jadi callee maya.
+    CekMetode { pos: usize, label: i64, jaga: Jaga },
+    /// Iterator di posisi `slot` masih punya elemen (`lambat::iter_ada`), 0/1; galat (2) = deopt.
+    IterAda { hasil: Nilai, slot: usize, jaga: Jaga },
+    /// Indeks iterator di posisi `slot` maju satu (`lambat::maju`); gagal = deopt.
+    Maju { slot: usize, jaga: Jaga },
 }
 
 /// Status `Return` native (`super::turun::BERHASIL*`).
@@ -234,6 +245,11 @@ impl fmt::Display for Fungsi {
                     Inst::TeksBulat { pos, n } => writeln!(f, "  teks {n} -> {pos}")?,
                     Inst::Pindah { dari, ke } => writeln!(f, "  pindah {dari} -> {ke}")?,
                     Inst::Bangun { t, n, isi, .. } => writeln!(f, "  bangun {n} dari {} isi {isi:?}", t - n)?,
+                    Inst::Salin { dari, ke } => writeln!(f, "  salin {dari} -> {ke}")?,
+                    Inst::Tukar { x, y } => writeln!(f, "  tukar {x} {y}")?,
+                    Inst::CekMetode { pos, jaga: j, .. } => writeln!(f, "  cek-metode {pos}{}", jaga(&Some(j.clone())))?,
+                    Inst::IterAda { hasil, slot, .. } => writeln!(f, "  {hasil} = iter-ada {slot}")?,
+                    Inst::Maju { slot, .. } => writeln!(f, "  maju {slot}")?,
                     Inst::TulisVm { pos, nilai, kode } =>
                         writeln!(f, "  tulis-vm {}{pos} (kode {kode})", nilai.map_or(String::new(), |v| format!("{v} -> ")))?,
                 }
