@@ -79,6 +79,8 @@ pub fn periksa(f: &Fungsi) -> Result<(), String> {
                 Inst::MuatUpval { jaga: j, .. } => jaga(j, &ada)?,
                 Inst::TeksBulat { n, .. } => { pakai(*n, &ada)?; tipe(*n, Tipe::I)?; }
                 Inst::Pindah { .. } => {}
+                Inst::Bangun { isi, .. } => for (_, v) in isi { pakai(*v, &ada)?; },
+                Inst::TulisVm { nilai, .. } => if let Some(v) = nilai { pakai(*v, &ada)?; },
                 Inst::SimpanUpval { nilai, jaga: j, .. } => { if let Some(v) = nilai { pakai(*v, &ada)?; } jaga(j, &ada)?; }
                 Inst::Panggil { hasil, args, di, sesudah, .. } => {
                     for a in args { pakai(*a, &ada)?; tipe(*a, Tipe::I)?; }

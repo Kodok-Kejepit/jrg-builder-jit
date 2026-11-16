@@ -13,7 +13,7 @@ use crate::jit::turun::{Impor, BERHASIL, BERHASIL_BOOL, BERHASIL_NILAI, BERHASIL
 struct Pembantu {
     muat: FuncRef, ambil: FuncRef, simpan: FuncRef, buang: FuncRef, benar: FuncRef, taruh: FuncRef, langkah: FuncRef, buka: FuncRef,
     bawaan: FuncRef, biner: FuncRef, tambah_nilai: FuncRef, muat_upval: FuncRef, simpan_upval: FuncRef,
-    teks_bulat: FuncRef, pindah: FuncRef, cabang: FuncRef,
+    teks_bulat: FuncRef, pindah: FuncRef, cabang: FuncRef, tulis_vm: FuncRef, bangun: FuncRef,
 }
 
 struct Penurun<'a, 'b> {
@@ -63,11 +63,11 @@ pub fn turunkan(
     }
     let callee: Vec<Option<FuncRef>> = id_callee.iter().map(|i| i.map(|i| m.declare_func_in_func(i, b.func))).collect();
     let il = impor.lambat;
-    let [muat, ambil, simpan, buang, benar, taruh, langkah, buka, bawaan, biner, tambah_nilai, muat_upval, simpan_upval, teks_bulat, pindah, cabang] =
+    let [muat, ambil, simpan, buang, benar, taruh, langkah, buka, bawaan, biner, tambah_nilai, muat_upval, simpan_upval, teks_bulat, pindah, cabang, tulis_vm, bangun] =
         [il.muat, il.ambil, il.simpan, il.buang, il.benar, il.taruh, il.langkah, il.buka, il.bawaan, il.biner, il.tambah_nilai,
-            il.muat_upval, il.simpan_upval, il.teks_bulat, il.pindah, il.langkah_cabang].map(|id| m.declare_func_in_func(id, b.func));
+            il.muat_upval, il.simpan_upval, il.teks_bulat, il.pindah, il.langkah_cabang, il.tulis_vm, il.bangun].map(|id| m.declare_func_in_func(id, b.func));
     let lb = Pembantu {
-        muat, ambil, simpan, buang, benar, taruh, langkah, buka, bawaan, biner, tambah_nilai, muat_upval, simpan_upval, teks_bulat, pindah, cabang,
+        muat, ambil, simpan, buang, benar, taruh, langkah, buka, bawaan, biner, tambah_nilai, muat_upval, simpan_upval, teks_bulat, pindah, cabang, tulis_vm, bangun,
     };
     let wadah = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
     let kedalaman1 = b.ins().iadd_imm_s(kedalaman, 1);
@@ -301,6 +301,20 @@ impl Penurun<'_, '_> {
             Inst::TeksBulat { pos, n } => {
                 let (p, v) = (self.i64c(*pos as i64), self.v(*n));
                 self.b.ins().call(self.lb.teks_bulat, &[p, v]);
+            }
+            Inst::TulisVm { pos, nilai, kode } => {
+                let v = match nilai { Some(n) => self.bit(*n), None => self.i64c(0) };
+                let p = self.i64c(*pos as i64);
+                let k = self.b.ins().iconst(types::I32, *kode as i64);
+                self.b.ins().call(self.lb.tulis_vm, &[p, v, k]);
+            }
+            Inst::Bangun { situs, jenis, t, n, isi, taruh } => {
+                self.tumpah(isi, taruh);
+                let args = [
+                    self.i64c(*situs), self.i64c(*jenis), self.i64c(*t as i64), self.i64c(*n as i64),
+                    self.b.ins().stack_addr(self.ptr, self.slot, 0),
+                ];
+                self.b.ins().call(self.lb.bangun, &args);
             }
             Inst::Pindah { dari, ke } => {
                 let (d, k) = (self.i64c(*dari as i64), self.i64c(*ke as i64));

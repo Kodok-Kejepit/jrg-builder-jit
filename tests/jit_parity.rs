@@ -3725,3 +3725,44 @@ fn jir_bawaan_sama_dengan_vm() {
     let r = jalankan(JIR_BAWAAN, &["--jit"], &[JIR, STRES, ("JRG_JIT_LOG", "jir")]);
     assert!(r.stderr.contains("muat tangkapan") && r.stderr.contains("biner-vm"), "tidak lewat JIR:\n{}", r.stderr);
 }
+
+/// JIR-1e (langkah 89): tepi ke titik temu yang dilebarkan jadi milik VM (blok stub `tulis-vm`, keadaan tepi dipakai
+/// sebelum titik temu) dan literal struct, larik, tuple, varian (`Inst::Bangun`).
+const JIR_TEPI: &str = r#"struct T { pub a: int, pub b: string }
+enum E { A(int), B }
+fn campur(n: int) {
+    var x = 0
+    for i in 0..n {
+        // Di titik temu `x` kadang teks: posisinya dilebarkan jadi milik VM di tepi.
+        if i % 7 == 0 { x = "t" } else { x = i }
+    }
+    return x
+}
+fn susun(n: int) {
+    var t = T { a: 0, b: "" }
+    var xs = []
+    for i in 0..n {
+        t = T { a: i, b: str(i) }
+        xs = [i, i * 2]
+        let p = (i, "p")
+        let e = if i % 2 == 0 { E::A(i) } else { E::B }
+    }
+    return [t.a, len(xs), 0]
+}
+fn main() {
+    wok(campur(50), campur(8))
+    wok(susun(40))
+}
+"#;
+
+#[test]
+fn jir_tepi_sama_dengan_vm() {
+    let v = jalankan(JIR_TEPI, &["--vm"], &[]);
+    assert!(v.sukses && v.stdout.lines().count() == 2, "{}{}", v.stdout, v.stderr);
+    for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..]] {
+        let j = jalankan(JIR_TEPI, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let r = jalankan(JIR_TEPI, &["--jit"], &[JIR, STRES, ("JRG_JIT_LOG", "jir")]);
+    assert!(r.stderr.contains("tulis-vm"), "tepi pelebar tidak lewat JIR:\n{}", r.stderr);
+}

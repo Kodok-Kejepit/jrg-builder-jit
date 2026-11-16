@@ -121,6 +121,12 @@ pub enum Inst {
     TeksBulat { pos: usize, n: Nilai },
     /// Posisi `dari` milik VM dipindah ke `ke` (`lambat::pindah`).
     Pindah { dari: usize, ke: usize },
+    /// Isi native (atau `nil`/`()` tanpa isi) berkode jenis `kode` ditulis ke stack VM di posisi `pos`
+    /// (`lambat::tulis_vm`): tepi ke titik temu yang posisinya dilebarkan jadi milik VM.
+    TulisVm { pos: usize, nilai: Option<Nilai>, kode: i32 },
+    /// Literal atas `n` posisi teratas (`lambat::bangun`, situs `SitusBangun` di alamat `situs`), hasilnya milik VM
+    /// di posisi `t - n`. Tumpahan seperti `Langkah`.
+    Bangun { situs: i64, jenis: i64, t: usize, n: usize, isi: Vec<(usize, Nilai)>, taruh: Vec<(usize, i64)> },
 }
 
 /// Status `Return` native (`super::turun::BERHASIL*`).
@@ -227,6 +233,9 @@ impl fmt::Display for Fungsi {
                         writeln!(f, "  simpan {dari}{} -> tangkapan {idx}", nilai.map_or(String::new(), |v| format!("={v}")))?,
                     Inst::TeksBulat { pos, n } => writeln!(f, "  teks {n} -> {pos}")?,
                     Inst::Pindah { dari, ke } => writeln!(f, "  pindah {dari} -> {ke}")?,
+                    Inst::Bangun { t, n, isi, .. } => writeln!(f, "  bangun {n} dari {} isi {isi:?}", t - n)?,
+                    Inst::TulisVm { pos, nilai, kode } =>
+                        writeln!(f, "  tulis-vm {}{pos} (kode {kode})", nilai.map_or(String::new(), |v| format!("{v} -> ")))?,
                 }
             }
             match &b.akhir {
