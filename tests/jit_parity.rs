@@ -4288,3 +4288,46 @@ fn jir_rumus_sama_dengan_vm() {
     let r = jalankan(JIR_RUMUS, &["--jit"], &[JIR, ("JRG_JIT_LOG", "jir")]);
     assert!(r.stderr.contains("rumus #") && r.stderr.contains("FieldLokal ["), "rumus/field_lokal tidak lewat JIR:\n{}", r.stderr);
 }
+
+/// JIR-2d (langkah 100): tembolok bacaan field angka per blok (`Pembangun::cse_field`), dibuang sesudah instruksi
+/// tidak murni, dan benih dari struct yang baru dibangun dari angka native; field dibaca ulang sesudah ditulis.
+const JIR_CSE_FIELD: &str = r#"struct T { pub a: int, pub b: float }
+fn baca(n: int) {
+    var t = T { a: 1, b: 0.5 }
+    var s = 0.0
+    for i in 0..n {
+        s = s + t.b + t.b * 2.0
+        let k = t.a + t.a
+        t.b = t.b + 0.25
+        s = s + t.b + (k as float)
+        t = T { a: i, b: s / 1000.0 }
+        s = s + t.b + (t.a as float)
+    }
+    return s
+}
+fn ganti(n: int) {
+    var t = T { a: 1, b: 1.5 }
+    var u = t
+    var s = 0
+    for i in 0..n {
+        s = s + t.a
+        t = T { a: t.a + 1, b: t.b }
+        s = s + t.a + u.a
+        if i == n / 2 { t = T { a: 1000, b: 0.0 } }
+    }
+    return s
+}
+fn main() {
+    wok(baca(500), ganti(400))
+}
+"#;
+
+#[test]
+fn jir_cse_field_sama_dengan_vm() {
+    let v = jalankan(JIR_CSE_FIELD, &["--vm"], &[]);
+    assert!(v.sukses, "{}{}", v.stdout, v.stderr);
+    for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..]] {
+        let j = jalankan(JIR_CSE_FIELD, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}
