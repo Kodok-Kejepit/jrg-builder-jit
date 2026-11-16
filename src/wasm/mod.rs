@@ -120,34 +120,26 @@ pub fn pemuat_untuk(wasm: &Path) -> PathBuf {
     PathBuf::from(n)
 }
 
-/// Pemuat node: program jalan di `Worker` ber-stack 512 MiB (stack V8 bawaan ±1 MiB menolak rekursi yang jalan di
-/// native), WASI bawaan node, argumen sesudah nama berkas wasm, kode keluar dari `proc_exit`.
-const PEMUAT_NODE: &str = r#"// Dibuat jrgc --emit-wasm. Pakai: node <program>.wasm.mjs [argumen...]
+/// Pemuat node: WASI bawaan node, argumen sesudah nama berkas wasm, kode keluar dari `proc_exit`. Stack V8 bawaan
+/// (±1 MiB) menolak rekursi yang jalan di native, jadi `jalankan` memberi `--stack-size` (di bawah stack OS 8 MiB).
+const PEMUAT_NODE: &str = r#"// Dibuat jrgc --emit-wasm. Pakai: node --stack-size=6000 <program>.wasm.mjs [argumen...]
 import fs from 'node:fs';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { Worker, isMainThread, parentPort } from 'node:worker_threads';
 import { WASI } from 'node:wasi';
-const ini = fileURLToPath(import.meta.url);
-const wasm = ini.replace(/\.mjs$/, '');
-if (isMainThread) {
-  const w = new Worker(ini, { argv: process.argv.slice(2), resourceLimits: { stackSizeMb: 512 } });
-  w.on('message', (k) => { process.exitCode = k; });
-  w.on('error', (e) => { console.error(e); process.exitCode = 1; });
-} else {
-  const wasi = new WASI({ version: 'preview1', args: [wasm, ...process.argv.slice(2)], env: process.env,
-    preopens: { '/': '/' }, returnOnExit: true });
-  const mod = await WebAssembly.compile(fs.readFileSync(wasm));
-  const inst = await WebAssembly.instantiate(mod, { wasi_snapshot_preview1: wasi.wasiImport });
-  parentPort.postMessage(wasi.start(inst));
-}
+const wasm = fileURLToPath(import.meta.url).replace(/\.mjs$/, '');
+const wasi = new WASI({ version: 'preview1', args: [wasm, ...process.argv.slice(2)], env: process.env,
+  preopens: { '/': '/' }, returnOnExit: true });
+const mod = await WebAssembly.compile(fs.readFileSync(wasm));
+const inst = await WebAssembly.instantiate(mod, { wasi_snapshot_preview1: wasi.wasiImport });
+process.exitCode = wasi.start(inst);
 "#;
 
 /// Menjalankan `wasm` lewat node; kode keluarnya kode keluar program.
 pub fn jalankan(wasm: &Path, args: &[String]) -> Result<i32, String> {
     let node = di_path("node").ok_or("--emit-wasm menjalankan programnya lewat `node` (WASI bawaan node 20+), \
         dan `node` tidak ada di PATH; pakai `--no-run` untuk menyusun saja")?;
-    let status = Command::new(node).arg("--no-warnings").arg(pemuat_untuk(wasm)).args(args).status()
+    let status = Command::new(node).args(["--no-warnings", "--stack-size=6000"]).arg(pemuat_untuk(wasm)).args(args).status()
         .map_err(|e| format!("gagal menjalankan node: {}", crate::host::galat_io(&e)))?;
     Ok(status.code().unwrap_or(1))
 }

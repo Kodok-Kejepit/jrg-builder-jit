@@ -4359,3 +4359,52 @@ fn jir_cse_field_sama_dengan_vm() {
         assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+/// JIR-3a (langkah 102): callee panggilan langsung disisipkan di JIR pemanggil; jaga di dalamnya membawa keadaan
+/// pemanggil (`Keadaan::induk`), dan deopt menyusun dua bingkai VM (`SISIP`). Spekulasi yang gagal dan galat di
+/// dalam callee yang disisipkan, enum dan struct milik VM sebagai argumen dan hasil.
+const JIR_SISIP: &str = r#"enum Op { Tambah(int), Kali(int), Skala(float), Diam }
+struct Titik { pub x: int, pub y: int }
+
+fn jalan(o: Op, acc: int) -> int {
+    match o {
+        Op::Tambah(k) => acc + k,
+        Op::Kali(k) => (acc * k) % 1000003,
+        Op::Skala(f) => acc + 2,
+        Op::Diam => acc,
+    }
+}
+fn geser(p: Titik, d: int) -> Titik {
+    return Titik { x: p.x + d, y: p.y - d }
+}
+fn bagi(a: int, b: int) -> int { return a / b }
+
+fn main() {
+    var acc = 1
+    for i in 0..3000 {
+        let o = if i % 4 == 0 { Op::Tambah(i % 97) } else if i % 4 == 1 { Op::Kali(3) } else if i % 4 == 2 { Op::Diam } else { Op::Skala(1.5) }
+        acc = jalan(o, acc)
+        // Spekulasi di dalam callee yang disisipkan gagal di tengah jalan: payload berganti jenis.
+        if i == 2500 { acc = jalan(Op::Tambah(9223372036854775000), acc) % 1000003 }
+    }
+    var p = Titik { x: 0, y: 0 }
+    for i in 0..2000 { p = geser(p, i % 5) }
+    var t = 0
+    for i in 0..500 { t = t + bagi(1000000, i + 1) }
+    wok(acc, p.x, p.y, t)
+    // Galat di dalam callee yang disisipkan: dilaporkan VM dengan jejak yang sama.
+    wok(bagi(5, 0))
+}
+"#;
+
+#[test]
+fn jir_sisip_sama_dengan_vm() {
+    let v = jalankan(JIR_SISIP, &["--vm"], &[]);
+    assert!(!v.sukses && v.stdout.lines().count() == 1, "{}{}", v.stdout, v.stderr);
+    for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..]] {
+        let j = jalankan(JIR_SISIP, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let r = jalankan(JIR_SISIP, &["--jit"], &[JIR, ("JRG_JIT_LOG", "jir")]);
+    assert!(r.stderr.contains(" < fid"), "tidak ada callee yang disisipkan:\n{}", r.stderr);
+}

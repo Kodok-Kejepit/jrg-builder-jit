@@ -9,8 +9,12 @@
 Aset tulisan tangan (situs.css, situs.js, kelas.js, praktik.js) tinggal di docs/aset/ dan
 tidak disentuh; yang ditulis ulang cuma halaman HTML, aset/cari.js dan aset/kelas-data.js.
 
+Dua bahasa: sumber Inggris di _sumber/en/ jadi akar situs (bawaan), sumber Indonesia di _sumber/ jadi /id/.
+Kelas Matematika cuma berbahasa Indonesia dan dibangun sekali di akar.
+
 Pakai dari akar repo:  python3 perkakas/bangun_situs.py [--keluar DIR]
 """
+import os
 import hashlib
 import html
 import json
@@ -26,6 +30,42 @@ DOCS = AKAR / "docs"
 VERSI = "0.6.0"
 REPO = "https://github.com/Kodok-Kejepit/jrg"
 SITUS = "https://jrg-lang.org"
+SALURAN_WA = "https://whatsapp.com/channel/0029Vb8hf0IJP218v3nO263U"
+
+# Bahasa yang sedang dibangun: "en" (akar) atau "id" (/id/). Teks antarmuka lewat `t()`.
+BAHASA = "en"
+KAMUS = {
+    "Mulai": "Start", "Bahasa": "Language", "Pustaka": "Library", "Perkakas": "Tools",
+    "Di balik layar": "Under the hood", "Dokumentasi": "Docs", "Profil": "Profile", "Cari": "Search",
+    "Buka navigasi": "Open navigation", "Ganti tema terang atau gelap": "Toggle light or dark theme",
+    "Kode sumber di GitHub": "Source code on GitHub", "Lewati ke isi": "Skip to content",
+    "Cari di dokumentasi dan kelas…": "Search the docs and the course…", "Kata yang dicari": "Search term",
+    "versi": "version", "Pasang": "Install", "Catatan rilis": "Release notes", "Kode sumber": "Source code",
+    "Sebelumnya": "Previous", "Berikutnya": "Next", "Halaman berurutan": "Page sequence",
+    "Di halaman ini": "On this page", "Navigasi dokumentasi": "Documentation navigation",
+    "Dokumentasi JawaRustGo++ (JRG)": "JawaRustGo++ (JRG) documentation", "Dokumentasi JRG": "JRG docs",
+    "jalankan dengan jrgc": "run with jrgc", "terminal": "terminal", "Situs": "Site",
+    "Butuh thread, berkas, jaringan, atau pustaka sistem yang tidak ada di peramban":
+        "Needs threads, files, the network, or a system library the browser does not have",
+    "Bahasa Indonesia": "Bahasa Indonesia", "Profil pembuat": "About the author",
+    "Saluran WhatsApp JRG": "JRG WhatsApp channel", "Saluran WhatsApp": "WhatsApp channel",
+    "Matematika × JRG": "Math × JRG", "Konsep": "Concept", "Kode JRG": "JRG code", "Tips": "Tip",
+    "Catatan": "Note", "Hati-hati": "Careful", "Jebakan": "Trap", "Tahukah kamu": "Did you know",
+    "Di dunia nyata": "In the real world", "Latihan mandiri": "Practice on your own", "Kuis": "Quiz",
+    "bab selesai": "chapters done", "dari": "of", "Daftar bab": "Chapter list",
+    "Bab sebelumnya": "Previous chapter", "Bab berikutnya": "Next chapter",
+    "Tandai proyek selesai": "Mark project as done",
+    "Matematika × JRG — belajar dari nol": "Math × JRG — learn from zero",
+}
+
+
+def t(teks: str) -> str:
+    return KAMUS.get(teks, teks) if BAHASA == "en" else teks
+
+
+def sumber_bahasa() -> Path:
+    return SUMBER / "en" if BAHASA == "en" else SUMBER
+
 
 URUTAN_DOK = [
     ("Mulai", ["index", "pasang", "tur"]),
@@ -63,8 +103,37 @@ def tulis(p: Path, isi: str):
     if "{KANONIK}" in isi:
         isi = isi.replace("{KANONIK}", alamat(p))
         HALAMAN.append(alamat(p))
+    if "{BAHASA_LAIN}" in isi:
+        isi = isi.replace("{BAHASA_LAIN}", tombol_bahasa(p)).replace("{ALTERNATE}", alternate(p))
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(isi, encoding="utf-8")
+
+
+def pasangan(p: Path):
+    """(berkas Inggris, berkas Indonesia) sebuah halaman."""
+    rel = p.relative_to(KELUAR).as_posix()
+    if rel.startswith("id/"):
+        return KELUAR / rel[3:], p
+    return p, KELUAR / "id" / rel
+
+
+def tombol_bahasa(p: Path) -> str:
+    """Tautan ke halaman yang sama di bahasa lain (relatif, jadi pratinjau `file://` tetap jalan)."""
+    psg = pasangan(p)
+    en = p.relative_to(KELUAR).as_posix().startswith("id/") is False
+    tujuan, label, kode = (psg[1], "Bahasa Indonesia", "ID") if en else (psg[0], "English", "EN")
+    href = os.path.relpath(tujuan, p.parent).replace(os.sep, "/")
+    return (f'<a class="tombol-bahasa" href="{href}" hreflang="{kode.lower()}" lang="{kode.lower()}" '
+            f'aria-label="{label}">{kode}</a>')
+
+
+def alternate(p: Path) -> str:
+    psg = pasangan(p)
+    if psg is None:
+        return ""
+    return (f'\n<link rel="alternate" hreflang="en" href="{alamat(psg[0])}">'
+            f'\n<link rel="alternate" hreflang="id" href="{alamat(psg[1])}">'
+            f'\n<link rel="alternate" hreflang="x-default" href="{alamat(psg[0])}">')
 
 
 def slug(teks: str) -> str:
@@ -137,12 +206,12 @@ def blok_kode(kode: str, bahasa: str, nama: str = "", keluaran=None, jalan=False
         isi = warnai_sh(kode)
     else:
         isi = esc(kode)
-    label = nama or {"jrg": "jrg", "jrg-cuplikan": "jrg", "sh": "terminal"}.get(bahasa, bahasa)
+    label = nama or {"jrg": "jrg", "jrg-cuplikan": "jrg", "sh": t("terminal")}.get(bahasa, bahasa)
     atribut = " data-jalan" if jalan else ""
     keluar = [f'<figure class="kode"{atribut}>',
               f'<figcaption><span>{esc(label)}</span>'
-              + ('<span class="lokal" title="Butuh thread, berkas, jaringan, atau pustaka sistem yang tidak ada di peramban">'
-                 'jalankan dengan jrgc</span>' if lokal else '') + '</figcaption>',
+              + (f'<span class="lokal" title="{t("Butuh thread, berkas, jaringan, atau pustaka sistem yang tidak ada di peramban")}">'
+                 f'{t("jalankan dengan jrgc")}</span>' if lokal else '') + '</figcaption>',
               f'<pre><code>{isi}</code></pre>']
     if keluaran is not None:
         keluar.append(f'<pre class="keluaran"><code>{esc(keluaran.rstrip(chr(10)))}</code></pre>')
@@ -301,6 +370,8 @@ IKON = {
     "cari": '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>',
     "tema": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>',
     "menu": '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
+    "wa": ('<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 20.5l1.2-4.3A8.5 8.5 0 1 1 8 19.4z"/>'
+           '<path d="M9 8.5c0 3.3 3 6.5 6.5 6.5l1-1.6-2-1-1 .9c-1-.4-2.2-1.6-2.6-2.6l.9-1-1-2z"/></svg>'),
     "git": ('<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19c-4 1.3-4-2-6-2.5m12 4.5v-3.5c0-1 '
             '.1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1-.3-3.4 1.3a11.6 '
             '11.6 0 0 0-6 0C6.8 2.8 5.8 3.1 5.8 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4.4 9.5c0 4.6 2.7 5.7 '
@@ -312,16 +383,18 @@ def kepala(aktif: str, naik: str) -> str:
     def tab(kunci, label, href):
         kelas = ' class="aktif" aria-current="page"' if kunci == aktif else ""
         return f'<a{kelas} href="{naik}{href}">{label}</a>'
-    menu = ('<button class="tombol-ikon tombol-menu" type="button" aria-label="Buka navigasi" '
+    menu = (f'<button class="tombol-ikon tombol-menu" type="button" aria-label="{t("Buka navigasi")}" '
             f'data-aksi="menu">{IKON["menu"]}</button>') if aktif in ("dok", "mtk") else ""
     return f"""<header class="kepala">
   {menu}<a class="merek" href="{naik}index.html" aria-label="JRG++ beranda"><img class="terang-saja" src="{naik}aset/logo.webp" alt="JRG++" width="131" height="34"><img class="gelap-saja" src="{naik}aset/logo-gelap.webp" alt="JRG++" width="131" height="34"></a>
-  <nav class="situs" aria-label="Situs">{tab("dok", "Dokumentasi", "web_dokumentasi/index.html")}{tab("mtk", "Matematika × JRG", "matematika_x_jrg/index.html")}{tab("profil", "Profil", "profil.html")}</nav>
+  <nav class="situs" aria-label="{t("Situs")}">{tab("dok", t("Dokumentasi"), "web_dokumentasi/index.html")}{tab("mtk", t("Matematika × JRG"), "matematika_x_jrg/index.html")}{tab("profil", t("Profil"), "profil.html")}</nav>
   <span class="versi">v{VERSI}</span>
   <div class="kepala-kanan">
-    <button class="tombol-cari" type="button" data-aksi="cari" aria-label="Cari">{IKON["cari"]}<span>Cari</span><kbd>/</kbd></button>
-    <button class="tombol-ikon" type="button" data-aksi="tema" aria-label="Ganti tema terang atau gelap">{IKON["tema"]}</button>
-    <a class="tombol-ikon" href="{REPO}" aria-label="Kode sumber di GitHub">{IKON["git"]}</a>
+    <button class="tombol-cari" type="button" data-aksi="cari" aria-label="{t("Cari")}">{IKON["cari"]}<span>{t("Cari")}</span><kbd>/</kbd></button>
+    {{BAHASA_LAIN}}
+    <button class="tombol-ikon" type="button" data-aksi="tema" aria-label="{t("Ganti tema terang atau gelap")}">{IKON["tema"]}</button>
+    <a class="tombol-ikon" href="{SALURAN_WA}" rel="noopener" aria-label="{t("Saluran WhatsApp JRG")}" title="{t("Saluran WhatsApp JRG")}">{IKON["wa"]}</a>
+    <a class="tombol-ikon" href="{REPO}" aria-label="{t("Kode sumber di GitHub")}">{IKON["git"]}</a>
   </div>
 </header>"""
 
@@ -353,18 +426,19 @@ def versikan(keluar: Path):
 
 
 def halaman(judul, deskripsi, aktif, naik, isi, skrip=(), ekstra=""):
-    js = "".join(f'\n<script defer src="{naik}aset/{s}"></script>' for s in ("cari.js", "situs.js") + tuple(skrip))
+    cari = "cari.js" if BAHASA == "en" else "cari-id.js"
+    js = "".join(f'\n<script defer src="{naik}aset/{s}"></script>' for s in (cari, "situs.js") + tuple(skrip))
     return f"""<!DOCTYPE html>
-<html lang="id">
+<html lang="{BAHASA}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(judul)}</title>
 <meta name="description" content="{esc(deskripsi)}">
-<link rel="canonical" href="{{KANONIK}}">
+<link rel="canonical" href="{{KANONIK}}">{{ALTERNATE}}
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="JawaRustGo++ (JRG)">
-<meta property="og:locale" content="id_ID">
+<meta property="og:locale" content="{"en_US" if BAHASA == "en" else "id_ID"}">
 <meta property="og:title" content="{esc(judul)}">
 <meta property="og:description" content="{esc(deskripsi)}">
 <meta property="og:url" content="{{KANONIK}}">
@@ -377,11 +451,11 @@ def halaman(judul, deskripsi, aktif, naik, isi, skrip=(), ekstra=""):
 <script>try{{var t=localStorage.getItem('jrg-tema');if(t)document.documentElement.dataset.tema=t}}catch(e){{}}</script>
 </head>
 <body data-situs="{aktif}">
-<a class="lewati" href="#isi">Lewati ke isi</a>
+<a class="lewati" href="#isi">{t("Lewati ke isi")}</a>
 {kepala(aktif, naik)}
 {isi}
-<div class="dialog-cari" hidden><div class="kotak-cari" role="dialog" aria-label="Cari">
-  <input type="search" placeholder="Cari di dokumentasi dan kelas…" aria-label="Kata yang dicari">
+<div class="dialog-cari" hidden><div class="kotak-cari" role="dialog" aria-label="{t("Cari")}">
+  <input type="search" placeholder="{t("Cari di dokumentasi dan kelas…")}" aria-label="{t("Kata yang dicari")}">
   <ol class="hasil-cari"></ol>
 </div></div>{js}
 </body>
@@ -392,19 +466,21 @@ def halaman(judul, deskripsi, aktif, naik, isi, skrip=(), ekstra=""):
 def kaki(naik: str) -> str:
     return (f'<footer class="kaki"><span class="kaki-merek"><img class="terang-saja" src="{naik}aset/logo-kaki.webp" alt="JRG++" '
             f'width="155" height="40"><img class="gelap-saja" src="{naik}aset/logo-kaki-gelap.webp" alt="JRG++" width="155" '
-            f'height="40"><span>versi {VERSI}</span></span>'
-            f'<span><a href="{naik}web_dokumentasi/pasang.html">Pasang</a> · '
-            f'<a href="{naik}web_dokumentasi/rilis.html">Catatan rilis</a> · '
-            f'<a href="{naik}profil.html">Profil</a> · '
-            f'<a href="{REPO}">Kode sumber</a></span></footer>')
+            f'height="40"><span>{t("versi")} {VERSI}</span></span>'
+            f'<span><a href="{naik}web_dokumentasi/pasang.html">{t("Pasang")}</a> · '
+            f'<a href="{naik}web_dokumentasi/rilis.html">{t("Catatan rilis")}</a> · '
+            f'<a href="{naik}profil.html">{t("Profil")}</a> · '
+            f'<a href="{REPO}">{t("Kode sumber")}</a> · '
+            f'<a href="{SALURAN_WA}" rel="noopener">{t("Saluran WhatsApp")}</a></span></footer>')
 
 
-def langkah(sebelum, sesudah, label_s="Sebelumnya", label_b="Berikutnya"):
+def langkah(sebelum, sesudah, label_s=None, label_b=None):
+    label_s, label_b = label_s or t("Sebelumnya"), label_b or t("Berikutnya")
     def a(x, arah, label):
         if not x:
             return "<span></span>"
         return f'<a class="ke-{arah}" href="{x[0]}"><small>{label}</small><strong>{esc(x[1])}</strong></a>'
-    return (f'<nav class="langkah" aria-label="Halaman berurutan">'
+    return (f'<nav class="langkah" aria-label="{t("Halaman berurutan")}">'
             f'{a(sebelum, "kiri", label_s)}{a(sesudah, "kanan", label_b)}</nav>')
 
 
@@ -412,14 +488,14 @@ def daftar_isi(judul):
     h2 = [j for j in judul if j[0] == 2]
     if len(h2) < 3:
         return ""
-    butir = "".join(f'<li><a href="#{i}">{esc(t)}</a></li>' for _, i, t in h2)
-    return f'<nav class="di-halaman" aria-label="Di halaman ini"><p>Di halaman ini</p><ol>{butir}</ol></nav>'
+    butir = "".join(f'<li><a href="#{i}">{esc(jd)}</a></li>' for _, i, jd in h2)
+    return f'<nav class="di-halaman" aria-label="{t("Di halaman ini")}"><p>{t("Di halaman ini")}</p><ol>{butir}</ol></nav>'
 
 
 # ── situs dokumentasi ───────────────────────────────────────────────────
 
 def bangun_dokumentasi(keluar: Path, cari: list):
-    folder = SUMBER / "dokumentasi"
+    folder = sumber_bahasa() / "dokumentasi"
     hal = []
     for grup, nama in URUTAN_DOK:
         for n in nama:
@@ -438,12 +514,12 @@ def bangun_dokumentasi(keluar: Path, cari: list):
             if grup != grup_kini:
                 if grup_kini:
                     k.append("</ul>")
-                k.append(f'<p class="sisi-grup">{grup}</p><ul>')
+                k.append(f'<p class="sisi-grup">{t(grup)}</p><ul>')
                 grup_kini = grup
             kelas = ' class="aktif" aria-current="page"' if n == aktif else ""
             k.append(f'<li><a{kelas} href="{n}.html">{esc(menu(meta))}</a></li>')
         k.append("</ul>")
-        return '<aside class="sisi" aria-label="Navigasi dokumentasi"><nav>' + "".join(k) + "</nav></aside>"
+        return f'<aside class="sisi" aria-label="{t("Navigasi dokumentasi")}"><nav>' + "".join(k) + "</nav></aside>"
 
     for i, (grup, n, meta, md) in enumerate(hal):
         isi_html, judul, teks = markdown(md)
@@ -455,7 +531,7 @@ def bangun_dokumentasi(keluar: Path, cari: list):
 {sidebar(n)}
 <main id="isi" class="isi">
 <article class="artikel">
-<p class="rel">{grup}</p>
+<p class="rel">{t(grup)}</p>
 <h1>{inline(meta["judul"])}</h1>
 {f'<p class="ringkas">{inline(ringkas)}</p>' if ringkas else ''}
 {isi_html}
@@ -465,14 +541,14 @@ def bangun_dokumentasi(keluar: Path, cari: list):
 </main>
 {daftar_isi(judul)}
 </div>"""
-        jdl = "Dokumentasi JawaRustGo++ (JRG)" if n == "index" else f'{polos(meta["judul"])} — Dokumentasi JRG'
+        jdl = t("Dokumentasi JawaRustGo++ (JRG)") if n == "index" else f'{polos(meta["judul"])} — {t("Dokumentasi JRG")}'
         tulis(keluar / "web_dokumentasi" / f"{n}.html",
               halaman(jdl, polos(ringkas or meta["judul"]), "dok", "../", badan))
-        cari.append({"j": polos(meta["judul"]), "u": f"web_dokumentasi/{n}.html", "g": "Dokumentasi",
+        cari.append({"j": polos(meta["judul"]), "u": f"web_dokumentasi/{n}.html", "g": t("Dokumentasi"),
                      "k": polos(ringkas), "t": teks[:1500]})
-        for lv, hid, t in judul:
+        for lv, hid, jd in judul:
             if lv == 2:
-                cari.append({"j": t, "u": f"web_dokumentasi/{n}.html#{hid}", "g": menu(meta), "k": "", "t": ""})
+                cari.append({"j": jd, "u": f"web_dokumentasi/{n}.html#{hid}", "g": menu(meta), "k": "", "t": ""})
     return len(hal)
 
 
@@ -483,61 +559,61 @@ LABEL_CATATAN = {"tip": "Tips", "info": "Catatan", "warn": "Hati-hati", "bug": "
 
 
 def blok_mtk(b, bab_id, nomor_kuis):
-    t = b.get("type")
-    if t == "heading":
-        lencana = {"konsep": "Konsep", "kode": "Kode JRG"}.get(b.get("badge"), b.get("badge") or "")
+    tb = b.get("type")
+    if tb == "heading":
+        lencana = {"konsep": t("Konsep"), "kode": t("Kode JRG")}.get(b.get("badge"), b.get("badge") or "")
         lab = f'<span class="lencana">{esc(str(lencana))}</span>' if lencana else ""
         teks = b.get("text", "")
         return f'<h2 id="{slug(teks)}">{lab}{teks}</h2>', teks
-    if t == "reftitle":
+    if tb == "reftitle":
         return f'<h3>{b.get("text", "")}</h3>', b.get("text", "")
-    if t == "paragraph":
+    if tb == "paragraph":
         return f'<p>{b.get("html", "")}</p>', b.get("html", "")
-    if t == "keypoint":
+    if tb == "keypoint":
         jenis = b.get("subtype") or "info"
-        jdl = b.get("title") or LABEL_CATATAN.get(jenis, "Catatan")
+        jdl = b.get("title") or t(LABEL_CATATAN.get(jenis, "Catatan"))
         return (f'<aside class="catatan catatan-{jenis}"><p class="catatan-judul">{jdl}</p>'
                 f'<div>{b.get("html", "")}</div></aside>'), b.get("html", "")
-    if t == "code":
+    if tb == "code":
         kode = b.get("code", "")
         return blok_kode(kode, "jrg", b.get("filename", ""), b.get("output") or None, jalan=True), kode
-    if t == "mathbox":
+    if tb == "mathbox":
         baris = "".join(f'<div class="rumus-{"persamaan" if l.get("kind") == "eq" else "langkah"}">{l.get("html", "")}</div>'
                         for l in b.get("lines", []))
         return f'<div class="rumus">{baris}</div>', ""
-    if t == "table":
+    if tb == "table":
         h = "".join(f"<th>{x}</th>" for x in b.get("headers", []))
         r = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>" for row in b.get("rows", []))
         return f'<div class="tabel"><table><thead><tr>{h}</tr></thead><tbody>{r}</tbody></table></div>', ""
-    if t == "shapelist":
+    if tb == "shapelist":
         k = "".join(f'<div class="bentuk"><b>{x.get("name", "")}</b><span>{x.get("formula", "")}</span></div>'
                     for x in b.get("items", []))
         return f'<div class="daftar-bentuk">{k}</div>', ""
-    if t == "pctbar":
+    if tb == "pctbar":
         p = b.get("percent", 50)
         return (f'<div class="batang-persen"><div style="width:{p}%"></div>'
                 f'<span>{b.get("label", "")}</span></div>'), ""
-    if t == "practice":
-        return (f'<details class="latihan"><summary>Latihan mandiri</summary>'
+    if tb == "practice":
+        return (f'<details class="latihan"><summary>{t("Latihan mandiri")}</summary>'
                 f'<div>{b.get("html", "")}</div></details>'), ""
-    if t == "quiz":
+    if tb == "quiz":
         nomor_kuis[0] += 1
         qid = b.get("qid") or f"{bab_id}-{nomor_kuis[0]}"
         pil = "".join(
             f'<button type="button" data-benar="{1 if o.get("correct") else 0}">'
             f'<span>{"ABCDEF"[i]}</span>{o.get("text", "")}</button>'
             for i, o in enumerate(b.get("options", [])))
-        return (f'<div class="kuis" data-kuis="{esc(qid)}"><p class="kuis-label">Kuis {nomor_kuis[0]}</p>'
+        return (f'<div class="kuis" data-kuis="{esc(qid)}"><p class="kuis-label">{t("Kuis")} {nomor_kuis[0]}</p>'
                 f'<p class="kuis-tanya">{b.get("question", "")}</p><div class="kuis-pilihan">{pil}</div>'
                 f'<p class="kuis-umpan benar" hidden>{b.get("feedbackOk", "")}</p>'
                 f'<p class="kuis-umpan salah" hidden>{b.get("feedbackNo", "")}</p></div>'), b.get("question", "")
-    if t == "raw":
+    if tb == "raw":
         return f'<div class="mentah">{b.get("html", "")}</div>', ""
-    sys.exit(f"jenis blok matematika tidak dikenal: {t} (bab {bab_id})")
+    sys.exit(f"jenis blok matematika tidak dikenal: {tb} (bab {bab_id})")
 
 
 def bangun_matematika(keluar: Path, cari: list):
-    data = json.loads((SUMBER / "matematika.json").read_text(encoding="utf-8"))
+    data = json.loads((sumber_bahasa() / "matematika.json").read_text(encoding="utf-8"))
     bab = data["content"]
     pertama = bab[0]["id"]
     berkas = {c["id"]: ("index" if c["id"] == pertama else c["id"]) + ".html" for c in bab}
@@ -556,36 +632,36 @@ def bangun_matematika(keluar: Path, cari: list):
 
     def sidebar(aktif):
         k = [f'<div class="progres"><div class="progres-batang"><div></div></div>'
-             f'<p><span class="progres-angka">0</span> dari {len(dilacak)} bab selesai</p></div>']
+             f'<p><span class="progres-angka">0</span> {t("dari")} {len(dilacak)} {t("bab selesai")}</p></div>']
         for g in data["navGroups"]:
             k.append(f'<p class="sisi-grup">{esc(g["label"])}</p><ul>')
             for i in g["items"]:
                 kelas = ' class="aktif" aria-current="page"' if i == aktif else ""
                 k.append(f'<li><a{kelas} href="{berkas[i]}" data-bab="{i}">{esc(label(per_id[i]))}</a></li>')
             k.append("</ul>")
-        return '<aside class="sisi" aria-label="Daftar bab"><nav>' + "".join(k) + "</nav></aside>"
+        return f'<aside class="sisi" aria-label="{t("Daftar bab")}"><nav>' + "".join(k) + "</nav></aside>"
 
     for idx, c in enumerate(bab):
         nomor = [0]
         bagian, teks = [], []
         for b in c.get("blocks", []):
-            h, t = blok_mtk(b, c["id"], nomor)
+            h, tk = blok_mtk(b, c["id"], nomor)
             bagian.append(h)
-            teks.append(re.sub(r"<[^>]+>", " ", t))
+            teks.append(re.sub(r"<[^>]+>", " ", tk))
         s = bab[idx - 1] if idx else None
         n = bab[idx + 1] if idx + 1 < len(bab) else None
         nav = langkah(s and (berkas[s["id"]], s["title"]), n and (berkas[n["id"]], n["title"]),
-                      "Bab sebelumnya", "Bab berikutnya")
+                      t("Bab sebelumnya"), t("Bab berikutnya"))
         rel = esc(grup_dari.get(c["id"], ""))
         lab = label(c).split(" — ")[0]
         if lab != c.get("title") and lab != grup_dari.get(c["id"]):
             rel = f"{esc(lab)} · {rel}" if rel else esc(lab)
         sub = c.get("subtitle")
-        pembuka = (SUMBER / "kelas-pembuka.html").read_text(encoding="utf-8") if idx == 0 else ""
+        pembuka = (sumber_bahasa() / "kelas-pembuka.html").read_text(encoding="utf-8") if idx == 0 else ""
         tombol = ""
         if c.get("kind") == "project":
             tombol = (f'<p class="selesai-proyek"><button class="tombol" type="button" '
-                      f'data-proyek="{c["id"]}">Tandai proyek selesai</button></p>')
+                      f'data-proyek="{c["id"]}">{t("Tandai proyek selesai")}</button></p>')
         badan = f"""<div class="tata">
 {sidebar(c["id"])}
 <main id="isi" class="isi">
@@ -601,14 +677,14 @@ def bangun_matematika(keluar: Path, cari: list):
 {kaki("../")}
 </main>
 </div>"""
-        jdl = "Matematika × JRG — belajar dari nol" if idx == 0 else f'{c.get("title")} — Matematika × JRG'
+        jdl = t("Matematika × JRG — belajar dari nol") if idx == 0 else f'{c.get("title")} — {t("Matematika × JRG")}'
         desk = re.sub(r"<[^>]+>", "", sub or c.get("title", ""))[:180]
         tulis(keluar / "matematika_x_jrg" / berkas[c["id"]],
               halaman(jdl, desk, "mtk", "../", badan, ("kelas-data.js", "kelas.js")))
-        cari.append({"j": c.get("title", ""), "u": f"matematika_x_jrg/{berkas[c['id']]}", "g": "Matematika × JRG",
+        cari.append({"j": c.get("title", ""), "u": f"matematika_x_jrg/{berkas[c['id']]}", "g": t("Matematika × JRG"),
                      "k": re.sub(r"<[^>]+>", "", sub or ""),
                      "t": re.sub(r"\s+", " ", " ".join(teks))[:1500]})
-    tulis(keluar / "aset" / "kelas-data.js",
+    tulis(KELUAR / "aset" / "kelas-data.js",
           "// Dibangun perkakas/bangun_situs.py.\nwindow.JRG_KELAS = "
           + json.dumps({"bab": dilacak, "soal": {i: soal[i] for i in dilacak},
                         "proyek": [c["id"] for c in bab if c.get("kind") == "project"]},
@@ -619,16 +695,19 @@ def bangun_matematika(keluar: Path, cari: list):
 # ── beranda ─────────────────────────────────────────────────────────────
 
 def bangun_beranda(keluar: Path):
-    isi = (SUMBER / "beranda.html").read_text(encoding="utf-8")
+    isi = (sumber_bahasa() / "beranda.html").read_text(encoding="utf-8")
     isi = isi.replace("{VERSI}", VERSI).replace("{REPO}", REPO)
     isi = re.sub(r"^```.*?^```$(?:\s*^```keluaran.*?^```$)?", lambda m: markdown(m.group(0))[0],
                  isi, flags=re.S | re.M)
     badan = f'<main id="isi" class="beranda">\n{isi}\n{kaki("")}\n</main>'
-    tulis(keluar / "index.html", halaman(
-        "JawaRustGo++ (JRG) — bahasa pemrograman",
-        "JawaRustGo++ (JRG): bahasa pemrograman dengan pesan galat berbahasa Indonesia, "
-        "tiga mesin eksekusi, dan kelas matematika dari nol.",
-        "beranda", "", badan, ekstra=data_terstruktur()))
+    judul, desk = (("JawaRustGo++ (JRG) — a programming language",
+                    "JawaRustGo++ (JRG): a programming language with four execution engines (a fifth, WebAssembly, "
+                    "is being built), diagnostics that teach, and a math course from zero.")
+                   if BAHASA == "en" else
+                   ("JawaRustGo++ (JRG) — bahasa pemrograman",
+                    "JawaRustGo++ (JRG): bahasa pemrograman dengan pesan galat berbahasa Indonesia, "
+                    "empat mesin eksekusi (mesin kelima, WebAssembly, sedang dibuat), dan kelas matematika dari nol."))
+    tulis(keluar / "index.html", halaman(judul, desk, "beranda", "", badan, ekstra=data_terstruktur()))
 
 
 def data_terstruktur() -> str:
@@ -636,9 +715,9 @@ def data_terstruktur() -> str:
     data = [
         {"@context": "https://schema.org", "@type": "WebSite", "name": "JawaRustGo++",
          "alternateName": ["JRG", "JawaRustGo++ (JRG)", "bahasa pemrograman JRG"], "url": f"{SITUS}/",
-         "inLanguage": "id"},
+         "inLanguage": BAHASA},
         {"@context": "https://schema.org", "@type": "ComputerLanguage", "name": "JawaRustGo++",
-         "alternateName": "JRG", "url": f"{SITUS}/", "sameAs": [REPO],
+         "alternateName": "JRG", "url": f"{SITUS}/", "sameAs": [REPO, SALURAN_WA],
          "creator": {"@type": "Person", "name": "Muhamad Surya Widianto", "url": f"{SITUS}/profil.html",
                      "sameAs": ["https://github.com/Kodok-Kejepit", "https://freease.cloud",
                                 "https://www.linkedin.com/in/muhamad-surya-widianto-3567ab40a"]}},
@@ -648,14 +727,17 @@ def data_terstruktur() -> str:
 
 
 def bangun_profil(keluar: Path, cari: list):
-    isi = (SUMBER / "profil.html").read_text(encoding="utf-8").replace("{REPO}", REPO)
+    isi = (sumber_bahasa() / "profil.html").read_text(encoding="utf-8").replace("{REPO}", REPO)
     badan = f'<main id="isi" class="profil">\n{isi}\n{kaki("")}\n</main>'
+    en = BAHASA == "en"
     tulis(keluar / "profil.html", halaman(
-        "Muhamad Surya Widianto — pembuat JawaRustGo++",
-        "Profil Muhamad Surya Widianto, pembuat bahasa pemrograman JawaRustGo++ (JRG).",
+        "Muhamad Surya Widianto — " + ("creator of JawaRustGo++" if en else "pembuat JawaRustGo++"),
+        ("Profile of Muhamad Surya Widianto, creator of the JawaRustGo++ (JRG) programming language." if en else
+         "Profil Muhamad Surya Widianto, pembuat bahasa pemrograman JawaRustGo++ (JRG)."),
         "profil", "", badan))
-    cari.append({"j": "Profil pembuat", "u": "profil.html", "g": "Profil",
-                 "k": "Muhamad Surya Widianto, pembuat JawaRustGo++", "t": re.sub(r"<[^>]+>", " ", isi)[:800]})
+    cari.append({"j": t("Profil pembuat"), "u": "profil.html", "g": t("Profil"),
+                 "k": "Muhamad Surya Widianto, " + ("creator of JawaRustGo++" if en else "pembuat JawaRustGo++"),
+                 "t": re.sub(r"<[^>]+>", " ", isi)[:800]})
 
 
 # Halaman di domain yang sama tapi dibangun di luar skrip ini (folder sendiri di server).
@@ -672,22 +754,39 @@ def peta_situs(keluar: Path):
     tulis(keluar / "robots.txt", f"User-agent: *\nAllow: /\n\n{peta}")
 
 
+def pohon_id(keluar: Path):
+    """Halaman `/id/` merujuk aset yang ada di akar: satu `../` lagi."""
+    for f in (keluar / "id").rglob("*.html"):
+        isi = f.read_text(encoding="utf-8")
+        isi = re.sub(r'((?:src|href)="|url\(")((?:\.\./)*)(aset/)', r"\1../\2\3", isi)
+        f.write_text(isi, encoding="utf-8")
+
+
 def main():
-    global KELUAR
+    global KELUAR, BAHASA
     keluar = DOCS
     if "--keluar" in sys.argv:
         keluar = Path(sys.argv[sys.argv.index("--keluar") + 1]).resolve()
     KELUAR = keluar
-    cari = []
-    n_dok = bangun_dokumentasi(keluar, cari)
-    n_mtk = bangun_matematika(keluar, cari)
+    cari_en, cari_id = [], []
+    BAHASA = "en"
+    n_dok = bangun_dokumentasi(keluar, cari_en)
     bangun_beranda(keluar)
-    bangun_profil(keluar, cari)
-    tulis(keluar / "aset" / "cari.js",
-          "// Dibangun perkakas/bangun_situs.py.\nwindow.JRG_CARI = " + json.dumps(cari, ensure_ascii=False) + ";\n")
+    bangun_profil(keluar, cari_en)
+    n_mtk = bangun_matematika(keluar, cari_en)
+    BAHASA = "id"
+    bangun_matematika(keluar / "id", cari_id)
+    bangun_dokumentasi(keluar / "id", cari_id)
+    bangun_beranda(keluar / "id")
+    bangun_profil(keluar / "id", cari_id)
+    pohon_id(keluar)
+    for nama, cari, awalan in (("cari.js", cari_en, ""), ("cari-id.js", cari_id, "id/")):
+        isi = [dict(c, u=awalan + c["u"]) for c in cari]
+        tulis(keluar / "aset" / nama,
+              "// Dibangun perkakas/bangun_situs.py.\nwindow.JRG_CARI = " + json.dumps(isi, ensure_ascii=False) + ";\n")
     peta_situs(keluar)
     versikan(keluar)
-    print(f"dokumentasi {n_dok} halaman, matematika {n_mtk} halaman, {len(cari)} entri cari")
+    print(f"dokumentasi {n_dok} halaman x 2 bahasa, matematika {n_mtk} halaman, {len(cari_en)}+{len(cari_id)} entri cari")
 
 
 if __name__ == "__main__":

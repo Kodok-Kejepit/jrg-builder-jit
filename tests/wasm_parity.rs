@@ -113,8 +113,8 @@ fn builtin_jembatan_ditolak_keras_lewat_wasm() {
         "{}", w.stderr);
 }
 
-/// Stack: larik lokal besar (stack bayangan wasm 8 MiB, bawaan `wasm-ld` 64 KiB meluap) dan rekursi dalam (program
-/// jalan di `Worker` node ber-stack 512 MiB; stack V8 bawaan ±1 MiB menolak 20 ribu tingkat yang jalan di native).
+/// Stack: larik lokal besar (stack bayangan wasm 8 MiB, bawaan `wasm-ld` 64 KiB meluap) dan rekursi dalam (`node
+/// --stack-size=6000`; stack V8 bawaan ±1 MiB menolak 20 ribu tingkat yang jalan di native).
 const STACK_DALAM: &str = r#"fn dalam(n: int) -> int {
     if n == 0 { return 0 }
     return 1 + dalam(n - 1)
