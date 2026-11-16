@@ -89,6 +89,22 @@ pub enum Inst {
     /// Panggilan langsung ke callee bulat `Rencana::callee[callee]` (`tanda_tangan_bulat`). Callee yang belum mulai
     /// (`ULANG`) = deopt di `di` (VM yang memanggil); callee yang deopt = deopt di `sesudah` (VM melanjutkan callee-nya).
     Panggil { hasil: Nilai, callee: usize, args: Vec<Nilai>, di: Keadaan, sesudah: Keadaan },
+    /// Lokal `lokal` milik VM disalin (`lambat::muat`) atau dipindah (`lambat::ambil`, lokal yang mati sesudahnya)
+    /// ke posisi `ke`.
+    Muat { lokal: usize, ke: usize, pindah: bool },
+    /// Puncak `dari` (isi native `nilai` berkode jenis `kode`, atau milik VM) ke lokal `ke` (`lambat::simpan`).
+    Simpan { ke: usize, dari: usize, nilai: Option<Nilai>, kode: i32, buang: bool },
+    /// Posisi `pos` milik VM dilepas (`lambat::buang`).
+    Buang { pos: usize },
+    /// Kebenaran posisi `pos` milik VM (`lambat::benar`), 0/1; `lepas` = posisinya dilepas.
+    Benar { hasil: Nilai, pos: usize, lepas: bool },
+    /// Nilai VM di alamat `alamat` (konstanta chunk, callee rencana) disalin ke posisi `pos` (`lambat::taruh`).
+    Taruh { pos: usize, alamat: i64 },
+    /// VM menjalankan instruksi `ip` (`lambat::langkah`): isi native `tumpah` ke slot rekaman, posisi maya `taruh`
+    /// ke stack VM dulu; `jenis` = alamat `Rencana::keadaan[ip]`, tinggi sesudahnya `sesudah`; galat = `GAGAL`.
+    Langkah { ip: usize, jenis: i64, t: usize, tumpah: usize, sesudah: usize, isi: Vec<(usize, Nilai)>, taruh: Vec<(usize, i64)> },
+    /// Posisi `pos` milik VM dibuka jadi angka berkode jenis `kode` (`lambat::buka`); jenis lain = deopt spekulasi.
+    Buka { hasil: Nilai, pos: usize, kode: i32, jaga: Jaga },
 }
 
 /// Status `Return` native (`super::turun::BERHASIL*`).
@@ -100,6 +116,10 @@ pub enum Akhir {
     Lompat { ke: Blok, args: Vec<Nilai> },
     Cabang { kondisi: Nilai, ya: Blok, ya_args: Vec<Nilai>, tidak: Blok, tidak_args: Vec<Nilai> },
     Kembali { nilai: Nilai, hasil: Hasil },
+    /// Hasil milik VM di posisi `pos` (`BERHASIL_NILAI`).
+    KembaliNilai { pos: usize },
+    /// `ReturnNil` (`BERHASIL_UNIT`).
+    KembaliUnit,
     /// Titik keluar: VM menjalankan instruksi `keadaan.ip`.
     Keluar { keadaan: Keadaan },
 }
@@ -170,6 +190,15 @@ impl fmt::Display for Fungsi {
                     Inst::Undi { hasil } => writeln!(f, "  {hasil} = undi")?,
                     Inst::Panggil { hasil, callee, args, di, sesudah } =>
                         writeln!(f, "  {hasil} = panggil #{callee}({}) ulang {di} deopt {sesudah}", daftar(args))?,
+                    Inst::Muat { lokal, ke, pindah } => writeln!(f, "  {} lokal {lokal} -> {ke}", if *pindah { "ambil" } else { "muat" })?,
+                    Inst::Simpan { ke, dari, nilai, kode, buang } =>
+                        writeln!(f, "  simpan{} {dari}{} -> lokal {ke} (kode {kode})", if *buang { "-buang" } else { "" }, nilai.map_or(String::new(), |v| format!("={v}")))?,
+                    Inst::Buang { pos } => writeln!(f, "  buang {pos}")?,
+                    Inst::Benar { hasil, pos, lepas } => writeln!(f, "  {hasil} = benar {pos}{}", if *lepas { " lepas" } else { "" })?,
+                    Inst::Taruh { pos, alamat } => writeln!(f, "  taruh {alamat:#x} -> {pos}")?,
+                    Inst::Langkah { ip, t, tumpah, sesudah, isi, taruh, .. } =>
+                        writeln!(f, "  langkah VM @{ip} t {t} tumpah {tumpah} -> {sesudah} isi {:?} taruh {}", isi, taruh.len())?,
+                    Inst::Buka { hasil, pos, kode, jaga: j } => writeln!(f, "  {hasil} = buka {pos} (kode {kode}){}", jaga(&Some(j.clone())))?,
                 }
             }
             match &b.akhir {
@@ -177,6 +206,8 @@ impl fmt::Display for Fungsi {
                 Some(Akhir::Cabang { kondisi, ya, ya_args, tidak, tidak_args }) =>
                     writeln!(f, "  cabang {kondisi} ? {ya}({}) : {tidak}({})", daftar(ya_args), daftar(tidak_args))?,
                 Some(Akhir::Kembali { nilai, hasil }) => writeln!(f, "  kembali {nilai} ({hasil:?})")?,
+                Some(Akhir::KembaliNilai { pos }) => writeln!(f, "  kembali posisi {pos}")?,
+                Some(Akhir::KembaliUnit) => writeln!(f, "  kembali ()")?,
                 Some(Akhir::Keluar { keadaan }) => writeln!(f, "  keluar {keadaan}")?,
                 None => writeln!(f, "  <tanpa akhir>")?,
             }

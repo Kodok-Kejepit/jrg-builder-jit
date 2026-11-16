@@ -12,8 +12,9 @@ fn tipe_jenis(j: Jenis) -> Result<Option<Tipe>, String> {
     match j {
         Jenis::Bulat | Jenis::Bool => Ok(Some(Tipe::I)),
         Jenis::Pecahan => Ok(Some(Tipe::F)),
-        // Callee dan bawaan maya: nilainya tetap, dibangun `deopt::pulihkan` dari jenisnya.
-        Jenis::Kosong | Jenis::Satuan | Jenis::Fungsi(_) | Jenis::Bawaan(_) | Jenis::Bungkus(..) => Ok(None),
+        // Callee dan bawaan maya (nilainya tetap) dan nilai milik VM (di stack VM): tanpa isi native, dibangun atau
+        // dibiarkan `deopt::pulihkan` menurut jenisnya.
+        Jenis::Kosong | Jenis::Satuan | Jenis::Fungsi(_) | Jenis::Bawaan(_) | Jenis::Bungkus(..) | Jenis::Nilai => Ok(None),
         lain => Err(format!("jenis {lain:?} di luar JIR-1")),
     }
 }
@@ -80,11 +81,12 @@ fn periksa_cakupan(f: &VmFunction, r: &Rencana) -> Result<(), String> {
         for j in s { tipe_jenis(*j)?; }
         if !r.wujud[ip].is_empty() { return Err("posisi maya diwujudkan".into()); }
         if r.keluar[ip] { continue; }
-        // Fungsi bawaan sebagai konstanta (`Const`): maya, tanpa isi.
-        let bawaan = r.cara[ip] == Cara::Konstanta && ins.op == OpCode::Const
-            && matches!(f.chunk.constants.get(ins.arg as usize), Some(crate::vm::value::VmValue::NativeFn(_)));
-        if r.cara[ip] != Cara::Asli && !bawaan { return Err(format!("{:?} di ip {ip}", r.cara[ip])); }
-        if !opcode_dicakup(ins.op) { return Err(format!("{:?} di ip {ip}", ins.op)); }
+        match &r.cara[ip] {
+            Cara::Asli | Cara::Buka(_) => if !opcode_dicakup(ins.op) { return Err(format!("{:?} di ip {ip}", ins.op)); },
+            Cara::Konstanta | Cara::Muat | Cara::Ambil | Cara::Simpan | Cara::Buang | Cara::Benar | Cara::KembaliNilai
+            | Cara::KembaliUnit | Cara::Langkah { .. } => {}
+            c => return Err(format!("{c:?} di ip {ip}")),
+        }
         // `Return` cuma untuk titik masuk yang boleh kembali native.
         if ins.op == OpCode::Return && r.kembali == crate::jit::layak::KEMBALI_TIDAK { return Err("Return OSR".into()); }
     }
@@ -133,8 +135,11 @@ impl Pembangun<'_> {
         Ok(args)
     }
 
+    /// Keadaan deopt di `ip`: isi native cuma untuk posisi yang skalar menurut keadaan `ip` (nilai milik VM yang baru
+    /// dibuka tetap utuh di stack VM, jadi VM membacanya dari sana).
     fn keadaan_di(&self, ip: usize, isi: &[Option<Nilai>]) -> Keadaan {
-        Keadaan { ip, isi: isi.to_vec() }
+        let s = self.keadaan(ip);
+        Keadaan { ip, isi: isi.iter().enumerate().map(|(i, v)| if s.get(i).is_some_and(|j| j.skalar()) { *v } else { None }).collect() }
     }
 
     fn badan(&mut self) -> Result<(), String> {
@@ -163,14 +168,20 @@ impl Pembangun<'_> {
                 self.akhiri(b, Akhir::Keluar { keadaan: self.keadaan_di(ip, &isi) });
                 continue;
             }
-            match self.instruksi(b, ip, &mut isi)? {
+            match self.cara(b, ip, &mut isi)? {
                 Some(akhir) => self.akhiri(b, akhir),
                 None => {
                     let lanjut = self.r.keadaan.get(ip + 1).and_then(|s| s.as_ref())
                         .ok_or_else(|| format!("ip {} tak terjangkau sesudah ip {ip}", ip + 1))?;
                     if lanjut.len() != isi.len() { return Err(format!("panjang stack sesudah ip {ip}: {} lawan {}", isi.len(), lanjut.len())); }
-                    // Posisi tanpa isi native di keadaan berikutnya (lubang `AmbilLokal`) tidak membawa nilai.
-                    for (i, j) in lanjut.iter().enumerate() { if tipe_jenis(*j)?.is_none() { isi[i] = None; } }
+                    // Posisi tanpa isi native di keadaan berikutnya (lubang `AmbilLokal`, milik VM) tidak membawa nilai.
+                    for (i, j) in lanjut.iter().enumerate() {
+                        match (tipe_jenis(*j)?, isi[i]) {
+                            (None, _) => isi[i] = None,
+                            (Some(t), Some(v)) if self.j.tipe(v) == t => {}
+                            _ => return Err(format!("posisi {i} sesudah ip {ip} tanpa isi native yang cocok")),
+                        }
+                    }
                     kini = Some((b, isi));
                 }
             }
@@ -213,11 +224,101 @@ impl Pembangun<'_> {
         h
     }
 
-    /// Satu instruksi atas stack `isi`; `Some` = instruksi pengakhir blok.
-    fn instruksi(&mut self, b: Blok, ip: usize, isi: &mut Vec<Option<Nilai>>) -> Result<Option<Akhir>, String> {
+    /// Instruksi `ip` menurut `Rencana::cara`-nya; `Some` = pengakhir blok.
+    fn cara(&mut self, b: Blok, ip: usize, isi: &mut Vec<Option<Nilai>>) -> Result<Option<Akhir>, String> {
         let ins = self.f.chunk.code[ip];
         let a = ins.arg as usize;
+        let t = isi.len();
         let s = self.keadaan(ip).clone();
+        match self.r.cara[ip].clone() {
+            Cara::Asli => return self.instruksi(b, ip, isi, &s),
+            Cara::Buka(daftar) => {
+                // Nilai milik VM yang dipakai sebagai angka: dibuka berjaga (spekulasi), lalu instruksinya asli.
+                let mut s2 = s.clone();
+                for (p, j) in daftar {
+                    let tipe = tipe_jenis(j)?.ok_or("buka ke jenis tanpa isi")?;
+                    let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: true };
+                    let h = self.j.nilai_baru(tipe);
+                    self.dorong(b, Inst::Buka { hasil: h, pos: p, kode: j.kode() as i32, jaga });
+                    isi[p] = Some(h);
+                    s2[p] = j;
+                }
+                return self.instruksi(b, ip, isi, &s2);
+            }
+            Cara::Konstanta => {
+                let alamat = match (ins.op, self.f.chunk.constants.get(a)) {
+                    (OpCode::Const, Some(crate::vm::value::VmValue::NativeFn(_))) => { isi.push(None); return Ok(None); }
+                    (OpCode::Const, Some(k)) => k as *const _ as i64,
+                    _ => 0,
+                };
+                self.dorong(b, Inst::Taruh { pos: t, alamat });
+                isi.push(None);
+            }
+            Cara::Muat => {
+                let pindah = crate::jit::turun::mati_sesudah(self.f, self.r, ip, a);
+                self.dorong(b, Inst::Muat { lokal: a, ke: t, pindah });
+                isi.push(None);
+            }
+            Cara::Ambil => { self.dorong(b, Inst::Muat { lokal: a, ke: t, pindah: true }); isi.push(None); }
+            Cara::Simpan => {
+                let j = s[t - 1];
+                let nilai = if j.skalar() { Some(Self::ambil(isi, t - 1)?) } else { None };
+                let buang = ins.op == OpCode::SimpanBuang;
+                self.dorong(b, Inst::Simpan { ke: a, dari: t - 1, nilai, kode: j.kode() as i32, buang });
+                isi[a] = None;
+                if buang { isi.pop(); }
+            }
+            Cara::Buang => { self.dorong(b, Inst::Buang { pos: t - 1 }); isi.pop(); }
+            Cara::Benar => {
+                let tetap = matches!(ins.op, OpCode::JumpFalseKeep | OpCode::JumpTrueKeep);
+                let h = self.j.nilai_baru(Tipe::I);
+                self.dorong(b, Inst::Benar { hasil: h, pos: t - 1, lepas: !tetap });
+                if ins.op == OpCode::KeBool { isi[t - 1] = Some(h); return Ok(None); }
+                let sesudah: Vec<Option<Nilai>> = if tetap { isi.clone() } else { isi[..t - 1].to_vec() };
+                return self.cabang(ip, a, h, &sesudah, matches!(ins.op, OpCode::JumpFalse | OpCode::JumpFalseKeep)).map(Some);
+            }
+            Cara::KembaliNilai => return Ok(Some(Akhir::KembaliNilai { pos: t - 1 })),
+            Cara::KembaliUnit => return Ok(Some(Akhir::KembaliUnit)),
+            Cara::Langkah { ambil, taruh, tumpah } => {
+                let (mut isi_n, mut taruh_n) = (Vec::new(), Vec::new());
+                for i in t - tumpah..t {
+                    match s[i] {
+                        Jenis::Fungsi(c) => taruh_n.push((i, &self.r.callee_nilai[c] as *const _ as i64)),
+                        j if j.konstanta().is_some() => {
+                            let k = j.konstanta().expect("baru diperiksa") as usize;
+                            taruh_n.push((i, &self.f.chunk.constants[k] as *const _ as i64));
+                        }
+                        j if j.skalar() => isi_n.push((i, Self::ambil(isi, i)?)),
+                        _ => {}
+                    }
+                }
+                let jenis = s.as_ptr() as i64;
+                let jenis = self.r.keadaan[ip].as_ref().map_or(jenis, |k| k.as_ptr() as i64);
+                self.dorong(b, Inst::Langkah { ip, jenis, t, tumpah, sesudah: t - ambil + taruh, isi: isi_n, taruh: taruh_n });
+                isi.truncate(t - ambil);
+                for _ in 0..taruh { isi.push(None); }
+            }
+            c => return Err(format!("{c:?} belum diturunkan JIR")),
+        }
+        Ok(None)
+    }
+
+    /// Cabang atas kondisi `c` ke `ip + 1` dan `sasaran`, dengan stack `sesudah`.
+    fn cabang(&self, ip: usize, sasaran: usize, c: Nilai, sesudah: &[Option<Nilai>], salah: bool) -> Result<Akhir, String> {
+        let (b_lanjut, b_sasar) = (self.blok_ip[ip + 1].ok_or("penerus cabang bukan pemimpin")?,
+            self.blok_ip[sasaran].ok_or("sasaran cabang bukan pemimpin")?);
+        let (args_lanjut, args_sasar) = (self.args_ke(ip + 1, sesudah)?, self.args_ke(sasaran, sesudah)?);
+        let (ya, ya_args, tidak, tidak_args) = if salah {
+            (b_lanjut, args_lanjut, b_sasar, args_sasar)
+        } else { (b_sasar, args_sasar, b_lanjut, args_lanjut) };
+        Ok(Akhir::Cabang { kondisi: c, ya, ya_args, tidak, tidak_args })
+    }
+
+    /// Satu instruksi asli atas stack `isi` berjenis `s` (sesudah bukaan); `Some` = pengakhir blok.
+    fn instruksi(&mut self, b: Blok, ip: usize, isi: &mut Vec<Option<Nilai>>, s: &[Jenis]) -> Result<Option<Akhir>, String> {
+        let ins = self.f.chunk.code[ip];
+        let a = ins.arg as usize;
+        let s = s.to_vec();
         let t = isi.len();
         let pecahan = |k: usize| s.get(t.wrapping_sub(k)) == Some(&Jenis::Pecahan);
         match ins.op {
@@ -228,7 +329,7 @@ impl Pembangun<'_> {
             OpCode::IntImm => { let v = self.konst_i(b, ins.arg as i32 as i64); isi.push(Some(v)); }
             OpCode::Const if matches!(self.f.chunk.constants.get(a), Some(crate::vm::value::VmValue::NativeFn(_))) => isi.push(None),
             OpCode::LoadGlobal => isi.push(None),
-            OpCode::Call => return self.panggil(b, ip, isi).map(|_| None),
+            OpCode::Call => return self.panggil(b, ip, isi, &s).map(|_| None),
             OpCode::Const => {
                 let k = self.r.konstanta[ip].ok_or("konstanta di luar 64 bit")?;
                 let lanjut = self.keadaan(ip + 1);
@@ -320,14 +421,7 @@ impl Pembangun<'_> {
                 let c = Self::ambil(isi, t - 1)?;
                 let tetap = matches!(ins.op, OpCode::JumpFalseKeep | OpCode::JumpTrueKeep);
                 let sesudah: Vec<Option<Nilai>> = if tetap { isi.clone() } else { isi[..t - 1].to_vec() };
-                let (b_lanjut, b_sasar) = (self.blok_ip[ip + 1].ok_or("penerus cabang bukan pemimpin")?,
-                    self.blok_ip[a].ok_or("sasaran cabang bukan pemimpin")?);
-                let (args_lanjut, args_sasar) = (self.args_ke(ip + 1, &sesudah)?, self.args_ke(a, &sesudah)?);
-                let salah = matches!(ins.op, OpCode::JumpFalse | OpCode::JumpFalseKeep);
-                let (ya, ya_args, tidak, tidak_args) = if salah {
-                    (b_lanjut, args_lanjut, b_sasar, args_sasar)
-                } else { (b_sasar, args_sasar, b_lanjut, args_lanjut) };
-                return Ok(Some(Akhir::Cabang { kondisi: c, ya, ya_args, tidak, tidak_args }));
+                return self.cabang(ip, a, c, &sesudah, matches!(ins.op, OpCode::JumpFalse | OpCode::JumpFalseKeep)).map(Some);
             }
             OpCode::MakeIterRentang => {
                 let (lo, hi) = (Self::ambil(isi, t - 2)?, Self::ambil(isi, t - 1)?);
@@ -380,10 +474,9 @@ impl Pembangun<'_> {
     }
 
     /// `Call`: callee bulat yang dikompilasi native, atau intrinsik `int`/`uint`/`float` atas bulat.
-    fn panggil(&mut self, b: Blok, ip: usize, isi: &mut Vec<Option<Nilai>>) -> Result<(), String> {
+    fn panggil(&mut self, b: Blok, ip: usize, isi: &mut Vec<Option<Nilai>>, s: &[Jenis]) -> Result<(), String> {
         use crate::jit::layak::{BUNGKUS_KE_BULAT, BUNGKUS_KE_PECAHAN};
         let a = self.f.chunk.code[ip].arg as usize;
-        let s = self.keadaan(ip).clone();
         let t = isi.len();
         if a + 1 > t { return Err("argumen panggilan di luar stack".into()); }
         match s[t - a - 1] {

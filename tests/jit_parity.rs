@@ -3651,3 +3651,39 @@ fn jir_panggil_sama_dengan_vm() {
     let r = jalankan(JIR_PANGGIL, &["--jit"], &[JIR, ("JRG_JIT_LOG", "jir")]);
     assert!(r.stderr.contains("[jit] jir fib:\nb0") && r.stderr.contains("= panggil #"), "fib tidak lewat JIR:\n{}", r.stderr);
 }
+
+/// JIR-1c (langkah 87): nilai milik VM di JIR — bukaan berjaga yang gagal saat jenisnya berganti, pembantu `lambat`
+/// (`muat`, `simpan`, `buang`, `benar`, `taruh`), langkah VM, hasil milik VM.
+const JIR_NILAI: &str = r#"fn sapa(nama, n: int) {
+    var s = ""
+    var i = 0
+    while i < n {
+        if nama == "" { s = s + "?" } else { s = s + nama }
+        i = i + 1
+    }
+    return s
+}
+fn tambah(a, b) { return a + b }
+fn main() {
+    wok(sapa("ab", 3), sapa("", 2))
+    var t = 0
+    for i in 0..500 { t = tambah(t, i) }
+    wok(t)
+    // Jenis nilai VM berganti: bukaan spekulasi gagal, lalu VM.
+    wok(tambah(1.5, 2), tambah("x", "y"))
+    // Galat yang lahir di langkah VM: teks + bulat.
+    wok(tambah("z", 1))
+}
+"#;
+
+#[test]
+fn jir_nilai_sama_dengan_vm() {
+    let v = jalankan(JIR_NILAI, &["--vm"], &[]);
+    assert!(v.sukses && v.stdout.lines().count() == 4, "{}{}", v.stdout, v.stderr);
+    for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..]] {
+        let j = jalankan(JIR_NILAI, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let r = jalankan(JIR_NILAI, &["--jit"], &[JIR, STRES, ("JRG_JIT_LOG", "jir")]);
+    assert!(r.stderr.contains("= buka "), "bukaan nilai VM tidak lewat JIR:\n{}", r.stderr);
+}

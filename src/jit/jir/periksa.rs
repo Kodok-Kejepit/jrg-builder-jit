@@ -66,6 +66,11 @@ pub fn periksa(f: &Fungsi) -> Result<(), String> {
                 }
                 Inst::JagaJika { kondisi, jaga: j } => { pakai(*kondisi, &ada)?; tipe(*kondisi, Tipe::I)?; jaga(j, &ada)?; }
                 Inst::Undi { hasil } => { definisi(*hasil, &mut ada)?; tipe(*hasil, Tipe::I)?; }
+                Inst::Muat { .. } | Inst::Buang { .. } | Inst::Taruh { .. } => {}
+                Inst::Simpan { nilai, .. } => if let Some(v) = nilai { pakai(*v, &ada)?; },
+                Inst::Benar { hasil, .. } => { definisi(*hasil, &mut ada)?; tipe(*hasil, Tipe::I)?; }
+                Inst::Langkah { isi, .. } => for (_, v) in isi { pakai(*v, &ada)?; },
+                Inst::Buka { hasil, jaga: j, .. } => { jaga(j, &ada)?; definisi(*hasil, &mut ada)?; }
                 Inst::Panggil { hasil, args, di, sesudah, .. } => {
                     for a in args { pakai(*a, &ada)?; tipe(*a, Tipe::I)?; }
                     for v in di.isi.iter().chain(&sesudah.isi).flatten() { pakai(*v, &ada)?; }
@@ -95,6 +100,7 @@ pub fn periksa(f: &Fungsi) -> Result<(), String> {
                 lompat(*tidak, tidak_args, &ada)?;
             }
             Some(Akhir::Kembali { nilai, .. }) => pakai(*nilai, &ada)?,
+            Some(Akhir::KembaliNilai { .. } | Akhir::KembaliUnit) => {}
             Some(Akhir::Keluar { keadaan }) => for v in keadaan.isi.iter().flatten() { pakai(*v, &ada)?; },
             None => return Err(format!("b{bi} tanpa akhir")),
         }

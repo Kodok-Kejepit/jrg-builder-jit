@@ -7,7 +7,10 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Module};
 
 use super::{Akhir, Banding, Biner, Fungsi, Hasil, Inst, Jaga, Keadaan, Nilai, Tipe, Unar};
-use crate::jit::turun::{Impor, BERHASIL, BERHASIL_BOOL, BERHASIL_PECAHAN, DEOPT, GAGAL_SPEK, KEDALAMAN_MAKS, ULANG};
+use crate::jit::turun::{Impor, BERHASIL, BERHASIL_BOOL, BERHASIL_NILAI, BERHASIL_PECAHAN, BERHASIL_UNIT, DEOPT, GAGAL, GAGAL_SPEK, KEDALAMAN_MAKS, ULANG};
+
+/// Pembantu nilai VM (`lambat`) yang dipanggil JIR.
+struct Pembantu { muat: FuncRef, ambil: FuncRef, simpan: FuncRef, buang: FuncRef, benar: FuncRef, taruh: FuncRef, langkah: FuncRef, buka: FuncRef }
 
 struct Penurun<'a, 'b> {
     b: FunctionBuilder<'b>,
@@ -25,6 +28,9 @@ struct Penurun<'a, 'b> {
     callee: Vec<Option<FuncRef>>,
     /// Kedalaman untuk callee (kedalaman bingkai ini + 1).
     kedalaman1: Value,
+    lb: Pembantu,
+    /// Penyangga satu kata (`lambat::buka`).
+    wadah: StackSlot,
 }
 
 fn tipe_clif(t: Tipe) -> Type { if t == Tipe::I { types::I64 } else { types::F64 } }
@@ -52,9 +58,15 @@ pub fn turunkan(
         for p in &d.params { b.append_block_param(blok[i], tipe_clif(j.tipe(*p))); }
     }
     let callee: Vec<Option<FuncRef>> = id_callee.iter().map(|i| i.map(|i| m.declare_func_in_func(i, b.func))).collect();
+    let il = impor.lambat;
+    let [muat, ambil, simpan, buang, benar, taruh, langkah, buka] =
+        [il.muat, il.ambil, il.simpan, il.buang, il.benar, il.taruh, il.langkah, il.buka].map(|id| m.declare_func_in_func(id, b.func));
+    let lb = Pembantu { muat, ambil, simpan, buang, benar, taruh, langkah, buka };
+    let wadah = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
     let kedalaman1 = b.ins().iadd_imm_s(kedalaman, 1);
     let mut p = Penurun {
         b, j, nilai: vec![None; j.tipe.len()], slot, catat, undi, fid: impor.fid as i64, ptr, keluar, register, callee, kedalaman1,
+        lb, wadah,
     };
     // Kedalaman native dijaga di pintu masuk; parameter dimuat dari register atau penyangga argumen.
     let dalam = p.b.create_block();
@@ -89,6 +101,12 @@ pub fn turunkan(
                 p.b.ins().brif(c, blok[ya.0 as usize], &ya_a, blok[tidak.0 as usize], &tidak_a);
             }
             Akhir::Kembali { nilai, hasil } => p.kembali(*nilai, *hasil),
+            Akhir::KembaliNilai { pos } => {
+                let v = p.b.ins().iconst(types::I64, *pos as i64);
+                p.b.ins().store(MemFlagsData::trusted(), v, p.keluar, 0);
+                p.pulang_status(BERHASIL_NILAI);
+            }
+            Akhir::KembaliUnit => p.pulang_status(BERHASIL_UNIT),
             Akhir::Keluar { keadaan } => p.deopt(keadaan, 0),
         }
     }
@@ -100,6 +118,14 @@ impl Penurun<'_, '_> {
     fn v(&self, n: Nilai) -> Value { self.nilai[n.0 as usize].expect("didefinisikan lebih dulu (periksa)") }
 
     fn tetapkan(&mut self, n: Nilai, v: Value) { self.nilai[n.0 as usize] = Some(v); }
+
+    fn i64c(&mut self, v: i64) -> Value { self.b.ins().iconst(types::I64, v) }
+
+    /// Isi native sebagai bit `i64` (pecahan dibaca bitnya).
+    fn bit(&mut self, n: Nilai) -> Value {
+        let v = self.v(n);
+        if self.j.tipe(n) == Tipe::F { self.b.ins().bitcast(types::I64, MemFlagsData::new(), v) } else { v }
+    }
 
     fn args(&self, a: &[Nilai]) -> Vec<cranelift_codegen::ir::BlockArg> { a.iter().map(|n| self.v(*n).into()).collect() }
 
@@ -175,6 +201,62 @@ impl Penurun<'_, '_> {
                 self.deopt(sesudah, 0);
                 self.b.switch_to_block(terus);
                 self.tetapkan(*hasil, h);
+            }
+            Inst::Muat { lokal, ke, pindah } => {
+                let (d, k) = (self.i64c(*lokal as i64), self.i64c(*ke as i64));
+                self.b.ins().call(if *pindah { self.lb.ambil } else { self.lb.muat }, &[d, k]);
+            }
+            Inst::Simpan { ke, dari, nilai, kode, buang } => {
+                let v = match nilai { Some(n) => self.bit(*n), None => self.i64c(0) };
+                let (k, d) = (self.i64c(*ke as i64), self.i64c(*dari as i64));
+                let (kd, bg) = (self.b.ins().iconst(types::I32, *kode as i64), self.b.ins().iconst(types::I32, *buang as i64));
+                self.b.ins().call(self.lb.simpan, &[k, d, v, kd, bg]);
+            }
+            Inst::Buang { pos } => { let p = self.i64c(*pos as i64); self.b.ins().call(self.lb.buang, &[p]); }
+            Inst::Benar { hasil, pos, lepas } => {
+                let p = self.i64c(*pos as i64);
+                let l = self.b.ins().iconst(types::I32, *lepas as i64);
+                let c = self.b.ins().call(self.lb.benar, &[p, l]);
+                let c = self.b.inst_results(c)[0];
+                let v = self.b.ins().uextend(types::I64, c);
+                self.tetapkan(*hasil, v);
+            }
+            Inst::Taruh { pos, alamat } => {
+                let (p, a) = (self.i64c(*pos as i64), self.i64c(*alamat));
+                self.b.ins().call(self.lb.taruh, &[p, a]);
+            }
+            Inst::Langkah { ip, jenis, t, tumpah, sesudah, isi, taruh } => {
+                for (pos, n) in isi {
+                    let v = self.bit(*n);
+                    self.b.ins().stack_store(self.ptr, v, self.slot, (*pos * 8) as i32);
+                }
+                for (pos, alamat) in taruh {
+                    let (p, a) = (self.i64c(*pos as i64), self.i64c(*alamat));
+                    self.b.ins().call(self.lb.taruh, &[p, a]);
+                }
+                let args = [
+                    self.i64c(*ip as i64), self.i64c(*jenis), self.i64c(*t as i64), self.i64c(*tumpah as i64),
+                    self.i64c(*sesudah as i64), self.b.ins().stack_addr(self.ptr, self.slot, 0),
+                ];
+                let c = self.b.ins().call(self.lb.langkah, &args);
+                let st = self.b.inst_results(c)[0];
+                let (gagal, terus) = (self.b.create_block(), self.b.create_block());
+                self.b.set_cold_block(gagal);
+                self.b.ins().brif(st, gagal, &[], terus, &[]);
+                self.b.switch_to_block(gagal);
+                self.pulang_status(GAGAL);
+                self.b.switch_to_block(terus);
+            }
+            Inst::Buka { hasil, pos, kode, jaga } => {
+                let p = self.i64c(*pos as i64);
+                let k = self.b.ins().iconst(types::I32, *kode as i64);
+                let w = self.b.ins().stack_addr(self.ptr, self.wadah, 0);
+                let c = self.b.ins().call(self.lb.buka, &[p, k, w]);
+                let st = self.b.inst_results(c)[0];
+                self.jaga(st, jaga);
+                let v = self.b.ins().stack_load(self.ptr, types::I64, self.wadah, 0);
+                let v = if self.j.tipe(*hasil) == Tipe::F { self.b.ins().bitcast(types::F64, MemFlagsData::new(), v) } else { v };
+                self.tetapkan(*hasil, v);
             }
             Inst::Undi { hasil } => {
                 let u = self.undi.expect("undi cuma dibangun di deopt acak");
