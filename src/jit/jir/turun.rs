@@ -3,7 +3,7 @@
 //! bingkainya lewat `deopt::catat` lalu kembali `DEOPT`, hasil `Return` dengan status menurut jenisnya.
 
 use cranelift_codegen::ir::{condcodes::{FloatCC, IntCC}, types, Block, FuncRef, InstBuilder, MemFlagsData, StackSlot, StackSlotData, StackSlotKind, Type, Value};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{FuncId, Module};
 
 use super::{Akhir, Arg, Banding, Biner, Fungsi, Hasil, Inst, Jaga, Keadaan, Nilai, OpL, Pb, Tipe, Uji, Unar};
@@ -48,6 +48,11 @@ struct Penurun<'a, 'b> {
     ringan: Vec<bool>,
     /// Dua kata (`lambat::buka_lebar`).
     wadah16: StackSlot,
+    /// Tata letak `VmValue` dan alamat VM/basis bingkai (`lambat::konteks_mentah`) untuk larik lokal sebaris.
+    sebaris: Option<(&'static crate::jit::tata_letak::TataLetak, Value, Value)>,
+    /// Penyimpanan larik lokal yang sudah diperiksa di wilayah ini (`turun::tembolok_larik`): dibuang di awal blok
+    /// dan sesudah instruksi apa pun yang bisa menyentuh stack atau penyimpanan VM.
+    larik_tb: Vec<(usize, Variable, Variable, Variable)>,
     /// Bulat konstanta yang sudah diturunkan (geseran tetap 128 bit).
     konst: std::collections::HashMap<u32, i64>,
 }
@@ -107,7 +112,8 @@ pub fn turunkan(
     let kedalaman1 = b.ins().iadd_imm_s(kedalaman, 1);
     let mut p = Penurun {
         b, j, nilai: vec![None; j.tipe.len()], slot, catat, undi, fid: impor.fid as i64, ptr, keluar, register, callee, kedalaman1,
-        lb, wadah, titip, langsung, ringan, wadah16, konst: Default::default(),
+        lb, wadah, titip, langsung, ringan, wadah16, konst: Default::default(), sebaris: None,
+        larik_tb: Vec::new(),
     };
     // Kedalaman native dijaga di pintu masuk; parameter dimuat dari register atau penyangga argumen.
     let dalam = p.b.create_block();
@@ -118,6 +124,17 @@ pub fn turunkan(
     p.pulang_status(ULANG);
     p.b.switch_to_block(blok[0]);
     let fl = MemFlagsData::trusted();
+    // Elemen larik lokal dibaca/ditulis sebaris (seperti penurun langsung) kalau tata letaknya ditemukan.
+    let larik = j.blok.iter().flat_map(|d| &d.inst)
+        .any(|i| matches!(i, Inst::Pembantu { pb: Pb::Baca | Pb::BacaPecahan | Pb::Tulis, .. }));
+    if let Some(tl) = crate::jit::tata_letak::tata_letak().filter(|_| larik) {
+        let ks = p.b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 16, 3));
+        let pk = p.b.ins().stack_addr(ptr, ks, 0);
+        let f = m.declare_func_in_func(il.konteks_mentah, p.b.func);
+        p.b.ins().call(f, &[pk]);
+        let (vm_p, basis) = (p.b.ins().stack_load(ptr, types::I64, ks, 0), p.b.ins().stack_load(ptr, types::I64, ks, 8));
+        p.sebaris = Some((tl, vm_p, basis));
+    }
     for (k, pos) in j.posisi_masuk.iter().enumerate() {
         let par = j.blok[0].params[k];
         // `Lebar` dibaca dari stack VM (isinya di sana); yang bukan bulat lagi = ULANG, belum ada yang berubah.
@@ -143,7 +160,15 @@ pub fn turunkan(
             let ps = p.b.block_params(blok[i]).to_vec();
             for (n, v) in d.params.iter().zip(ps) { p.nilai[n.0 as usize] = Some(v); }
         }
-        for ins in &d.inst { p.inst(ins); }
+        p.larik_tb.clear();
+        for ins in &d.inst {
+            p.inst(ins);
+            // Cuma aritmetika, jaga dan akses larik sebaris yang tidak mengubah penyimpanan larik lokal.
+            let murni = matches!(ins, Inst::KonstI { .. } | Inst::KonstF { .. } | Inst::KonstL { .. } | Inst::Biner { .. }
+                | Inst::Unar { .. } | Inst::BinerL { .. } | Inst::Pilih { .. } | Inst::JagaJika { .. } | Inst::Sempit { .. }
+                | Inst::Pembantu { pb: Pb::Baca | Pb::BacaPecahan | Pb::Tulis, .. });
+            if !murni { p.larik_tb.clear(); }
+        }
         match d.akhir.as_ref().expect("diperiksa periksa") {
             Akhir::Lompat { ke, args } => {
                 let a = p.args(args);
@@ -351,6 +376,37 @@ impl Penurun<'_, '_> {
         if self.register { self.b.ins().return_(&[st, v]); } else {
             self.b.ins().store(MemFlagsData::trusted(), v, self.keluar, 0);
             self.b.ins().return_(&[st]);
+        }
+    }
+
+    /// `Inst::Pembantu` lewat panggilan pembantunya (jalur umum, dan jalur lambat larik sebaris).
+    fn lambat_inst(&mut self, ins: &Inst) {
+        let Inst::Pembantu { pb, args, hasil, gagal, keluar } = ins else { unreachable!("cuma Pembantu") };
+        let f = self.lb.pb.iter().find(|(p, _)| p == pb).expect("pembantu terdaftar").1;
+        let argv: Vec<Value> = args.iter().map(|a| match a {
+            Arg::I64(v) => self.i64c(*v),
+            Arg::I32(v) => self.b.ins().iconst(types::I32, *v as i64),
+            Arg::Isi(n) => self.bit(*n),
+            Arg::Wadah => self.b.ins().stack_addr(self.ptr, self.wadah, 0),
+        }).collect();
+        let c = self.b.ins().call(f, &argv);
+        let st = self.b.inst_results(c)[0];
+        if let Some((uji, j)) = gagal {
+            let cond = match uji {
+                Uji::BukanNol => st,
+                Uji::Sama(k) => self.b.ins().icmp_imm_u(IntCC::Equal, st, *k),
+                Uji::Negatif => self.b.ins().icmp_imm_s(IntCC::SignedLessThan, st, 0),
+            };
+            self.jaga(cond, j);
+        }
+        if let Some(h) = hasil {
+            let v = if self.b.func.dfg.value_type(st) == types::I64 { st } else { self.b.ins().uextend(types::I64, st) };
+            self.tetapkan(*h, v);
+        }
+        if let Some(k) = keluar {
+            let v = self.b.ins().stack_load(self.ptr, types::I64, self.wadah, 0);
+            let v = if self.j.tipe(*k) == Tipe::F { self.b.ins().bitcast(types::F64, MemFlagsData::new(), v) } else { v };
+            self.tetapkan(*k, v);
         }
     }
 
@@ -600,34 +656,52 @@ impl Penurun<'_, '_> {
                 let v = self.b.ins().stack_load(self.ptr, types::I64, self.wadah, 0);
                 self.tetapkan(*hasil, v);
             }
-            Inst::Pembantu { pb, args, hasil, gagal, keluar } => {
-                let f = self.lb.pb.iter().find(|(p, _)| p == pb).expect("pembantu terdaftar").1;
-                let argv: Vec<Value> = args.iter().map(|a| match a {
-                    Arg::I64(v) => self.i64c(*v),
-                    Arg::I32(v) => self.b.ins().iconst(types::I32, *v as i64),
-                    Arg::Isi(n) => self.bit(*n),
-                    Arg::Wadah => self.b.ins().stack_addr(self.ptr, self.wadah, 0),
-                }).collect();
-                let c = self.b.ins().call(f, &argv);
-                let st = self.b.inst_results(c)[0];
-                if let Some((uji, j)) = gagal {
-                    let cond = match uji {
-                        Uji::BukanNol => st,
-                        Uji::Sama(k) => self.b.ins().icmp_imm_u(IntCC::Equal, st, *k),
-                        Uji::Negatif => self.b.ins().icmp_imm_s(IntCC::SignedLessThan, st, 0),
+            Inst::Pembantu { pb: pb @ (Pb::Baca | Pb::BacaPecahan | Pb::Tulis), args, gagal: Some(_), .. } if self.sebaris.is_some() => {
+                let (tl, vm_p, basis) = self.sebaris.expect("baru diperiksa");
+                let Arg::I64(rel) = args[0] else { unreachable!("lokal larik konstan") };
+                let Arg::Isi(i) = args[1] else { unreachable!("indeks native") };
+                let iv = self.v(i);
+                let (lambat, selesai) = (self.b.create_block(), self.b.create_block());
+                self.b.set_cold_block(lambat);
+                if *pb == Pb::Tulis {
+                    let (Arg::Isi(n), Arg::I32(kode)) = (args[2], args[3]) else { unreachable!("nilai dan kode") };
+                    let vv = self.bit(n);
+                    // Cuma bulat/bool/pecahan yang ditulis sebaris; jenis lain langsung ke pembantu.
+                    let tb = if matches!(kode, 1 | 2 | 5) {
+                        let tb = crate::jit::turun::tembolok_larik(&mut self.b, &mut self.larik_tb, rel as usize);
+                        crate::jit::turun::tulis_sebaris(&mut self.b, tl, vm_p, basis, rel as usize, iv, vv, kode as i64, lambat, Some(tb));
+                        self.b.ins().jump(selesai, &[]);
+                        Some(tb)
+                    } else {
+                        // Pembantu bisa mengganti penyimpanannya: tembolok lokal ini tidak berlaku lagi.
+                        self.larik_tb.retain(|(l, ..)| *l != rel as usize);
+                        self.b.ins().jump(lambat, &[]);
+                        None
                     };
-                    self.jaga(cond, j);
+                    self.b.switch_to_block(lambat);
+                    if let Some(tb) = tb { crate::jit::turun::larik_tak_pasti(&mut self.b, tb); }
+                    self.lambat_inst(ins);
+                    self.b.ins().jump(selesai, &[]);
+                    self.b.switch_to_block(selesai);
+                    return;
                 }
-                if let Some(h) = hasil {
-                    let v = if self.b.func.dfg.value_type(st) == types::I64 { st } else { self.b.ins().uextend(types::I64, st) };
-                    self.tetapkan(*h, v);
-                }
-                if let Some(k) = keluar {
-                    let v = self.b.ins().stack_load(self.ptr, types::I64, self.wadah, 0);
-                    let v = if self.j.tipe(*k) == Tipe::F { self.b.ins().bitcast(types::F64, MemFlagsData::new(), v) } else { v };
-                    self.tetapkan(*k, v);
-                }
+                let Inst::Pembantu { keluar: Some(k), .. } = ins else { unreachable!("baca berhasil") };
+                self.b.append_block_param(selesai, types::I64);
+                let tb = crate::jit::turun::tembolok_larik(&mut self.b, &mut self.larik_tb, rel as usize);
+                let v = crate::jit::turun::baca_sebaris(&mut self.b, tl, vm_p, basis, rel as usize, iv, *pb == Pb::BacaPecahan, lambat, Some(tb));
+                self.b.ins().jump(selesai, &[v.into()]);
+                self.b.switch_to_block(lambat);
+                crate::jit::turun::larik_tak_pasti(&mut self.b, tb);
+                self.lambat_inst(ins);
+                let v = self.v(*k);
+                let v = if self.j.tipe(*k) == Tipe::F { self.b.ins().bitcast(types::I64, MemFlagsData::new(), v) } else { v };
+                self.b.ins().jump(selesai, &[v.into()]);
+                self.b.switch_to_block(selesai);
+                let v = self.b.block_params(selesai)[0];
+                let v = if self.j.tipe(*k) == Tipe::F { self.b.ins().bitcast(types::F64, MemFlagsData::new(), v) } else { v };
+                self.tetapkan(*k, v);
             }
+            Inst::Pembantu { .. } => self.lambat_inst(ins),
             Inst::Maju { slot, jaga } => {
                 let p = self.i64c(*slot as i64);
                 let c = self.b.ins().call(self.lb.maju, &[p]);

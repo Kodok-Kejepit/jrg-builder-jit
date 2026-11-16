@@ -4113,3 +4113,38 @@ fn jir_sebar_sama_dengan_vm() {
     let r = jalankan(JIR_SEBAR, &["--jit"], &[JIR, STRES, ("JRG_JIT_LOG", "jir")]);
     assert!(r.stderr.contains("  sebar") && r.stderr.contains("pulang"), "`?` tidak lewat JIR:\n{}", r.stderr);
 }
+
+/// JIR-2a (langkah 97): elemen larik lokal sebaris di penurunan JIR (`turun::baca_sebaris`/`tulis_sebaris` dengan
+/// tembolok penyimpanan per wilayah); larik yang dibagi (disalin ke larik lain, ditugasi ulang) lewat pembantu.
+const JIR_LARIK_SEBARIS: &str = r#"fn ubah(n: int) {
+    var a = [1, 2, 3, 4, 5, 6, 7, 8]
+    var simpan = []
+    var t = 0
+    for i in 0..n {
+        if i % 50 == 0 { simpan = simpan + [a] }
+        a[i % 8] = a[i % 8] * 3 % 1000003
+        t = t + a[(i + 3) % 8]
+        if i % 97 == 0 { a = [9, 9, 9, 9, 9, 9, 9, 9] }
+    }
+    var s = 0
+    for _, b in simpan { s = s + b[0] + b[7] }
+    return [t, s, a[2]]
+}
+fn main() {
+    wok(ubah(2000))
+    var f = [0.5, 1.5, 2.5]
+    var g = f
+    for i in 0..300 { f[i % 3] = f[i % 3] + 0.25 }
+    wok(f, g)
+}
+"#;
+
+#[test]
+fn jir_larik_sebaris_sama_dengan_vm() {
+    let v = jalankan(JIR_LARIK_SEBARIS, &["--vm"], &[]);
+    assert!(v.sukses, "{}{}", v.stdout, v.stderr);
+    for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..]] {
+        let j = jalankan(JIR_LARIK_SEBARIS, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}
