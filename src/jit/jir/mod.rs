@@ -344,10 +344,11 @@ impl fmt::Display for Fungsi {
     }
 }
 
-/// `JRG_JIT_JIR=paksa`: unit yang dicakup JIR diturunkan lewat JIR (fase JIR-1; penurun langsung tetap bawaan).
+/// Unit yang dicakup JIR diturunkan lewat JIR (bawaan sejak langkah 101); `JRG_JIT_JIR=mati` (`lama`, `off`) memakai
+/// penurun langsung untuk semuanya. Yang ditolak JIR selalu lewat penurun langsung.
 pub fn aktif() -> bool {
     static A: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *A.get_or_init(|| std::env::var("JRG_JIT_JIR").is_ok_and(|v| v == "paksa"))
+    *A.get_or_init(|| !std::env::var("JRG_JIT_JIR").is_ok_and(|v| matches!(v.as_str(), "mati" | "lama" | "off")))
 }
 
 /// Unit yang diturunkan lewat JIR di proses ini (untuk `JRG_JIT_LOG=ringkas` dan tes).

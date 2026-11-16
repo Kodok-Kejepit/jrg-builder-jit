@@ -101,7 +101,8 @@ pub fn kompilasi(ir: &str, keluar: &Path, verbose: bool) -> Result<PathBuf, Stri
     let lib = alat.sysroot.join("lib").join(SASARAN);
     let mut taut = Command::new(&alat.penaut.0);
     if alat.penaut.1 { taut.args(["-flavor", "wasm"]); }
-    taut.args(["-m", "wasm32", "--gc-sections"]).arg(format!("-L{}", lib.display())).arg(lib.join("crt1-command.o"))
+    // Stack bayangan 8 MiB seperti stack utama native (bawaan wasm-ld 64 KiB: larik `[2000]int` lokal sudah meluap).
+    taut.args(["-m", "wasm32", "--gc-sections", "-z", "stack-size=8388608"]).arg(format!("-L{}", lib.display())).arg(lib.join("crt1-command.o"))
         .arg(&prog_o).arg(&c_o).arg(&runtime).arg("-lc").arg(&alat.builtins).arg("-o").arg(keluar);
     let hasil = jalankan_alat(&mut taut, "penaut wasm");
     let _ = std::fs::remove_dir_all(&dir);
@@ -119,18 +120,27 @@ pub fn pemuat_untuk(wasm: &Path) -> PathBuf {
     PathBuf::from(n)
 }
 
-/// Pemuat node: WASI bawaan node, argumen sesudah nama berkas wasm, kode keluar dari `proc_exit`.
+/// Pemuat node: program jalan di `Worker` ber-stack 512 MiB (stack V8 bawaan ±1 MiB menolak rekursi yang jalan di
+/// native), WASI bawaan node, argumen sesudah nama berkas wasm, kode keluar dari `proc_exit`.
 const PEMUAT_NODE: &str = r#"// Dibuat jrgc --emit-wasm. Pakai: node <program>.wasm.mjs [argumen...]
 import fs from 'node:fs';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import { Worker, isMainThread, parentPort } from 'node:worker_threads';
 import { WASI } from 'node:wasi';
-const wasm = fileURLToPath(import.meta.url).replace(/\.mjs$/, '');
-const wasi = new WASI({ version: 'preview1', args: [wasm, ...process.argv.slice(2)], env: process.env,
-  preopens: { '/': '/' }, returnOnExit: true });
-const mod = await WebAssembly.compile(fs.readFileSync(wasm));
-const inst = await WebAssembly.instantiate(mod, { wasi_snapshot_preview1: wasi.wasiImport });
-process.exitCode = wasi.start(inst);
+const ini = fileURLToPath(import.meta.url);
+const wasm = ini.replace(/\.mjs$/, '');
+if (isMainThread) {
+  const w = new Worker(ini, { argv: process.argv.slice(2), resourceLimits: { stackSizeMb: 512 } });
+  w.on('message', (k) => { process.exitCode = k; });
+  w.on('error', (e) => { console.error(e); process.exitCode = 1; });
+} else {
+  const wasi = new WASI({ version: 'preview1', args: [wasm, ...process.argv.slice(2)], env: process.env,
+    preopens: { '/': '/' }, returnOnExit: true });
+  const mod = await WebAssembly.compile(fs.readFileSync(wasm));
+  const inst = await WebAssembly.instantiate(mod, { wasi_snapshot_preview1: wasi.wasiImport });
+  parentPort.postMessage(wasi.start(inst));
+}
 "#;
 
 /// Menjalankan `wasm` lewat node; kode keluarnya kode keluar program.

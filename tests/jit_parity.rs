@@ -3585,6 +3585,34 @@ fn paritas_lewat_jir() {
     assert!(gagal.is_empty(), "{} kasus PARITAS beda lewat JIR:\n{}", gagal.len(), gagal.join("\n"));
 }
 
+/// Penurun langsung tetap jalan untuk semuanya dengan `JRG_JIT_JIR=mati` (JIR bawaan sejak langkah 101): seluruh
+/// `PARITAS` sama lewat penurun langsung di mode stres, supaya jalur yang jadi cadangan JIR tidak kehilangan instrumen.
+#[test]
+fn paritas_lewat_penurun_langsung() {
+    let mut gagal = Vec::new();
+    for (nama, src) in PARITAS {
+        let i = jalankan(src, &[], &[]);
+        let j = jit_sama(src, &i, &[STRES, ("JRG_JIT_JIR", "mati")]);
+        if i.sukses != j.sukses || i.stdout != j.stdout {
+            gagal.push(format!("  {nama}\n     interpreter ({}): {:?}\n     langsung stres ({}): {:?}",
+                i.sukses, i.stdout, j.sukses, j.stdout));
+        }
+    }
+    assert!(gagal.is_empty(), "{} kasus PARITAS beda lewat penurun langsung:\n{}", gagal.len(), gagal.join("\n"));
+}
+
+/// JIR bawaan sejak langkah 101: tanpa variabel apa pun unit lewat JIR, dan `mati` mematikannya.
+#[test]
+fn jir_bawaan_dan_bisa_dimatikan() {
+    let prog = "fn jumlah(n: int) -> int {\n    var t = 0\n    for i in 0..n { t = t + i }\n    return t\n}\nfn main() { wok(jumlah(1000)) }\n";
+    // Nilai kosong = bawaan, juga saat suite sendiri dijalankan dengan `JRG_JIT_JIR=mati`.
+    let bawaan = jalankan(prog, &["--jit"], &[STRES, ("JRG_JIT_LOG", "ringkas"), ("JRG_JIT_JIR", "")]);
+    assert!(bawaan.stderr.contains("jir: ") && !bawaan.stderr.contains("jir: 0 "), "JIR tidak dipakai bawaan:\n{}", bawaan.stderr);
+    let mati = jalankan(prog, &["--jit"], &[STRES, ("JRG_JIT_LOG", "ringkas"), ("JRG_JIT_JIR", "mati")]);
+    assert!(!mati.stderr.contains("jir: "), "JRG_JIT_JIR=mati masih lewat JIR:\n{}", mati.stderr);
+    assert_eq!(bawaan.stdout, mati.stdout);
+}
+
 /// JIR-1 benar-benar dipakai: loop dan cabang bulat, jaga luapan yang deopt lalu VM menghitung di 128 bit, geseran
 /// yang membuang bit, dan pembagi nol (kalimat dan jejak dari VM).
 const JIR_DASAR: &str = r#"fn jumlah(n: int) -> int {

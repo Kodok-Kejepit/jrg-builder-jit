@@ -346,7 +346,7 @@ pub fn kompilasi(
         let impor = turun::Impor {
             catat: mj.catat, undi: mj.undi, baca: mj.baca, tulis: mj.tulis, fid: fid0 + i as u32, lambat: &mj.lambat, ringan: &ringan,
         };
-        // JIR (`JRG_JIT_JIR=paksa`) untuk unit di cakupannya, selain itu penurun langsung.
+        // JIR (bawaan; `JRG_JIT_JIR=mati` mematikannya) untuk unit di cakupannya, selain itu penurun langsung.
         let jir = super::jir::aktif().then(|| super::jir::bangun::bangun(h, r, impor.undi.is_some()));
         if std::env::var("JRG_JIT_LOG").is_ok_and(|v| v == "jir") {
             match &jir { Some(Ok(fj)) => eprintln!("[jit] jir {}:\n{fj}", h.name), Some(Err(e)) => eprintln!("[jit] jir {}: {e}", h.name), None => {} }
