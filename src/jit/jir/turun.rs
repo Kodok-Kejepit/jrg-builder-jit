@@ -4,7 +4,7 @@
 
 use cranelift_codegen::ir::{condcodes::{FloatCC, IntCC}, types, Block, FuncRef, InstBuilder, MemFlagsData, StackSlot, StackSlotData, StackSlotKind, Type, Value};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
-use cranelift_module::Module;
+use cranelift_module::{FuncId, Module};
 
 use super::{Akhir, Banding, Biner, Fungsi, Hasil, Inst, Jaga, Keadaan, Nilai, Tipe, Unar};
 use crate::jit::turun::{Impor, BERHASIL, BERHASIL_BOOL, BERHASIL_PECAHAN, DEOPT, GAGAL_SPEK, KEDALAMAN_MAKS, ULANG};
@@ -21,13 +21,17 @@ struct Penurun<'a, 'b> {
     /// Penunjuk hasil (`tanda_tangan` umum).
     keluar: Value,
     register: bool,
+    /// Callee bulat per nomor `Rencana::callee` (yang dipanggil native).
+    callee: Vec<Option<FuncRef>>,
+    /// Kedalaman untuk callee (kedalaman bingkai ini + 1).
+    kedalaman1: Value,
 }
 
 fn tipe_clif(t: Tipe) -> Type { if t == Tipe::I { types::I64 } else { types::F64 } }
 
 pub fn turunkan(
     m: &mut impl Module, fungsi: &mut cranelift_codegen::ir::Function, fctx: &mut FunctionBuilderContext,
-    j: &Fungsi, impor: &Impor,
+    j: &Fungsi, impor: &Impor, id_callee: &[Option<FuncId>],
 ) {
     let ptr = m.target_config().pointer_type();
     let register = fungsi.signature.returns.len() == 2;
@@ -47,7 +51,11 @@ pub fn turunkan(
     for (i, d) in j.blok.iter().enumerate().skip(1) {
         for p in &d.params { b.append_block_param(blok[i], tipe_clif(j.tipe(*p))); }
     }
-    let mut p = Penurun { b, j, nilai: vec![None; j.tipe.len()], slot, catat, undi, fid: impor.fid as i64, ptr, keluar, register };
+    let callee: Vec<Option<FuncRef>> = id_callee.iter().map(|i| i.map(|i| m.declare_func_in_func(i, b.func))).collect();
+    let kedalaman1 = b.ins().iadd_imm_s(kedalaman, 1);
+    let mut p = Penurun {
+        b, j, nilai: vec![None; j.tipe.len()], slot, catat, undi, fid: impor.fid as i64, ptr, keluar, register, callee, kedalaman1,
+    };
     // Kedalaman native dijaga di pintu masuk; parameter dimuat dari register atau penyangga argumen.
     let dalam = p.b.create_block();
     p.b.set_cold_block(dalam);
@@ -149,6 +157,25 @@ impl Penurun<'_, '_> {
                 self.tetapkan(*hasil, v);
             }
             Inst::JagaJika { kondisi, jaga } => { let c = self.v(*kondisi); self.jaga(c, jaga); }
+            Inst::Panggil { hasil, callee, args, di, sesudah } => {
+                let fref = self.callee[*callee].expect("callee bulat dikompilasi");
+                let mut argv: Vec<Value> = args.iter().map(|a| self.v(*a)).collect();
+                argv.push(self.kedalaman1);
+                let c = self.b.ins().call(fref, &argv);
+                let (st, h) = (self.b.inst_results(c)[0], self.b.inst_results(c)[1]);
+                let (terus, gagal, ulang, deopt) = (self.b.create_block(), self.b.create_block(), self.b.create_block(), self.b.create_block());
+                for bl in [gagal, ulang, deopt] { self.b.set_cold_block(bl); }
+                self.b.ins().brif(st, gagal, &[], terus, &[]);
+                self.b.switch_to_block(gagal);
+                let u = self.b.ins().icmp_imm_s(IntCC::Equal, st, ULANG);
+                self.b.ins().brif(u, ulang, &[], deopt, &[]);
+                self.b.switch_to_block(ulang);
+                self.deopt(di, 0);
+                self.b.switch_to_block(deopt);
+                self.deopt(sesudah, 0);
+                self.b.switch_to_block(terus);
+                self.tetapkan(*hasil, h);
+            }
             Inst::Undi { hasil } => {
                 let u = self.undi.expect("undi cuma dibangun di deopt acak");
                 let c = self.b.ins().call(u, &[]);

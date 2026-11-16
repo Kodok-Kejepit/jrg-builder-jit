@@ -66,6 +66,12 @@ pub fn periksa(f: &Fungsi) -> Result<(), String> {
                 }
                 Inst::JagaJika { kondisi, jaga: j } => { pakai(*kondisi, &ada)?; tipe(*kondisi, Tipe::I)?; jaga(j, &ada)?; }
                 Inst::Undi { hasil } => { definisi(*hasil, &mut ada)?; tipe(*hasil, Tipe::I)?; }
+                Inst::Panggil { hasil, args, di, sesudah, .. } => {
+                    for a in args { pakai(*a, &ada)?; tipe(*a, Tipe::I)?; }
+                    for v in di.isi.iter().chain(&sesudah.isi).flatten() { pakai(*v, &ada)?; }
+                    definisi(*hasil, &mut ada)?;
+                    tipe(*hasil, Tipe::I)?;
+                }
             }
         }
         let lompat = |ke: Blok, args: &[Nilai], ada: &HashSet<Nilai>| -> Result<(), String> {

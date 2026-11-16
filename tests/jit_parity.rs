@@ -3619,3 +3619,35 @@ fn jir_sama_dengan_vm() {
     let r = jalankan(JIR_DASAR, &["--jit"], &[JIR, STRES, ("JRG_JIT_LOG", "ringkas")]);
     assert!(r.stderr.contains("[jit] jir: "), "JIR tidak dipakai:\n{}", r.stderr);
 }
+
+/// JIR-1b (langkah 86): panggilan langsung ke callee bulat (rekursi dalam, `ULANG` dan deopt di dalam callee) dan
+/// intrinsik `int`/`uint`/`float` atas bulat.
+const JIR_PANGGIL: &str = r#"fn fib(n: int) -> int { if n < 2 { return n } return fib(n - 1) + fib(n - 2) }
+fn rata(n: int) -> float {
+    var s = 0.0
+    var i = 0
+    while i < n { s = s + (i as float) * 0.5; i = i + 1 }
+    return s / 2.0
+}
+fn jumlah_u(n: int) -> int { var t = 0  for i in 0..n { t = t + int(i as uint) } return t }
+fn dalam(n: int) -> int { if n == 0 { return 0 } return 1 + dalam(n - 1) }
+fn main() {
+    wok(fib(24), rata(1000), jumlah_u(500))
+    wok(dalam(5000))
+    var x = 0
+    for k in 0..40 { x = x + fib(k % 20) }
+    wok(x)
+}
+"#;
+
+#[test]
+fn jir_panggil_sama_dengan_vm() {
+    let v = jalankan(JIR_PANGGIL, &["--vm"], &[]);
+    assert!(v.sukses && v.stdout.lines().count() == 3, "{}{}", v.stdout, v.stderr);
+    for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..]] {
+        let j = jalankan(JIR_PANGGIL, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let r = jalankan(JIR_PANGGIL, &["--jit"], &[JIR, ("JRG_JIT_LOG", "jir")]);
+    assert!(r.stderr.contains("[jit] jir fib:\nb0") && r.stderr.contains("= panggil #"), "fib tidak lewat JIR:\n{}", r.stderr);
+}

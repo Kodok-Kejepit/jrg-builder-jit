@@ -6,6 +6,20 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
 
 ## [Belum dirilis]
 
+### Memutus
+
+- **`proses::jalankan` dan `proses::keluaran` menghentikan program yang keluarannya melewati 256 MiB** dan menjawab
+  `Err` (dulu `jrgc` mati kehabisan memori); penampung `proses::mulai` yang penuh menunggu dibaca.
+- **`jrgm new` menolak folder yang sudah ada** (dulu `src/main.jrg` di dalamnya ditimpa templat) **dan nama di luar
+  huruf, angka, `_`, `-`** (dengan jalur folder di depannya).
+- **Klien `http::` menolak jawaban yang terpotong** (badan lebih pendek dari `Content-Length`) dan `Content-Length`
+  yang tidak sah atau berbeda-beda; byte sesudah badan dibuang. HTTPS menuntut paling sedikit TLS 1.2.
+
+### Diperbaiki
+
+- **Berkas statis `dok::serve` dialirkan dari disk**, tidak lagi dimuat utuh per permintaan. Dengan middleware
+  `sesudah` berkasnya tetap dimuat, di bawah anggaran 256 MiB (lewat: 503).
+
 ## [0.6.0] — 2026-11-16
 
 ### Memutus

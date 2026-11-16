@@ -12,7 +12,8 @@ fn tipe_jenis(j: Jenis) -> Result<Option<Tipe>, String> {
     match j {
         Jenis::Bulat | Jenis::Bool => Ok(Some(Tipe::I)),
         Jenis::Pecahan => Ok(Some(Tipe::F)),
-        Jenis::Kosong | Jenis::Satuan => Ok(None),
+        // Callee dan bawaan maya: nilainya tetap, dibangun `deopt::pulihkan` dari jenisnya.
+        Jenis::Kosong | Jenis::Satuan | Jenis::Fungsi(_) | Jenis::Bawaan(_) | Jenis::Bungkus(..) => Ok(None),
         lain => Err(format!("jenis {lain:?} di luar JIR-1")),
     }
 }
@@ -24,7 +25,7 @@ fn opcode_dicakup(op: OpCode) -> bool {
         | Add | Sub | Mul | Div | Mod | Lt | Le | Gt | Ge | Eq | Ne | BitAnd | BitOr | BitXor | AndNot | BitNot
         | Shl | Shr | Neg | Not | KeBool | Dup | Swap | SlideDown | Pop | StoreLocal | SimpanBuang
         | Jump | JumpFalse | JumpTrue | JumpFalseKeep | JumpTrueKeep
-        | MakeIterRentang | IterAda | IterMaju | IterVar | Return)
+        | MakeIterRentang | IterAda | IterMaju | IterVar | Return | Call | LoadGlobal)
 }
 
 struct Pembangun<'a> {
@@ -79,7 +80,10 @@ fn periksa_cakupan(f: &VmFunction, r: &Rencana) -> Result<(), String> {
         for j in s { tipe_jenis(*j)?; }
         if !r.wujud[ip].is_empty() { return Err("posisi maya diwujudkan".into()); }
         if r.keluar[ip] { continue; }
-        if r.cara[ip] != Cara::Asli { return Err(format!("{:?} di ip {ip}", r.cara[ip])); }
+        // Fungsi bawaan sebagai konstanta (`Const`): maya, tanpa isi.
+        let bawaan = r.cara[ip] == Cara::Konstanta && ins.op == OpCode::Const
+            && matches!(f.chunk.constants.get(ins.arg as usize), Some(crate::vm::value::VmValue::NativeFn(_)));
+        if r.cara[ip] != Cara::Asli && !bawaan { return Err(format!("{:?} di ip {ip}", r.cara[ip])); }
         if !opcode_dicakup(ins.op) { return Err(format!("{:?} di ip {ip}", ins.op)); }
         // `Return` cuma untuk titik masuk yang boleh kembali native.
         if ins.op == OpCode::Return && r.kembali == crate::jit::layak::KEMBALI_TIDAK { return Err("Return OSR".into()); }
@@ -222,6 +226,9 @@ impl Pembangun<'_> {
                 isi.push(v);
             }
             OpCode::IntImm => { let v = self.konst_i(b, ins.arg as i32 as i64); isi.push(Some(v)); }
+            OpCode::Const if matches!(self.f.chunk.constants.get(a), Some(crate::vm::value::VmValue::NativeFn(_))) => isi.push(None),
+            OpCode::LoadGlobal => isi.push(None),
+            OpCode::Call => return self.panggil(b, ip, isi).map(|_| None),
             OpCode::Const => {
                 let k = self.r.konstanta[ip].ok_or("konstanta di luar 64 bit")?;
                 let lanjut = self.keadaan(ip + 1);
@@ -370,5 +377,50 @@ impl Pembangun<'_> {
             op => return Err(format!("{op:?} belum diturunkan JIR")),
         }
         Ok(None)
+    }
+
+    /// `Call`: callee bulat yang dikompilasi native, atau intrinsik `int`/`uint`/`float` atas bulat.
+    fn panggil(&mut self, b: Blok, ip: usize, isi: &mut Vec<Option<Nilai>>) -> Result<(), String> {
+        use crate::jit::layak::{BUNGKUS_KE_BULAT, BUNGKUS_KE_PECAHAN};
+        let a = self.f.chunk.code[ip].arg as usize;
+        let s = self.keadaan(ip).clone();
+        let t = isi.len();
+        if a + 1 > t { return Err("argumen panggilan di luar stack".into()); }
+        match s[t - a - 1] {
+            Jenis::Bungkus(BUNGKUS_KE_BULAT, k) if a == 1 && s[t - 1] == Jenis::Bulat => {
+                let v = Self::ambil(isi, t - 1)?;
+                // `uint` atas bulat negatif: VM yang melaporkannya.
+                let nama = match self.f.chunk.constants.get(k as usize) {
+                    Some(crate::vm::value::VmValue::NativeFn(g)) => crate::vm::info_native::info(*g).map(|i| i.kanonik.clone()),
+                    _ => None,
+                };
+                if nama.as_deref() == Some("uint") {
+                    let nol = self.konst_i(b, 0);
+                    let neg = self.biner(b, Biner::ICmp(Banding::Lt), v, nol, None);
+                    let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false };
+                    self.dorong(b, Inst::JagaJika { kondisi: neg, jaga });
+                }
+                isi.truncate(t - 2);
+                isi.push(Some(v));
+            }
+            Jenis::Bungkus(BUNGKUS_KE_PECAHAN, _) if a == 1 && matches!(s[t - 1], Jenis::Bulat | Jenis::Pecahan) => {
+                let v = Self::ambil(isi, t - 1)?;
+                let h = self.ke_f(b, v);
+                isi.truncate(t - 2);
+                isi.push(Some(h));
+            }
+            Jenis::Fungsi(c) if self.r.callee_asli().contains(&c) => {
+                let args: Vec<Nilai> = (t - a..t).map(|i| Self::ambil(isi, i)).collect::<Result<_, _>>()?;
+                if args.iter().any(|v| self.j.tipe(*v) != Tipe::I) { return Err("argumen callee bulat bukan bulat".into()); }
+                let di = self.keadaan_di(ip, isi);
+                let sesudah = self.keadaan_di(ip + 1, &isi[..t - a - 1]);
+                let h = self.j.nilai_baru(Tipe::I);
+                self.dorong(b, Inst::Panggil { hasil: h, callee: c, args, di, sesudah });
+                isi.truncate(t - a - 1);
+                isi.push(Some(h));
+            }
+            j => return Err(format!("panggilan atas {j:?} belum diturunkan JIR")),
+        }
+        Ok(())
     }
 }

@@ -86,6 +86,9 @@ pub enum Inst {
     JagaJika { kondisi: Nilai, jaga: Jaga },
     /// Undian deopt acak (`JRG_JIT_STRES=deopt-acak`): 1 kira-kira sekali tiap 16.
     Undi { hasil: Nilai },
+    /// Panggilan langsung ke callee bulat `Rencana::callee[callee]` (`tanda_tangan_bulat`). Callee yang belum mulai
+    /// (`ULANG`) = deopt di `di` (VM yang memanggil); callee yang deopt = deopt di `sesudah` (VM melanjutkan callee-nya).
+    Panggil { hasil: Nilai, callee: usize, args: Vec<Nilai>, di: Keadaan, sesudah: Keadaan },
 }
 
 /// Status `Return` native (`super::turun::BERHASIL*`).
@@ -165,6 +168,8 @@ impl fmt::Display for Fungsi {
                     Inst::Pilih { hasil, jika, ya, tidak } => writeln!(f, "  {hasil} = pilih {jika} ? {ya} : {tidak}")?,
                     Inst::JagaJika { kondisi, jaga: j } => writeln!(f, "  jaga {kondisi}{}", jaga(&Some(j.clone())))?,
                     Inst::Undi { hasil } => writeln!(f, "  {hasil} = undi")?,
+                    Inst::Panggil { hasil, callee, args, di, sesudah } =>
+                        writeln!(f, "  {hasil} = panggil #{callee}({}) ulang {di} deopt {sesudah}", daftar(args))?,
                 }
             }
             match &b.akhir {
