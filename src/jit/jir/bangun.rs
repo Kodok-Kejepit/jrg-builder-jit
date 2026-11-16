@@ -85,7 +85,7 @@ fn periksa_cakupan(f: &VmFunction, r: &Rencana) -> Result<(), String> {
             Cara::Konstanta | Cara::Muat | Cara::Ambil | Cara::Simpan | Cara::Buang | Cara::Benar | Cara::KembaliNilai
             | Cara::KembaliUnit | Cara::Langkah { .. } | Cara::Bawaan | Cara::Biner | Cara::MuatUpval | Cara::SimpanUpval
             | Cara::TeksBulat | Cara::Geser | Cara::Cabang { .. } | Cara::Bangun(_) | Cara::Salinan | Cara::Salin | Cara::Tukar
-            | Cara::Metode(_) | Cara::IterAda | Cara::Maju => {}
+            | Cara::Metode(_) | Cara::IterAda | Cara::Maju | Cara::Langsung(_) | Cara::Panjang | Cara::PanjangLokal(_) => {}
             c => return Err(format!("{c:?} di ip {ip}")),
         }
         // `Return` cuma untuk titik masuk yang boleh kembali native.
@@ -367,6 +367,47 @@ impl Pembangun<'_> {
                 OpCode::SimpanBuang => { isi[a] = None; isi.pop(); }
                 op => return Err(format!("Cara::Salinan atas {op:?}")),
             },
+            Cara::Langsung(n) => {
+                let (dari, fungsi) = match s[t - a - 1] {
+                    Jenis::Fungsi(c) => (t - a, &self.r.callee_nilai[c] as *const _ as i64),
+                    _ => (t - a - 1, 0),
+                };
+                let (isi_n, taruh_n) = self.tumpahan(&s, dari..t, isi)?;
+                let jenis_arg = self.r.langsung[n].1.clone();
+                let mut args = Vec::new();
+                for (k, j) in jenis_arg.iter().enumerate() {
+                    if j.skalar() { args.push((k, Self::ambil(isi, t - a + k)?)); }
+                }
+                let mut sesudah: Vec<Option<Nilai>> = isi[..t - a - 1].to_vec();
+                sesudah.push(None);
+                let mut basi = self.keadaan_di(ip + 1, &sesudah);
+                if let Some(p) = basi.isi.last_mut() { *p = None; }
+                let hasil = match self.r.spek[ip] {
+                    None => None,
+                    Some(j @ (Jenis::Bulat | Jenis::Pecahan)) => {
+                        let tipe = tipe_jenis(j)?.ok_or("spekulasi tanpa isi")?;
+                        let h = self.j.nilai_baru(tipe);
+                        Some((h, j.kode() as i32, Jaga { keadaan: basi.clone(), spek: true, puncak_vm: true }))
+                    }
+                    Some(j) => return Err(format!("hasil langsung berspekulasi {j:?}")),
+                };
+                let jenis = self.jenis_ip(ip);
+                self.dorong(b, Inst::Langsung { n, ip, jenis, t, a, fungsi, isi: isi_n, taruh: taruh_n, args, basi, hasil: hasil.clone() });
+                isi.truncate(t - a - 1);
+                isi.push(hasil.map(|(h, ..)| h));
+            }
+            Cara::Panjang | Cara::PanjangLokal(_) => {
+                let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
+                let h = self.j.nilai_baru(Tipe::I);
+                let (pos, lokal, hapus) = match self.r.cara[ip] {
+                    // `len(lokal)`: posisi callee `len` dan salinannya diganti panjangnya.
+                    Cara::PanjangLokal(l) => (l as usize, true, 2),
+                    _ => (t - 1, false, 1),
+                };
+                self.dorong(b, Inst::Panjang { hasil: h, pos, lokal, jaga });
+                isi.truncate(t - hapus);
+                isi.push(Some(h));
+            }
             Cara::Salin => { self.dorong(b, Inst::Salin { dari: t - 1, ke: t }); isi.push(None); }
             Cara::Tukar => {
                 let (x, y) = (t - 2, t - 1);

@@ -3819,3 +3819,39 @@ fn jir_salinan_sama_dengan_vm() {
         assert!(r.stderr.contains("[jit] jir: "), "JIR tidak dipakai:\n{}", r.stderr);
     }
 }
+
+/// JIR-1g (langkah 91): panggilan langsung (`Cara::Langsung`: argumen nilai VM, callee ringan, hasil angka dari register
+/// atau dibuka berjaga, deopt di dalam callee) dan `len` atas nilai VM dan lokal.
+const JIR_LANGSUNG: &str = r#"fn panjang(s, k: int) -> int { return len(s) + k }
+fn sambung(a, b) { return a + "-" + b }
+fn skala(x, f: float) -> float { return x * f }
+fn kerja(n: int) {
+    var t = 0
+    var s = ""
+    var f = 0.0
+    for i in 0..n {
+        t = t + panjang("abc", i)
+        if i % 50 == 0 { s = sambung(s, str(i)) }
+        f = f + skala(i, 0.5)
+    }
+    return [t, len(s), f]
+}
+fn main() {
+    wok(kerja(400))
+    // Argumen berganti jenis: callee deopt, hasilnya bukan bulat lagi.
+    wok(skala(2.5, 2.0), panjang([1, 2], 3))
+    wok(panjang(5, 1))
+}
+"#;
+
+#[test]
+fn jir_langsung_sama_dengan_vm() {
+    let v = jalankan(JIR_LANGSUNG, &["--vm"], &[]);
+    assert!(!v.sukses && v.stdout.lines().count() == 2, "{}{}", v.stdout, v.stderr);
+    for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..]] {
+        let j = jalankan(JIR_LANGSUNG, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let r = jalankan(JIR_LANGSUNG, &["--jit"], &[JIR, STRES, ("JRG_JIT_LOG", "jir")]);
+    assert!(r.stderr.contains("langsung #") && r.stderr.contains("= panjang"), "tidak lewat JIR:\n{}", r.stderr);
+}

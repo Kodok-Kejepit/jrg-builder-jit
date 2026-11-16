@@ -138,6 +138,16 @@ pub enum Inst {
     IterAda { hasil: Nilai, slot: usize, jaga: Jaga },
     /// Indeks iterator di posisi `slot` maju satu (`lambat::maju`); gagal = deopt.
     Maju { slot: usize, jaga: Jaga },
+    /// Panggilan langsung `Rencana::langsung[n]` (`masuk*`, kode native callee, `keluar*`): argumen native `args`,
+    /// callee maya di alamat `fungsi` (0 = di stack VM); pemanggil basi = deopt di `basi`; hasil berspekulasi angka
+    /// (kode jenis) ke `hasil`, dari register kalau statusnya cocok, selain itu dibuka berjaga.
+    Langsung {
+        n: usize, ip: usize, jenis: i64, t: usize, a: usize, fungsi: i64, isi: Vec<(usize, Nilai)>, taruh: Vec<(usize, i64)>,
+        args: Vec<(usize, Nilai)>, basi: Keadaan, hasil: Option<(Nilai, i32, Jaga)>,
+    },
+    /// Panjang nilai VM di posisi `pos` (`lambat::panjang`, posisinya dilepas) atau lokal `lokal`
+    /// (`lambat::panjang_lokal`, `Cara::PanjangLokal`); galat = deopt, VM yang melapor.
+    Panjang { hasil: Nilai, pos: usize, lokal: bool, jaga: Jaga },
 }
 
 /// Status `Return` native (`super::turun::BERHASIL*`).
@@ -250,6 +260,9 @@ impl fmt::Display for Fungsi {
                     Inst::CekMetode { pos, jaga: j, .. } => writeln!(f, "  cek-metode {pos}{}", jaga(&Some(j.clone())))?,
                     Inst::IterAda { hasil, slot, .. } => writeln!(f, "  {hasil} = iter-ada {slot}")?,
                     Inst::Maju { slot, .. } => writeln!(f, "  maju {slot}")?,
+                    Inst::Panjang { hasil, pos, lokal, .. } => writeln!(f, "  {hasil} = panjang {}{pos}", if *lokal { "lokal " } else { "" })?,
+                    Inst::Langsung { n, ip, args, hasil, .. } => writeln!(f, "  {}langsung #{n} @{ip} args {args:?}",
+                        hasil.as_ref().map_or(String::new(), |(h, k, _)| format!("{h} (kode {k}) = ")))?,
                     Inst::TulisVm { pos, nilai, kode } =>
                         writeln!(f, "  tulis-vm {}{pos} (kode {kode})", nilai.map_or(String::new(), |v| format!("{v} -> ")))?,
                 }
