@@ -101,6 +101,7 @@ pub fn periksa(f: &Fungsi) -> Result<(), String> {
                 }
                 Inst::Sempit { hasil, a, jaga: j } => { pakai(*a, &ada)?; tipe(*a, Tipe::L)?; jaga(j, &ada)?; definisi(*hasil, &mut ada)?; tipe(*hasil, Tipe::I)?; }
                 Inst::Sebar { jaga: j, .. } => jaga(j, &ada)?,
+                Inst::Rantai { hasil, jaga: j, .. } => { jaga(j, &ada)?; definisi(*hasil, &mut ada)?; tipe(*hasil, Tipe::I)?; }
                 Inst::TulisLebar { nilai, .. } => { pakai(*nilai, &ada)?; tipe(*nilai, Tipe::L)?; }
                 Inst::BukaLebar { hasil, jaga: j, .. } => { jaga(j, &ada)?; definisi(*hasil, &mut ada)?; tipe(*hasil, Tipe::L)?; }
                 Inst::Pembantu { args, hasil, gagal, keluar, .. } => {

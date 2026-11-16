@@ -321,7 +321,7 @@ pub(super) fn mati_sesudah(f: &VmFunction, r: &Rencana, ip: usize, a: usize) -> 
 /// Rantai lengan `match` atas satu lokal: kepala tiap lengan `LoadLocal a; CekEnum d; JumpFalse x` (digabung,
 /// tanpa sasaran lompat lain di antaranya) dan lengan berikutnya di ujung `Jump` tanpa syarat dari `x`, tiap
 /// titiknya berpendahulu tunggal. Hasil: ip kepala -> (nomor rantai, urutan); daftar ip kepala per rantai.
-fn rantai_pola(f: &VmFunction, r: &Rencana) -> (std::collections::HashMap<usize, (usize, usize)>, Vec<Vec<usize>>) {
+pub(super) fn rantai_pola(f: &VmFunction, r: &Rencana) -> (std::collections::HashMap<usize, (usize, usize)>, Vec<Vec<usize>>) {
     use OpCode::*;
     let kode = &f.chunk.code;
     let n = kode.len();

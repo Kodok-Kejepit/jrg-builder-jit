@@ -3903,7 +3903,8 @@ fn jir_pembantu_sama_dengan_vm() {
         assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
     let r = jalankan(JIR_PEMBANTU, &["--jit"], &[JIR, STRES, ("JRG_JIT_LOG", "jir")]);
-    assert!(["Field [", "PolaLokal [", "PayloadLokal [", "MuatGlobal [", "Indeks ["].iter().all(|k| r.stderr.contains(k)),
+    // `match` atas lokal itu jadi rantai lengan sejak langkah 98 (dulu `PolaLokal` per lengan).
+    assert!(["Field [", "rantai #", "PayloadLokal [", "MuatGlobal [", "Indeks ["].iter().all(|k| r.stderr.contains(k)),
         "tidak lewat JIR:\n{}", r.stderr);
 }
 
@@ -4147,4 +4148,52 @@ fn jir_larik_sebaris_sama_dengan_vm() {
         let j = jalankan(JIR_LARIK_SEBARIS, &["--jit"], env);
         assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
+}
+
+/// JIR-2b (langkah 98): rantai lengan `match` (`Inst::Rantai`, satu `pola_pilih` per rantai, indeksnya di slot stack)
+/// dan payload angka atas salinan lokal (`payload_angka_lokal`, angkanya langsung ke register).
+const JIR_RANTAI: &str = r#"enum Op { Tambah(int), Kali(int), Skala(float), Nol, Pasang(int, int) }
+fn jalan(ops: []Op, n: int) {
+    var x = 1
+    var f = 1.0
+    for i in 0..n {
+        let o = ops[i % len(ops)]
+        match o {
+            Op::Tambah(k) => { x = (x + k) % 1000003 }
+            Op::Kali(k) => { x = (x * k) % 1000003 }
+            Op::Skala(s) => { f = f * s }
+            Op::Nol => { x = x + 1 }
+            Op::Pasang(a, b) => { x = (x + a * b) % 1000003 }
+        }
+    }
+    return [x, int(f * 1000.0)]
+}
+fn salah(o: Op) {
+    match o {
+        Op::Tambah(k) => k,
+        Op::Nol => 0,
+        Op::Pasang(a) => a,
+        _ => -1,
+    }
+}
+fn main() {
+    let ops = [Op::Tambah(3), Op::Kali(7), Op::Skala(1.0001), Op::Nol, Op::Pasang(2, 5)]
+    wok(jalan(ops, 5000))
+    var t = 0
+    for i in 0..300 { t = t + salah(if i % 2 == 0 { Op::Tambah(i) } else { Op::Nol }) }
+    wok(t)
+    wok(salah(Op::Pasang(1, 2)))
+}
+"#;
+
+#[test]
+fn jir_rantai_sama_dengan_vm() {
+    let v = jalankan(JIR_RANTAI, &["--vm"], &[]);
+    assert!(v.sukses, "{}{}", v.stdout, v.stderr);
+    for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..]] {
+        let j = jalankan(JIR_RANTAI, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let r = jalankan(JIR_RANTAI, &["--jit"], &[JIR, STRES, ("JRG_JIT_LOG", "jir")]);
+    assert!(r.stderr.contains("rantai #") && r.stderr.contains("PayloadAngkaLokal"), "rantai/payload angka tidak lewat JIR:\n{}", r.stderr);
 }

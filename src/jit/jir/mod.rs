@@ -145,6 +145,10 @@ pub enum Inst {
     /// `?` atas nilai milik VM di `pos` (`lambat::sebar`): `Ok`/`Some` dibuka di tempat; `Err`/`None` kembali dengan
     /// nilai itu kalau `pulang`, selain itu (dan bukan `Result`/`Option`) deopt `jaga` — VM yang menjalankannya.
     Sebar { pos: usize, pulang: bool, jaga: Jaga },
+    /// Lengan ke-`urutan` rantai `match` `rantai` atas lokal `lokal` (`turun::rantai_pola`): lengan pertama memanggil
+    /// `lambat::pola_pilih` (alamat `situs`) dan menyimpan indeksnya di slot rantai; tiap lengan membandingkan indeksnya.
+    /// `hasil` = cocok tidaknya (0/1); galat pola lengan ini = deopt `jaga`.
+    Rantai { hasil: Nilai, rantai: usize, urutan: usize, lokal: usize, situs: i64, jaga: Jaga },
     /// Literal atas `n` posisi teratas (`lambat::bangun`, situs `SitusBangun` di alamat `situs`), hasilnya milik VM
     /// di posisi `t - n`. Tumpahan seperti `Langkah`.
     Bangun { situs: i64, jenis: i64, t: usize, n: usize, isi: Vec<(usize, Nilai)>, taruh: Vec<(usize, i64)> },
@@ -176,7 +180,7 @@ pub enum Inst {
 
 /// Pembantu `lambat` yang dipanggil lewat `Inst::Pembantu`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Pb { Field, Pola, PolaLokal, Payload, PayloadLokal, MuatGlobal, SimpanGlobal, Indeks, Baca, BacaPecahan, Tulis, JenisSama, PayloadJenisSama, PayloadPanjang, Karakter, KarakterLokal }
+pub enum Pb { Field, Pola, PolaLokal, Payload, PayloadLokal, MuatGlobal, SimpanGlobal, Indeks, Baca, BacaPecahan, Tulis, JenisSama, PayloadJenisSama, PayloadPanjang, Karakter, KarakterLokal, PayloadAngkaLokal }
 
 /// Argumen `Inst::Pembantu`: konstanta 64/32 bit atau isi native (bit `i64`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -271,6 +275,8 @@ impl fmt::Display for Fungsi {
                         writeln!(f, "  {hasil} = L{op:?} {a}, {b}{}{}", jaga(j), jaga(jaga_muat).replace("jaga", "jaga-muat"))?,
                     Inst::Sempit { hasil, a, jaga: j } => writeln!(f, "  {hasil} = sempit {a}{}", jaga(&Some(j.clone())))?,
                     Inst::TulisLebar { pos, nilai } => writeln!(f, "  tulis-lebar {nilai} -> {pos}")?,
+                    Inst::Rantai { hasil, rantai, urutan, lokal, jaga: j, .. } =>
+                        writeln!(f, "  {hasil} = rantai #{rantai}[{urutan}] lokal {lokal}{}", jaga(&Some(j.clone())))?,
                     Inst::Sebar { pos, pulang, jaga: j } => writeln!(f, "  sebar {pos}{}{}", if *pulang { " pulang" } else { "" }, jaga(&Some(j.clone())))?,
                     Inst::BukaLebar { hasil, pos, jaga: j } => writeln!(f, "  {hasil} = buka-lebar {pos}{}", jaga(&Some(j.clone())))?,
                     Inst::Biner { hasil, op, a, b, jaga: j } => writeln!(f, "  {hasil} = {op:?} {a}, {b}{}", jaga(j))?,

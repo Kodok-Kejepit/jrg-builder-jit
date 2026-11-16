@@ -39,6 +39,8 @@ struct Pembangun<'a> {
     /// Blok per instruksi pemimpin yang terjangkau.
     blok_ip: Vec<Option<Blok>>,
     acak: bool,
+    /// Rantai lengan `match` (`turun::rantai_pola`): ip kepala -> (rantai, urutan), dan alamat `RantaiPola` tiap rantai.
+    rantai: (std::collections::HashMap<usize, (usize, usize)>, Vec<i64>),
 }
 
 /// JIR titik masuk `r` fungsi `f`; `acak` = deopt acak di tiap instruksi (`JRG_JIT_STRES=deopt-acak`).
@@ -49,7 +51,15 @@ pub fn bangun(f: &VmFunction, r: &Rencana, acak: bool) -> Result<Fungsi, String>
         f, r, acak,
         j: Fungsi { blok: Vec::new(), masuk: Blok(0), tipe: Vec::new(), posisi_masuk: Vec::new(), maks: 1 },
         blok_ip: vec![None; kode.len()],
+        rantai: Default::default(),
     };
+    let (peta, daftar) = crate::jit::turun::rantai_pola(f, r);
+    let situs = daftar.iter().map(|d| {
+        let s: Vec<&'static crate::jit::lambat::SitusPola> = d.iter()
+            .map(|&h| crate::jit::lambat::SitusPola::bocor(&f.chunk.constants[kode[h + 1].arg as usize])).collect();
+        crate::jit::lambat::RantaiPola::bocor(s) as *const _ as i64
+    }).collect();
+    p.rantai = (peta, situs);
     // Blok masuk lebih dulu: parameternya argumen fungsi (atau isi bingkai OSR).
     let mut params = Vec::new();
     for (i, j) in r.jenis_masuk.iter().enumerate() {
@@ -472,6 +482,15 @@ impl Pembangun<'_> {
                 self.pembantu(b, ip, isi, Pb::Field, args, false, Some(Uji::BukanNol));
                 self.buka_hasil(b, ip, isi)?;
             }
+            // Lengan rantai `match` (kepalanya `LoadLocal` di `ip - 1`): satu `pola_pilih` untuk seluruh rantai.
+            Cara::Pola if ip > 0 && self.rantai.0.contains_key(&(ip - 1)) => {
+                let (ri, kk) = self.rantai.0[&(ip - 1)];
+                let lokal = match s[t - 1] { Jenis::Salinan(l) => l as usize, _ => self.f.chunk.code[ip - 1].arg as usize };
+                let h = self.j.nilai_baru(Tipe::I);
+                let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
+                self.dorong(b, Inst::Rantai { hasil: h, rantai: ri, urutan: kk, lokal, situs: self.rantai.1[ri], jaga });
+                isi[t - 1] = Some(h);
+            }
             Cara::Pola => {
                 let situs = crate::jit::lambat::SitusPola::bocor(&self.f.chunk.constants[a]) as *const _ as i64;
                 let (pb, args) = match s[t - 1] {
@@ -481,6 +500,27 @@ impl Pembangun<'_> {
                 // 0/1 = cocok tidaknya; 2 = jumlah sub-pola salah, VM yang melaporkannya.
                 let h = self.pembantu(b, ip, isi, pb, args, true, Some(Uji::Sama(2)));
                 isi[t - 1] = h;
+            }
+            // Payload angka atas salinan lokal: satu pembantu, angkanya langsung ke register (`payload_angka_lokal`).
+            // 1 = bukan enum berpayload, deopt di `ip`; 2 = payload jenis lain, sudah ditaruh di puncak, deopt
+            // spekulasi di `ip + 1` dengan puncak milik VM (seperti `buka` yang gagal).
+            Cara::Payload if matches!((s[t - 1], self.r.spek[ip]), (Jenis::Salinan(_), Some(Jenis::Bulat | Jenis::Pecahan))) => {
+                let (Jenis::Salinan(l), Some(j)) = (s[t - 1], self.r.spek[ip]) else { unreachable!() };
+                let jk = if j == Jenis::Pecahan { 5 } else { 1 };
+                let (st, k) = (self.j.nilai_baru(Tipe::I), self.j.nilai_baru(tipe_jenis(j)?.ok_or("payload angka")?));
+                let jaga_bukan = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
+                let args = vec![Arg::I64(l as i64), Arg::I64(t as i64 - 1), Arg::I32(jk), Arg::Wadah];
+                self.dorong(b, Inst::Pembantu { pb: Pb::PayloadAngkaLokal, args, hasil: Some(st), gagal: None, keluar: Some(k) });
+                let satu = self.konst_i(b, 1);
+                let bukan = self.biner(b, Biner::ICmp(Banding::Eq), st, satu, None);
+                self.dorong(b, Inst::JagaJika { kondisi: bukan, jaga: jaga_bukan });
+                isi[t - 1] = None;
+                let mut kl = self.keadaan_di(ip + 1, isi);
+                if let Some(p) = kl.isi.last_mut() { *p = None; }
+                let dua = self.konst_i(b, 2);
+                let lain = self.biner(b, Biner::ICmp(Banding::Eq), st, dua, None);
+                self.dorong(b, Inst::JagaJika { kondisi: lain, jaga: Jaga { keadaan: kl, spek: true, puncak_vm: true } });
+                isi[t - 1] = Some(k);
             }
             Cara::Payload => {
                 let (pb, args) = match s[t - 1] {
