@@ -71,6 +71,8 @@ pub struct Keadaan {
 pub struct Jaga {
     pub keadaan: Keadaan,
     pub spek: bool,
+    /// Puncak keadaannya masih milik VM (hasil yang bukaannya gagal, `PUNCAK_VM`): isinya tidak dicatat.
+    pub puncak_vm: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -105,6 +107,20 @@ pub enum Inst {
     Langkah { ip: usize, jenis: i64, t: usize, tumpah: usize, sesudah: usize, isi: Vec<(usize, Nilai)>, taruh: Vec<(usize, i64)> },
     /// Posisi `pos` milik VM dibuka jadi angka berkode jenis `kode` (`lambat::buka`); jenis lain = deopt spekulasi.
     Buka { hasil: Nilai, pos: usize, kode: i32, jaga: Jaga },
+    /// Fungsi bawaan `fungsi` atas `argc` argumen di puncak (`lambat::bawaan`, `argc` membawa bit `BAWAAN_POLOS`),
+    /// hasilnya milik VM di posisi callee; galat = `GAGAL`. Tumpahan seperti `Langkah`.
+    Bawaan { ip: usize, jenis: i64, t: usize, argc: i64, fungsi: i64, isi: Vec<(usize, Nilai)>, taruh: Vec<(usize, i64)> },
+    /// Operator atas dua operand yang bukan dua angka native (`lambat::biner`, `tambah_nilai` untuk `+`): hasil
+    /// aritmetika milik VM, hasil banding 0/1 di `hasil`; galat = `GAGAL`.
+    BinerVm { hasil: Option<Nilai>, tambah: bool, ip: usize, jenis: i64, t: usize, isi: Vec<(usize, Nilai)>, taruh: Vec<(usize, i64)> },
+    /// Tangkapan ke-`idx` ke posisi `ke` (`lambat::muat_upval`); bukan closure = deopt.
+    MuatUpval { idx: usize, ke: usize, jaga: Jaga },
+    /// Puncak `dari` ke tangkapan ke-`idx` (`lambat::simpan_upval`); bukan closure = deopt.
+    SimpanUpval { idx: usize, dari: usize, nilai: Option<Nilai>, kode: i32, jaga: Jaga },
+    /// `str(n)` atas bulat native ke posisi `pos` (`lambat::teks_bulat`).
+    TeksBulat { pos: usize, n: Nilai },
+    /// Posisi `dari` milik VM dipindah ke `ke` (`lambat::pindah`).
+    Pindah { dari: usize, ke: usize },
 }
 
 /// Status `Return` native (`super::turun::BERHASIL*`).
@@ -122,6 +138,10 @@ pub enum Akhir {
     KembaliUnit,
     /// Titik keluar: VM menjalankan instruksi `keadaan.ip`.
     Keluar { keadaan: Keadaan },
+    /// VM menjalankan instruksi bercabang `ip` (`lambat::langkah_cabang`): `hasil_bool` = `bool` di puncak memilih
+    /// `tujuan[0]` (benar) atau `tujuan[1]`; selain itu `ip` berikutnya yang dijawab VM. Galat = `GAGAL`.
+    CabangVm { ip: usize, jenis: i64, t: usize, tumpah: usize, hasil_bool: bool, isi: Vec<(usize, Nilai)>, taruh: Vec<(usize, i64)>,
+        tujuan: [(Blok, Vec<Nilai>, usize); 2] },
 }
 
 #[derive(Clone, Debug)]
@@ -199,6 +219,14 @@ impl fmt::Display for Fungsi {
                     Inst::Langkah { ip, t, tumpah, sesudah, isi, taruh, .. } =>
                         writeln!(f, "  langkah VM @{ip} t {t} tumpah {tumpah} -> {sesudah} isi {:?} taruh {}", isi, taruh.len())?,
                     Inst::Buka { hasil, pos, kode, jaga: j } => writeln!(f, "  {hasil} = buka {pos} (kode {kode}){}", jaga(&Some(j.clone())))?,
+                    Inst::Bawaan { ip, t, argc, isi, .. } => writeln!(f, "  bawaan @{ip} t {t} argc {argc:#x} isi {isi:?}")?,
+                    Inst::BinerVm { hasil, tambah, ip, isi, .. } =>
+                        writeln!(f, "  {}biner-vm{} @{ip} isi {isi:?}", hasil.map_or(String::new(), |h| format!("{h} = ")), if *tambah { " +" } else { "" })?,
+                    Inst::MuatUpval { idx, ke, jaga: j } => writeln!(f, "  muat tangkapan {idx} -> {ke}{}", jaga(&Some(j.clone())))?,
+                    Inst::SimpanUpval { idx, dari, nilai, .. } =>
+                        writeln!(f, "  simpan {dari}{} -> tangkapan {idx}", nilai.map_or(String::new(), |v| format!("={v}")))?,
+                    Inst::TeksBulat { pos, n } => writeln!(f, "  teks {n} -> {pos}")?,
+                    Inst::Pindah { dari, ke } => writeln!(f, "  pindah {dari} -> {ke}")?,
                 }
             }
             match &b.akhir {
@@ -208,6 +236,8 @@ impl fmt::Display for Fungsi {
                 Some(Akhir::Kembali { nilai, hasil }) => writeln!(f, "  kembali {nilai} ({hasil:?})")?,
                 Some(Akhir::KembaliNilai { pos }) => writeln!(f, "  kembali posisi {pos}")?,
                 Some(Akhir::KembaliUnit) => writeln!(f, "  kembali ()")?,
+                Some(Akhir::CabangVm { ip, tujuan, .. }) => writeln!(f, "  cabang-vm @{ip} ? {}({}) : {}({})",
+                    tujuan[0].0, daftar(&tujuan[0].1), tujuan[1].0, daftar(&tujuan[1].1))?,
                 Some(Akhir::Keluar { keadaan }) => writeln!(f, "  keluar {keadaan}")?,
                 None => writeln!(f, "  <tanpa akhir>")?,
             }

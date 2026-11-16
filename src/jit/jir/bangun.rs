@@ -84,7 +84,8 @@ fn periksa_cakupan(f: &VmFunction, r: &Rencana) -> Result<(), String> {
         match &r.cara[ip] {
             Cara::Asli | Cara::Buka(_) => if !opcode_dicakup(ins.op) { return Err(format!("{:?} di ip {ip}", ins.op)); },
             Cara::Konstanta | Cara::Muat | Cara::Ambil | Cara::Simpan | Cara::Buang | Cara::Benar | Cara::KembaliNilai
-            | Cara::KembaliUnit | Cara::Langkah { .. } => {}
+            | Cara::KembaliUnit | Cara::Langkah { .. } | Cara::Bawaan | Cara::Biner | Cara::MuatUpval | Cara::SimpanUpval
+            | Cara::TeksBulat | Cara::Geser | Cara::Cabang { .. } => {}
             c => return Err(format!("{c:?} di ip {ip}")),
         }
         // `Return` cuma untuk titik masuk yang boleh kembali native.
@@ -161,7 +162,7 @@ impl Pembangun<'_> {
             if self.acak {
                 let u = self.j.nilai_baru(Tipe::I);
                 self.dorong(b, Inst::Undi { hasil: u });
-                let jaga = Jaga { keadaan: self.keadaan_di(ip, &isi), spek: false };
+                let jaga = Jaga { keadaan: self.keadaan_di(ip, &isi), spek: false, puncak_vm: false };
                 self.dorong(b, Inst::JagaJika { kondisi: u, jaga });
             }
             if self.r.keluar[ip] {
@@ -195,7 +196,7 @@ impl Pembangun<'_> {
     fn akhiri(&mut self, b: Blok, a: Akhir) { self.j.blok[b.0 as usize].akhir = Some(a); }
 
     fn jaga(&self, ip: usize, isi: &[Option<Nilai>], spek: bool) -> Option<Jaga> {
-        Some(Jaga { keadaan: self.keadaan_di(ip, isi), spek })
+        Some(Jaga { keadaan: self.keadaan_di(ip, isi), spek, puncak_vm: false })
     }
 
     /// Nilai di posisi `i` stack yang wajib skalar.
@@ -237,7 +238,7 @@ impl Pembangun<'_> {
                 let mut s2 = s.clone();
                 for (p, j) in daftar {
                     let tipe = tipe_jenis(j)?.ok_or("buka ke jenis tanpa isi")?;
-                    let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: true };
+                    let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: true, puncak_vm: false };
                     let h = self.j.nilai_baru(tipe);
                     self.dorong(b, Inst::Buka { hasil: h, pos: p, kode: j.kode() as i32, jaga });
                     isi[p] = Some(h);
@@ -280,27 +281,117 @@ impl Pembangun<'_> {
             Cara::KembaliNilai => return Ok(Some(Akhir::KembaliNilai { pos: t - 1 })),
             Cara::KembaliUnit => return Ok(Some(Akhir::KembaliUnit)),
             Cara::Langkah { ambil, taruh, tumpah } => {
-                let (mut isi_n, mut taruh_n) = (Vec::new(), Vec::new());
-                for i in t - tumpah..t {
-                    match s[i] {
-                        Jenis::Fungsi(c) => taruh_n.push((i, &self.r.callee_nilai[c] as *const _ as i64)),
-                        j if j.konstanta().is_some() => {
-                            let k = j.konstanta().expect("baru diperiksa") as usize;
-                            taruh_n.push((i, &self.f.chunk.constants[k] as *const _ as i64));
-                        }
-                        j if j.skalar() => isi_n.push((i, Self::ambil(isi, i)?)),
-                        _ => {}
-                    }
-                }
-                let jenis = s.as_ptr() as i64;
-                let jenis = self.r.keadaan[ip].as_ref().map_or(jenis, |k| k.as_ptr() as i64);
+                let (isi_n, taruh_n) = self.tumpahan(&s, t - tumpah..t, isi)?;
+                let jenis = self.jenis_ip(ip);
                 self.dorong(b, Inst::Langkah { ip, jenis, t, tumpah, sesudah: t - ambil + taruh, isi: isi_n, taruh: taruh_n });
                 isi.truncate(t - ambil);
                 for _ in 0..taruh { isi.push(None); }
             }
+            Cara::Bawaan => {
+                let fungsi = match self.f.chunk.constants.get(s[t - a - 1].konstanta().ok_or("callee bawaan bukan konstanta")? as usize) {
+                    Some(crate::vm::value::VmValue::NativeFn(g)) => *g as usize as i64,
+                    _ => return Err("callee bawaan bukan fungsi bawaan".into()),
+                };
+                let polos = if crate::jit::lambat::bawaan_polos(fungsi, a) { crate::jit::lambat::BAWAAN_POLOS } else { 0 };
+                let (isi_n, taruh_n) = self.tumpahan(&s, t - a..t, isi)?;
+                let jenis = self.jenis_ip(ip);
+                self.dorong(b, Inst::Bawaan { ip, jenis, t, argc: a as i64 | polos, fungsi, isi: isi_n, taruh: taruh_n });
+                isi.truncate(t - a - 1);
+                isi.push(None);
+                self.buka_hasil(b, ip, isi)?;
+            }
+            Cara::Biner => {
+                let (isi_n, taruh_n) = self.tumpahan(&s, t - 2..t, isi)?;
+                let banding = matches!(ins.op, OpCode::Eq | OpCode::Ne | OpCode::Lt | OpCode::Le | OpCode::Gt | OpCode::Ge);
+                let hasil = banding.then(|| self.j.nilai_baru(Tipe::I));
+                let jenis = self.jenis_ip(ip);
+                self.dorong(b, Inst::BinerVm { hasil, tambah: ins.op == OpCode::Add, ip, jenis, t, isi: isi_n, taruh: taruh_n });
+                isi.truncate(t - 2);
+                isi.push(hasil);
+            }
+            Cara::MuatUpval => {
+                let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
+                self.dorong(b, Inst::MuatUpval { idx: a, ke: t, jaga });
+                isi.push(None);
+                self.buka_hasil(b, ip, isi)?;
+            }
+            Cara::TeksBulat => {
+                let n = Self::ambil(isi, t - 1)?;
+                self.dorong(b, Inst::TeksBulat { pos: t - 2, n });
+                isi.truncate(t - 2);
+                isi.push(None);
+            }
+            Cara::Geser => {
+                // `SlideDown` dengan nilai milik VM: yang tertimpa dilepas, puncaknya dipindah (atau isinya disalin).
+                let d0 = t - a - 1;
+                for p in d0..t - 1 { if s[p].di_vm() { self.dorong(b, Inst::Buang { pos: p }); } }
+                if s[t - 1].di_vm() { self.dorong(b, Inst::Pindah { dari: t - 1, ke: d0 }); }
+                isi[d0] = isi[t - 1];
+                isi.truncate(d0 + 1);
+            }
+            Cara::Cabang { tumpah, hasil_bool, tujuan } => {
+                let (isi_n, taruh_n) = self.tumpahan(&s, t - tumpah..t, isi)?;
+                let jenis = self.jenis_ip(ip);
+                // Posisi yang disentuh VM tidak punya isi native di tujuan mana pun (dijamin layak: hasilnya milik VM).
+                let mut tj = Vec::new();
+                for ke in tujuan {
+                    let st = self.keadaan(ke).clone();
+                    let mut sesudah: Vec<Option<Nilai>> = isi.iter().take(st.len()).copied().collect();
+                    for (i, j) in st.iter().enumerate() {
+                        if i >= t - tumpah && j.skalar() { return Err("cabang VM ke posisi native yang disentuhnya".into()); }
+                        if i >= sesudah.len() { sesudah.push(None); }
+                    }
+                    let blok = self.blok_ip[ke].ok_or("tujuan cabang VM bukan pemimpin")?;
+                    tj.push((blok, self.args_ke(ke, &sesudah)?, ke));
+                }
+                let tujuan = [tj[0].clone(), tj[1].clone()];
+                return Ok(Some(Akhir::CabangVm { ip, jenis, t, tumpah, hasil_bool, isi: isi_n, taruh: taruh_n, tujuan }));
+            }
+            Cara::SimpanUpval => {
+                let j = s[t - 1];
+                let nilai = if j.skalar() { Some(Self::ambil(isi, t - 1)?) } else { None };
+                let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
+                self.dorong(b, Inst::SimpanUpval { idx: a, dari: t - 1, nilai, kode: j.kode() as i32, jaga });
+            }
             c => return Err(format!("{c:?} belum diturunkan JIR")),
         }
         Ok(None)
+    }
+
+    /// Alamat `Rencana::keadaan[ip]` (dibaca `lambat::langkah`/`bawaan`; rencana hidup selama kodenya).
+    fn jenis_ip(&self, ip: usize) -> i64 { self.keadaan(ip).as_ptr() as i64 }
+
+    /// Posisi `rentang` yang dibaca pembantu dari stack VM: isi native ke slot rekaman, callee dan bawaan maya
+    /// ditaruh dari alamatnya (seperti `tumpahkan` penurun langsung).
+    #[allow(clippy::type_complexity)]
+    fn tumpahan(&self, s: &[Jenis], rentang: std::ops::Range<usize>, isi: &[Option<Nilai>]) -> Result<(Vec<(usize, Nilai)>, Vec<(usize, i64)>), String> {
+        let (mut isi_n, mut taruh_n) = (Vec::new(), Vec::new());
+        for i in rentang {
+            match s[i] {
+                Jenis::Fungsi(c) => taruh_n.push((i, &self.r.callee_nilai[c] as *const _ as i64)),
+                j if j.konstanta().is_some() => {
+                    let k = j.konstanta().expect("baru diperiksa") as usize;
+                    taruh_n.push((i, &self.f.chunk.constants[k] as *const _ as i64));
+                }
+                j if j.skalar() => isi_n.push((i, Self::ambil(isi, i)?)),
+                _ => {}
+            }
+        }
+        Ok((isi_n, taruh_n))
+    }
+
+    /// Hasil milik VM di puncak yang dispekulasikan angka (`Rencana::spek`): dibuka berjaga di `ip + 1` dengan puncak
+    /// milik VM; gagal = deopt spekulasi.
+    fn buka_hasil(&mut self, b: Blok, ip: usize, isi: &mut [Option<Nilai>]) -> Result<(), String> {
+        let Some(j) = self.r.spek[ip] else { return Ok(()) };
+        let tipe = tipe_jenis(j)?.ok_or("spekulasi hasil tanpa isi")?;
+        let t = isi.len();
+        let mut k = self.keadaan_di(ip + 1, isi);
+        if let Some(p) = k.isi.last_mut() { *p = None; }
+        let h = self.j.nilai_baru(tipe);
+        self.dorong(b, Inst::Buka { hasil: h, pos: t - 1, kode: j.kode() as i32, jaga: Jaga { keadaan: k, spek: true, puncak_vm: true } });
+        isi[t - 1] = Some(h);
+        Ok(())
     }
 
     /// Cabang atas kondisi `c` ke `ip + 1` dan `sasaran`, dengan stack `sesudah`.
@@ -447,7 +538,7 @@ impl Pembangun<'_> {
                 let x = Self::ambil(isi, a)?;
                 let maks = self.konst_i(b, i64::MAX);
                 let c = self.biner(b, Biner::ICmp(Banding::Eq), x, maks, None);
-                let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false };
+                let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
                 self.dorong(b, Inst::JagaJika { kondisi: c, jaga });
                 let satu = self.konst_i(b, 1);
                 // Luapan sudah dijaga di atas.
@@ -490,7 +581,7 @@ impl Pembangun<'_> {
                 if nama.as_deref() == Some("uint") {
                     let nol = self.konst_i(b, 0);
                     let neg = self.biner(b, Biner::ICmp(Banding::Lt), v, nol, None);
-                    let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false };
+                    let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
                     self.dorong(b, Inst::JagaJika { kondisi: neg, jaga });
                 }
                 isi.truncate(t - 2);

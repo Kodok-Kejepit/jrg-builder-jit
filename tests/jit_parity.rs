@@ -3687,3 +3687,41 @@ fn jir_nilai_sama_dengan_vm() {
     let r = jalankan(JIR_NILAI, &["--jit"], &[JIR, STRES, ("JRG_JIT_LOG", "jir")]);
     assert!(r.stderr.contains("= buka "), "bukaan nilai VM tidak lewat JIR:\n{}", r.stderr);
 }
+
+/// JIR-1d (langkah 88): fungsi bawaan dan hasil berspekulasinya (`PUNCAK_VM`), operator atas nilai VM, tangkapan closure
+/// yang dibaca dan ditulis, cabang yang diputuskan VM, `str(n)`.
+const JIR_BAWAAN: &str = r#"fn teks(n: int) {
+    var s = ""
+    for i in 0..n { s = s + str(i % 10) + str::upper("a") }
+    return len(s)
+}
+fn bandingkan(a, b) { return a < b }
+fn main() {
+    wok(teks(30))
+    var k = 3
+    let tambah = |x| { k = k + x  return k * 2 }
+    var t = 0
+    for i in 0..400 { t = t + tambah(i % 5) }
+    wok(t, k)
+    var n = 0
+    for i in 0..300 { if bandingkan(str(i), "15") { n = n + 1 } }
+    wok(n)
+    // Hasil bawaan yang dispekulasikan bulat lalu berganti jenis: deopt di instruksi sesudahnya.
+    var u = 0
+    for i in 0..300 { u = u + math::abs(i - 150) }
+    wok(u, math::abs(-2.5))
+    wok(bandingkan([1], "x"))
+}
+"#;
+
+#[test]
+fn jir_bawaan_sama_dengan_vm() {
+    let v = jalankan(JIR_BAWAAN, &["--vm"], &[]);
+    assert!(!v.sukses && v.stdout.lines().count() == 4, "{}{}", v.stdout, v.stderr);
+    for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..]] {
+        let j = jalankan(JIR_BAWAAN, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let r = jalankan(JIR_BAWAAN, &["--jit"], &[JIR, STRES, ("JRG_JIT_LOG", "jir")]);
+    assert!(r.stderr.contains("muat tangkapan") && r.stderr.contains("biner-vm"), "tidak lewat JIR:\n{}", r.stderr);
+}

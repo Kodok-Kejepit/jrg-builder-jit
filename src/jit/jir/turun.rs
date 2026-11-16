@@ -7,10 +7,14 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{FuncId, Module};
 
 use super::{Akhir, Banding, Biner, Fungsi, Hasil, Inst, Jaga, Keadaan, Nilai, Tipe, Unar};
-use crate::jit::turun::{Impor, BERHASIL, BERHASIL_BOOL, BERHASIL_NILAI, BERHASIL_PECAHAN, BERHASIL_UNIT, DEOPT, GAGAL, GAGAL_SPEK, KEDALAMAN_MAKS, ULANG};
+use crate::jit::turun::{Impor, BERHASIL, BERHASIL_BOOL, BERHASIL_NILAI, BERHASIL_PECAHAN, BERHASIL_UNIT, DEOPT, GAGAL, GAGAL_SPEK, KEDALAMAN_MAKS, PUNCAK_VM, ULANG};
 
 /// Pembantu nilai VM (`lambat`) yang dipanggil JIR.
-struct Pembantu { muat: FuncRef, ambil: FuncRef, simpan: FuncRef, buang: FuncRef, benar: FuncRef, taruh: FuncRef, langkah: FuncRef, buka: FuncRef }
+struct Pembantu {
+    muat: FuncRef, ambil: FuncRef, simpan: FuncRef, buang: FuncRef, benar: FuncRef, taruh: FuncRef, langkah: FuncRef, buka: FuncRef,
+    bawaan: FuncRef, biner: FuncRef, tambah_nilai: FuncRef, muat_upval: FuncRef, simpan_upval: FuncRef,
+    teks_bulat: FuncRef, pindah: FuncRef, cabang: FuncRef,
+}
 
 struct Penurun<'a, 'b> {
     b: FunctionBuilder<'b>,
@@ -59,9 +63,12 @@ pub fn turunkan(
     }
     let callee: Vec<Option<FuncRef>> = id_callee.iter().map(|i| i.map(|i| m.declare_func_in_func(i, b.func))).collect();
     let il = impor.lambat;
-    let [muat, ambil, simpan, buang, benar, taruh, langkah, buka] =
-        [il.muat, il.ambil, il.simpan, il.buang, il.benar, il.taruh, il.langkah, il.buka].map(|id| m.declare_func_in_func(id, b.func));
-    let lb = Pembantu { muat, ambil, simpan, buang, benar, taruh, langkah, buka };
+    let [muat, ambil, simpan, buang, benar, taruh, langkah, buka, bawaan, biner, tambah_nilai, muat_upval, simpan_upval, teks_bulat, pindah, cabang] =
+        [il.muat, il.ambil, il.simpan, il.buang, il.benar, il.taruh, il.langkah, il.buka, il.bawaan, il.biner, il.tambah_nilai,
+            il.muat_upval, il.simpan_upval, il.teks_bulat, il.pindah, il.langkah_cabang].map(|id| m.declare_func_in_func(id, b.func));
+    let lb = Pembantu {
+        muat, ambil, simpan, buang, benar, taruh, langkah, buka, bawaan, biner, tambah_nilai, muat_upval, simpan_upval, teks_bulat, pindah, cabang,
+    };
     let wadah = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
     let kedalaman1 = b.ins().iadd_imm_s(kedalaman, 1);
     let mut p = Penurun {
@@ -107,6 +114,20 @@ pub fn turunkan(
                 p.pulang_status(BERHASIL_NILAI);
             }
             Akhir::KembaliUnit => p.pulang_status(BERHASIL_UNIT),
+            Akhir::CabangVm { ip, jenis, t, tumpah, hasil_bool, isi, taruh, tujuan } => {
+                p.tumpah(isi, taruh);
+                let args = [
+                    p.i64c(*ip as i64), p.i64c(*jenis), p.i64c(*t as i64), p.i64c(*tumpah as i64),
+                    p.b.ins().stack_addr(p.ptr, p.slot, 0), p.i64c(*hasil_bool as i64),
+                ];
+                let c = p.b.ins().call(p.lb.cabang, &args);
+                let h = p.b.inst_results(c)[0];
+                let salah = p.b.ins().icmp_imm_s(IntCC::SignedLessThan, h, 0);
+                p.gagal_jika(salah);
+                let pilih = if *hasil_bool { h } else { p.b.ins().icmp_imm_s(IntCC::Equal, h, tujuan[0].2 as i64) };
+                let (ya, tidak) = (p.args(&tujuan[0].1), p.args(&tujuan[1].1));
+                p.b.ins().brif(pilih, blok[tujuan[0].0 .0 as usize], &ya, blok[tujuan[1].0 .0 as usize], &tidak);
+            }
             Akhir::Keluar { keadaan } => p.deopt(keadaan, 0),
         }
     }
@@ -120,6 +141,28 @@ impl Penurun<'_, '_> {
     fn tetapkan(&mut self, n: Nilai, v: Value) { self.nilai[n.0 as usize] = Some(v); }
 
     fn i64c(&mut self, v: i64) -> Value { self.b.ins().iconst(types::I64, v) }
+
+    /// Isi native ke slot rekaman dan posisi maya ke stack VM, sebelum pembantu yang membaca stack VM.
+    fn tumpah(&mut self, isi: &[(usize, Nilai)], taruh: &[(usize, i64)]) {
+        for (pos, n) in isi {
+            let v = self.bit(*n);
+            self.b.ins().stack_store(self.ptr, v, self.slot, (*pos * 8) as i32);
+        }
+        for (pos, alamat) in taruh {
+            let (p, a) = (self.i64c(*pos as i64), self.i64c(*alamat));
+            self.b.ins().call(self.lb.taruh, &[p, a]);
+        }
+    }
+
+    /// `st` bukan nol = instruksi yang dijalankan VM gagal: kembali `GAGAL`.
+    fn gagal_jika(&mut self, st: Value) {
+        let (gagal, terus) = (self.b.create_block(), self.b.create_block());
+        self.b.set_cold_block(gagal);
+        self.b.ins().brif(st, gagal, &[], terus, &[]);
+        self.b.switch_to_block(gagal);
+        self.pulang_status(GAGAL);
+        self.b.switch_to_block(terus);
+    }
 
     /// Isi native sebagai bit `i64` (pecahan dibaca bitnya).
     fn bit(&mut self, n: Nilai) -> Value {
@@ -156,7 +199,7 @@ impl Penurun<'_, '_> {
         self.b.set_cold_block(d);
         self.b.ins().brif(cond, d, &[], terus, &[]);
         self.b.switch_to_block(d);
-        self.deopt(&j.keadaan, if j.spek { GAGAL_SPEK } else { 0 });
+        self.deopt(&j.keadaan, if j.spek { GAGAL_SPEK } else { 0 } | if j.puncak_vm { PUNCAK_VM } else { 0 });
         self.b.switch_to_block(terus);
     }
 
@@ -226,26 +269,56 @@ impl Penurun<'_, '_> {
                 self.b.ins().call(self.lb.taruh, &[p, a]);
             }
             Inst::Langkah { ip, jenis, t, tumpah, sesudah, isi, taruh } => {
-                for (pos, n) in isi {
-                    let v = self.bit(*n);
-                    self.b.ins().stack_store(self.ptr, v, self.slot, (*pos * 8) as i32);
-                }
-                for (pos, alamat) in taruh {
-                    let (p, a) = (self.i64c(*pos as i64), self.i64c(*alamat));
-                    self.b.ins().call(self.lb.taruh, &[p, a]);
-                }
+                self.tumpah(isi, taruh);
                 let args = [
                     self.i64c(*ip as i64), self.i64c(*jenis), self.i64c(*t as i64), self.i64c(*tumpah as i64),
                     self.i64c(*sesudah as i64), self.b.ins().stack_addr(self.ptr, self.slot, 0),
                 ];
                 let c = self.b.ins().call(self.lb.langkah, &args);
                 let st = self.b.inst_results(c)[0];
-                let (gagal, terus) = (self.b.create_block(), self.b.create_block());
-                self.b.set_cold_block(gagal);
-                self.b.ins().brif(st, gagal, &[], terus, &[]);
-                self.b.switch_to_block(gagal);
-                self.pulang_status(GAGAL);
-                self.b.switch_to_block(terus);
+                self.gagal_jika(st);
+            }
+            Inst::Bawaan { ip, jenis, t, argc, fungsi, isi, taruh } => {
+                self.tumpah(isi, taruh);
+                let args = [
+                    self.i64c(*ip as i64), self.i64c(*jenis), self.i64c(*t as i64), self.i64c(*argc),
+                    self.b.ins().stack_addr(self.ptr, self.slot, 0), self.i64c(*fungsi),
+                ];
+                let c = self.b.ins().call(self.lb.bawaan, &args);
+                let st = self.b.inst_results(c)[0];
+                self.gagal_jika(st);
+            }
+            Inst::BinerVm { hasil, tambah, ip, jenis, t, isi, taruh } => {
+                self.tumpah(isi, taruh);
+                let args = [self.i64c(*ip as i64), self.i64c(*jenis), self.i64c(*t as i64), self.b.ins().stack_addr(self.ptr, self.slot, 0)];
+                let c = self.b.ins().call(if *tambah { self.lb.tambah_nilai } else { self.lb.biner }, &args);
+                let st = self.b.inst_results(c)[0];
+                // 2 = galat; banding: 0/1 hasilnya.
+                let salah = self.b.ins().icmp_imm_u(IntCC::Equal, st, 2);
+                self.gagal_jika(salah);
+                if let Some(h) = hasil { let v = self.b.ins().uextend(types::I64, st); self.tetapkan(*h, v); }
+            }
+            Inst::TeksBulat { pos, n } => {
+                let (p, v) = (self.i64c(*pos as i64), self.v(*n));
+                self.b.ins().call(self.lb.teks_bulat, &[p, v]);
+            }
+            Inst::Pindah { dari, ke } => {
+                let (d, k) = (self.i64c(*dari as i64), self.i64c(*ke as i64));
+                self.b.ins().call(self.lb.pindah, &[d, k]);
+            }
+            Inst::MuatUpval { idx, ke, jaga } => {
+                let (i, k) = (self.i64c(*idx as i64), self.i64c(*ke as i64));
+                let c = self.b.ins().call(self.lb.muat_upval, &[i, k]);
+                let c = self.b.inst_results(c)[0];
+                self.jaga(c, jaga);
+            }
+            Inst::SimpanUpval { idx, dari, nilai, kode, jaga } => {
+                let v = match nilai { Some(n) => self.bit(*n), None => self.i64c(0) };
+                let (i, d) = (self.i64c(*idx as i64), self.i64c(*dari as i64));
+                let kd = self.b.ins().iconst(types::I32, *kode as i64);
+                let c = self.b.ins().call(self.lb.simpan_upval, &[i, d, v, kd]);
+                let c = self.b.inst_results(c)[0];
+                self.jaga(c, jaga);
             }
             Inst::Buka { hasil, pos, kode, jaga } => {
                 let p = self.i64c(*pos as i64);
