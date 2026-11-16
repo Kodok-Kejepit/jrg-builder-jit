@@ -6,6 +6,18 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
 
 ## [Belum dirilis]
 
+## [0.6.0] — 2026-11-16
+
+### Memutus
+
+- **`json::stringify`, `json::pretty` dan `dok::json_encode` menolak pegangan pustaka** (`Ptr`, `Future`, `DokDb`, …),
+  seperti `Mutex` — dulu tertulis `{"id":1}`.
+- **WebSocket `dok::serve` melepas klien yang diam dan tidak menjawab `ping`** (60 + 30 detik), menutup pesan yang
+  tidak utuh dalam 30 detik ditambah 1 detik per 16 KiB, dan menghitung pesan setengah jadi di anggaran 256 MiB yang
+  sama dengan badan HTTP.
+- **`wokwok::` menolak hasil broadcast dan `matmul` di atas 256 MiB**, seperti pembangun lariknya — dulu dua larik
+  kecil bisa meminta puluhan GB dan mematikan prosesnya.
+
 ### Baru
 
 - **`jrgm run --jit`, `jrgm exec --jit` dan `jrgm test --jit`**: proyek bisa dijalankan dan diuji lewat mesin keempat
@@ -22,6 +34,10 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
 - **`--jit` tidak lagi jatuh ke nilai VM di loop sesudah titik masuknya**: panggilan di loop yang belum pernah dijalankan
   saat fungsi pemanggilnya dikompilasi meminjam jenis hasil panggilan lain ke fungsi yang sama. `string_scan`
   0,44 → 0,32 s.
+
+### Diperbaiki
+
+- **`jrgm siapkan android` melewati entri katalog yang nama berkas atau foldernya bukan nama polos** (`..`, `/`).
 
 ## [0.5.0] — 2026-11-16
 
