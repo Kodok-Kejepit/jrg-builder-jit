@@ -3567,3 +3567,55 @@ fn sesi_hof_sama_dengan_vm() {
         assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+const JIR: (&str, &str) = ("JRG_JIT_JIR", "paksa");
+
+/// JIR-1 (`src/jit/jir/`, langkah 85): seluruh `PARITAS` di mode stres dengan JIR dipaksa untuk unit yang dicakupnya.
+#[test]
+fn paritas_lewat_jir() {
+    let mut gagal = Vec::new();
+    for (nama, src) in PARITAS {
+        let i = jalankan(src, &[], &[]);
+        let j = jit_sama(src, &i, &[STRES, JIR]);
+        if i.sukses != j.sukses || i.stdout != j.stdout {
+            gagal.push(format!("  {nama}\n     interpreter ({}): {:?}\n     jir stres   ({}): {:?}",
+                i.sukses, i.stdout, j.sukses, j.stdout));
+        }
+    }
+    assert!(gagal.is_empty(), "{} kasus PARITAS beda lewat JIR:\n{}", gagal.len(), gagal.join("\n"));
+}
+
+/// JIR-1 benar-benar dipakai: loop dan cabang bulat, jaga luapan yang deopt lalu VM menghitung di 128 bit, geseran
+/// yang membuang bit, dan pembagi nol (kalimat dan jejak dari VM).
+const JIR_DASAR: &str = r#"fn jumlah(n: int) -> int {
+    var t = 0
+    for i in 0..n { if i % 3 == 0 { t = t + i * 2 } else { t = t - 1 } }
+    return t
+}
+fn geser(x: int, k: int) -> int { return (x << k) >> 1 }
+fn bagi(a: int, b: int) -> int { return a / b + a % b }
+fn main() {
+    var x = 0
+    for k in 0..300 { x = x + jumlah(k) }
+    wok(x, geser(3, 4), bagi(17, 5))
+    // Luapan 64 bit di tengah loop: deopt, lalu VM menghitung di 128 bit.
+    var y = 1
+    for k in 0..70 { y = y * 2 + jumlah(3) }
+    wok(y)
+    // Geseran yang membuang bit dan pembagi nol: deopt, VM yang melapor.
+    wok(geser(1, 62))
+    wok(bagi(1, 0))
+}
+"#;
+
+#[test]
+fn jir_sama_dengan_vm() {
+    let v = jalankan(JIR_DASAR, &["--vm"], &[]);
+    assert!(!v.sukses && v.stdout.lines().count() == 3, "{}{}", v.stdout, v.stderr);
+    for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..]] {
+        let j = jalankan(JIR_DASAR, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let r = jalankan(JIR_DASAR, &["--jit"], &[JIR, STRES, ("JRG_JIT_LOG", "ringkas")]);
+    assert!(r.stderr.contains("[jit] jir: "), "JIR tidak dipakai:\n{}", r.stderr);
+}
