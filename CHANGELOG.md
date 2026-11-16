@@ -20,8 +20,27 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
 - **Klien `http::` menolak jawaban yang terpotong** (badan lebih pendek dari `Content-Length`) dan `Content-Length`
   yang tidak sah atau berbeda-beda; byte sesudah badan dibuang. HTTPS menuntut paling sedikit TLS 1.2.
 
+### Baru
+
+- **`http::tenggat(detik)`**: tenggat total tiap permintaan klien HTTP (bawaan mati), supaya server yang menetes
+  jawabannya tidak bisa menahan pemanggil tanpa batas.
+- **`wasm::batas_langkah(h, n)`**: `wasm::panggil` berhenti dengan `Err` sesudah `n` instruksi (bawaan tanpa batas),
+  supaya modul yang tidak dipercaya tidak bisa menggantung pemanggilnya.
+- **`dok::password_needs_rehash(hash, putaran?)`**: `true` kalau hash sandi dibuat dengan putaran lain dari bawaan
+  (600000), supaya hash lama diringkas ulang sesudah login berhasil.
+
+### Kinerja
+
+- **`--emit-llvm`: `match` atas bilangan bulat berlengan literal dan rentang jadi satu lompatan bertabel**, bukan
+  perbandingan berurutan — `match_dispatch` 710 → 580 ms, setara C.
+- **`--emit-llvm`: `str::char_at` di dalam loop tidak lagi memeriksa ulang jumlah karakter tiap putaran** —
+  `string_ops` 123 → 109 ms (C 100).
+- **`--emit-llvm`: `let r = arr::pop(a)` lalu `a = r[0]` tidak lagi menyalin larik** — 160 ribu pop 9 ms (dulu kehabisan
+  memori di 20 ribu).
+
 ### Diperbaiki
 
+- **`--emit-llvm`: `str::join` atas larik bukan teks jalan** seperti `arr::join` (dulu ditolak saat kompilasi).
 - **Berkas statis `dok::serve` dialirkan dari disk**, tidak lagi dimuat utuh per permintaan. Dengan middleware
   `sesudah` berkasnya tetap dimuat, di bawah anggaran 256 MiB (lewat: 503).
 

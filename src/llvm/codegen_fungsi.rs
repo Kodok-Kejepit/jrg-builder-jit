@@ -23,6 +23,7 @@ impl Codegen {
         self.finished_blocks.clear();
         self.cur_lines.clear();
         self.entry_allocas.clear();
+        self.memo_teks_lokal = None;
         self.cur_label = "entry".to_string();
         self.terminated = false;
         self.loop_stack.clear();
@@ -289,6 +290,7 @@ impl Codegen {
             let calon = if self.is_main_fn { None }
                 else { super::codegen_lepas::calon_lepas(stmt, &block.stmts[i + 1..], block.tail.as_deref()) };
             if i + 1 == block.stmts.len() && block.tail.is_none() { self.lepas_sebelum_kembali(stmt, &mut lepas); }
+            self.tandai_pop_pindah(&block.stmts, i, block.tail.as_deref());
             self.codegen_stmt(stmt)?;
             if self.terminated { break; }
             self.catat_lepas(calon, &mut lepas);

@@ -19,7 +19,7 @@ struct Pembantu {
     keluar_ringan_nilai: FuncRef, panjang: FuncRef, panjang_lokal: FuncRef,
     /// `Inst::Pembantu`, menurut `Pb`.
     pb: Vec<(Pb, FuncRef)>,
-    tulis_lebar: FuncRef, buka_lebar: FuncRef,
+    tulis_lebar: FuncRef, buka_lebar: FuncRef, sebar: FuncRef,
 }
 
 struct Penurun<'a, 'b> {
@@ -97,6 +97,7 @@ pub fn turunkan(
             (Pb::JenisSama, il.jenis_sama), (Pb::PayloadJenisSama, il.payload_jenis_sama), (Pb::PayloadPanjang, il.payload_panjang),
             (Pb::Karakter, il.karakter), (Pb::KarakterLokal, il.karakter_lokal)].into_iter().map(|(p, id)| (p, m.declare_func_in_func(id, b.func))).collect(),
         tulis_lebar: m.declare_func_in_func(il.tulis_lebar, b.func), buka_lebar: m.declare_func_in_func(il.buka_lebar, b.func),
+        sebar: m.declare_func_in_func(il.sebar, b.func),
     };
     let wadah = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3));
     let titip = b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 72, 3));
@@ -378,6 +379,22 @@ impl Penurun<'_, '_> {
                 self.tetapkan(*hasil, lo);
             }
             Inst::TulisLebar { pos, nilai } => self.tulis_lebar(*pos, *nilai),
+            Inst::Sebar { pos, pulang, jaga } => {
+                let p = self.i64c(*pos as i64);
+                let c = self.b.ins().call(self.lb.sebar, &[p]);
+                let c = self.b.inst_results(c)[0];
+                // 1 = `Err`/`None`: fungsinya kembali dengan nilai itu (masuk dari VM).
+                if *pulang {
+                    let (balik, terus) = (self.b.create_block(), self.b.create_block());
+                    let satu = self.b.ins().icmp_imm_u(IntCC::Equal, c, 1);
+                    self.b.ins().brif(satu, balik, &[], terus, &[]);
+                    self.b.switch_to_block(balik);
+                    self.b.ins().store(MemFlagsData::trusted(), p, self.keluar, 0);
+                    self.pulang_status(BERHASIL_NILAI);
+                    self.b.switch_to_block(terus);
+                }
+                self.jaga(c, jaga);
+            }
             Inst::BukaLebar { hasil, pos, jaga } => {
                 let st = self.buka_lebar_ke(*pos);
                 self.jaga(st, jaga);

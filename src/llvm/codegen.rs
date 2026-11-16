@@ -154,6 +154,12 @@ pub struct Codegen {
     pub(crate) cur_label: String,
     pub(crate) cur_lines: Vec<String>,
     pub(crate) entry_allocas: Vec<String>,
+    /// Memo jumlah karakter per fungsi (`jumlah_karakter`): tempat ptr, panjang, jumlah di blok masuk.
+    pub(crate) memo_teks_lokal: Option<(String, String, String)>,
+    /// `a` di `let r = arr::pop(a)` yang ditimpa pernyataan berikutnya (`capture::pindah_sebelum_ditimpa`).
+    pub(crate) pop_pindah: Option<String>,
+    /// `(a, r)`: `a = r[0]` sesudah pop berbagi itu boleh memindah `r.0`, karena sisa blok cuma membaca `r[1]`.
+    pub(crate) pop_tugas_pindah: Option<(String, String)>,
     pub(crate) finished_blocks: Vec<(String, Vec<String>)>,
     pub(crate) terminated: bool,
     pub(crate) loop_stack: Vec<LoopCtx>,
@@ -387,6 +393,9 @@ impl Codegen {
             var_global_baris: Vec::new(),
             cur_lines: Vec::new(),
             entry_allocas: Vec::new(),
+            memo_teks_lokal: None,
+            pop_pindah: None,
+            pop_tugas_pindah: None,
             finished_blocks: Vec::new(),
             terminated: false,
             loop_stack: Vec::new(),
@@ -986,6 +995,7 @@ impl Codegen {
         self.finished_blocks.clear();
         self.cur_lines.clear();
         self.entry_allocas.clear();
+        self.memo_teks_lokal = None;
         self.cur_label = "entry".to_string();
         self.terminated = false;
         self.loop_stack.clear();

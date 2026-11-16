@@ -1,6 +1,120 @@
 // Tabel bersama `tests/llvm_parity.rs` dan `tests/jit_parity.rs`; disisipkan lewat `include!`.
 
 const PARITAS_LLVM: &[(&str, &str)] = &[
+    // `str::join` atas larik bukan teks jalan seperti `arr::join` (dulu ditolak LLVM saat kompilasi: literal `[1, 2]`
+    // dipaksa ke `[]string` sebelum sampai ke jalur lapis); larik kosong tetap bertipe teks.
+    ("str::join atas larik bukan teks", r#"package main
+pub fn main() {
+    wok(str::join([1, 2], "-"))
+    let a = [1.5, 2.25]
+    wok(str::join(a, "|"))
+    var b: []int = []
+    b = arr::push(b, 7)
+    wok(str::join(b, ","), str::join([], ","), str::join(["x", "y"], ""))
+    wok(str::join([[1], [2, 3]], ";"))
+}
+"#),
+    // #1053: pop berbagi penyangga hanya kalau `a` ditimpa tepat sesudahnya; `r[0]` yang dibaca lagi sesudah `a`
+    // diubah tetap nilai lama, parameter pinjaman tidak tersentuh, bentuk method `d.pop()` sama.
+    ("pop dua pernyataan berbagi penyangga", r#"package main
+fn kuras(a: []int) -> int {
+    var b = a
+    var n = 0
+    while len(b) > 0 {
+        let r = arr::pop(b)
+        b = r[0]
+        n += 1
+    }
+    return n
+}
+fn pinjam(a: []int) -> []int {
+    var x = a
+    let r = arr::pop(x)
+    x = r[0]
+    x = arr::push(x, 99)
+    return x
+}
+pub fn main() {
+    var a = [1, 2, 3, 4]
+    let r = arr::pop(a)
+    a = r[0]
+    a[0] = 9
+    wok(a, r[0], r[1])
+    var c = [5, 6, 7]
+    let q = arr::pop(c)
+    c = q[0]
+    c = arr::push(c, 70)
+    wok(c, q[1])
+    var d = [1, 2, 3]
+    let s = d.pop()
+    d = s[0]
+    d[1] = 42
+    wok(d, s[1])
+    let asli = [10, 20, 30]
+    wok(kuras(asli), asli)
+    wok(pinjam(asli), asli)
+    var e = [1, 2]
+    let t = arr::pop(e)
+    e = []
+    wok(e, t)
+}
+"#),
+    // `str::char_at` diturunkan di tempat dengan memo jumlah karakter per fungsi: teks Unicode, indeks negatif,
+    // teks yang berganti di tengah loop (memo lama tidak boleh terpakai untuk teks lain sepanjang sama).
+    ("str::char_at di tempat dengan memo lokal", r#"package main
+fn kode(s: string) -> int {
+    var n = 0
+    for i in 0..len(s) { n = n * 31 + (str::char_at(s, i) as int) % 1000 }
+    return n
+}
+pub fn main() {
+    wok(kode("halo"), kode("日本語"), kode("ab日c"))
+    var t = ["abc", "xyz", "日本x", "aé", "éa"]
+    var keluar = []
+    for _, s in t {
+        keluar = arr::push(keluar, str::char_at(s, 0))
+        keluar = arr::push(keluar, str::char_at(s, -1))
+        keluar = arr::push(keluar, str::char_at(s, len(s) - 1))
+    }
+    wok(keluar)
+    var s = "aaaa"
+    var acc = ""
+    for i in 0..4 {
+        acc = acc + str(str::char_at(s, i))
+        s = i % 2 == 0 $ "bbbb" : "日日日日"
+    }
+    wok(acc)
+}
+"#),
+    // `match` bulat berlengan literal/rentang diturunkan jadi satu `switch` LLVM: nilai kembar milik lengan pertama,
+    // rentang tertutup dan terbuka, alternatif, lengan yang tak pernah tercapai, literal negatif (jalur lama).
+    ("match bulat lewat switch", r#"package main
+fn k(v: int) -> int {
+    match v {
+        0 => 5,
+        1 | 2 | 3 => 7,
+        2 => 99,
+        4..=8 => 11,
+        9..12 => 12,
+        12 | 300 => 30,
+        _ => 13,
+    }
+}
+fn neg(v: int) -> int {
+    match v { -1 => 1, 0 => 2, 5 => 3, _ => 4 }
+}
+fn penuh(v: int) -> string {
+    match v { 0 => "nol", 1..=2 => "kecil" }
+}
+pub fn main() {
+    var keluar = []
+    for i in -2..15 { keluar = arr::push(keluar, k(i)) }
+    wok(keluar)
+    wok(k(300), k(299), k(9223372036854775807))
+    wok(neg(-1), neg(0), neg(5), neg(6))
+    wok(penuh(0), penuh(2))
+}
+"#),
     // Fase SEBAR-GENERIK: sebar di literal varian enum generik dari basis instans enum yang sama — dulu ditolak LLVM.
     ("sebar varian enum generik dari varian sama dan lain", r#"package main
 enum E<T> { V { a: T, b: int }, W { a: T } }
