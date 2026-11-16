@@ -41,6 +41,8 @@ struct Pembangun<'a> {
     acak: bool,
     /// Rantai lengan `match` (`turun::rantai_pola`): ip kepala -> (rantai, urutan), dan alamat `RantaiPola` tiap rantai.
     rantai: (std::collections::HashMap<usize, (usize, usize)>, Vec<i64>),
+    /// Instruksi sesudahnya yang sudah ikut diturunkan (fusi), dilewati badan.
+    lewati: usize,
 }
 
 /// JIR titik masuk `r` fungsi `f`; `acak` = deopt acak di tiap instruksi (`JRG_JIT_STRES=deopt-acak`).
@@ -49,9 +51,10 @@ pub fn bangun(f: &VmFunction, r: &Rencana, acak: bool) -> Result<Fungsi, String>
     let kode = &f.chunk.code;
     let mut p = Pembangun {
         f, r, acak,
-        j: Fungsi { blok: Vec::new(), masuk: Blok(0), tipe: Vec::new(), posisi_masuk: Vec::new(), maks: 1 },
+        j: Fungsi { blok: Vec::new(), masuk: Blok(0), tipe: Vec::new(), posisi_masuk: Vec::new(), maks: 1, rumus: r.ubah.clone() },
         blok_ip: vec![None; kode.len()],
         rantai: Default::default(),
+        lewati: 0,
     };
     let (peta, daftar) = crate::jit::turun::rantai_pola(f, r);
     let situs = daftar.iter().map(|d| {
@@ -99,7 +102,8 @@ fn periksa_cakupan(f: &VmFunction, r: &Rencana) -> Result<(), String> {
             | Cara::TeksBulat | Cara::Geser | Cara::Cabang { .. } | Cara::Bangun(_) | Cara::Salinan | Cara::Salin | Cara::Tukar
             | Cara::Metode(_) | Cara::IterAda | Cara::Maju | Cara::Langsung(_) | Cara::Panjang | Cara::PanjangLokal(_)
             | Cara::Field | Cara::Pola | Cara::Payload | Cara::MuatGlobal | Cara::SimpanGlobal | Cara::Indeks
-            | Cara::TipeLipat(_) | Cara::TipeSama(_) | Cara::PayloadSama(..) | Cara::PayloadPanjang(_) | Cara::Sebar => {}
+            | Cara::TipeLipat(_) | Cara::TipeSama(_) | Cara::PayloadSama(..) | Cara::PayloadPanjang(_) | Cara::Sebar
+            | Cara::UbahLokal { .. } | Cara::RumusLokal { .. } => {}
             c => return Err(format!("{c:?} di ip {ip}")),
         }
         // `Return` cuma untuk titik masuk yang boleh kembali native.
@@ -178,6 +182,7 @@ impl Pembangun<'_> {
                 kini = Some((b, self.isi_dari_params(ip, &params)?));
             }
             let Some((b, mut isi)) = kini.take() else { continue };
+            if self.lewati > 0 { self.lewati -= 1; kini = Some((b, isi)); continue; }
             if isi.len() != self.keadaan(ip).len() { return Err(format!("panjang stack di ip {ip} tidak cocok")); }
             // Posisi maya yang tidak boleh melewati instruksi ini diwujudkan ke stack VM dulu.
             for (p, j) in self.r.wujud[ip].clone() {
@@ -204,8 +209,10 @@ impl Pembangun<'_> {
                 Some(akhir) => self.akhiri(b, akhir),
                 None => {
                     // Keadaan yang dibawa tepinya (sebelum titik temu melebarkannya: `isi_tepi` yang menulis).
-                    let lanjut = self.r.tepi.get(&(ip, ip + 1)).or_else(|| self.r.keadaan.get(ip + 1).and_then(|s| s.as_ref()))
-                        .ok_or_else(|| format!("ip {} tak terjangkau sesudah ip {ip}", ip + 1))?.clone();
+                    // Sesudah fusi, keadaan yang dicocokkan milik ip sesudah instruksi terakhir yang ikut.
+                    let nx = ip + 1 + self.lewati;
+                    let lanjut = self.r.tepi.get(&(nx - 1, nx)).or_else(|| self.r.keadaan.get(nx).and_then(|s| s.as_ref()))
+                        .ok_or_else(|| format!("ip {nx} tak terjangkau sesudah ip {ip}"))?.clone();
                     if lanjut.len() != isi.len() { return Err(format!("panjang stack sesudah ip {ip}: {} lawan {}", isi.len(), lanjut.len())); }
                     // Posisi tanpa isi native di keadaan berikutnya (lubang `AmbilLokal`, milik VM) tidak membawa nilai.
                     for (i, j) in lanjut.iter().enumerate() {
@@ -288,6 +295,39 @@ impl Pembangun<'_> {
                 self.dorong(b, Inst::Taruh { pos: t, alamat });
                 isi.push(None);
             }
+            // `LoadLocal; GetField` atas lokal milik VM (syarat gabung penurun langsung): satu `field_lokal` tanpa menyalin
+            // lokalnya; angka yang dispekulasikan langsung ke register. 1 = galat di `GetField` (lokal sudah ditaruh
+            // di puncak, VM yang melapor); spekulasi gagal = deopt di `ip + 2` dengan puncak milik VM.
+            Cara::Muat if !matches!(s[a], Jenis::Salinan(_)) && self.gabung(ip + 1) && self.r.cara.get(ip + 1) == Some(&Cara::Field) => {
+                let gf = self.f.chunk.code[ip + 1];
+                let spek = self.r.spek[ip + 1];
+                // Cuma bulat/pecahan yang dijawab pembantu di register; jenis lain selalu ditaruh di puncak (kode 0).
+                let jk = match spek { Some(Jenis::Bulat) => 1, Some(Jenis::Pecahan) => 5, _ => 0 };
+                let situs = crate::jit::lambat::SitusField::bocor(&self.f.chunk.names[gf.arg as usize], gf.op == OpCode::GetFieldPrivat, jk);
+                let st = self.j.nilai_baru(Tipe::I);
+                let k = match spek {
+                    Some(j @ (Jenis::Bulat | Jenis::Pecahan)) => Some(self.j.nilai_baru(tipe_jenis(j)?.ok_or("field angka")?)),
+                    _ => None,
+                };
+                let args = vec![Arg::I64(a as i64), Arg::I64(situs as *const _ as i64), Arg::Wadah, Arg::I64(t as i64)];
+                self.dorong(b, Inst::Pembantu { pb: Pb::FieldLokal, args, hasil: Some(st), gagal: None, keluar: k });
+                isi.push(None);
+                let satu = self.konst_i(b, 1);
+                let gagal = self.biner(b, Biner::ICmp(Banding::Eq), st, satu, None);
+                self.dorong(b, Inst::JagaJika { kondisi: gagal, jaga: Jaga { keadaan: self.keadaan_di(ip + 1, isi), spek: false, puncak_vm: false } });
+                if let Some(k) = k {
+                    let mut kl = self.keadaan_di(ip + 2, isi);
+                    if let Some(p) = kl.isi.last_mut() { *p = None; }
+                    let empat = self.konst_i(b, 4);
+                    let bukan = self.biner(b, Biner::ICmp(Banding::Ne), st, empat, None);
+                    self.dorong(b, Inst::JagaJika { kondisi: bukan, jaga: Jaga { keadaan: kl, spek: true, puncak_vm: true } });
+                    isi[t] = Some(k);
+                } else if spek.is_some() {
+                    // Spekulasi jenis lain: hasilnya milik VM di puncak, dibuka berjaga seperti `GetField` biasa.
+                    self.buka_hasil(b, ip + 1, isi)?;
+                }
+                self.lewati = 1;
+            }
             Cara::Muat => {
                 // Lokal yang isinya salinan maya: lokal asalnya yang dibaca (disalin, tidak pernah dipindah).
                 let (lokal, pindah) = match s[a] {
@@ -325,6 +365,24 @@ impl Pembangun<'_> {
                 return Ok(Some(Akhir::KembaliNilai { pos: t - 1 }));
             }
             Cara::KembaliUnit => return Ok(Some(Akhir::KembaliUnit)),
+            // `l.m(..)` berumus atas lokal `a`: satu instruksi, lanjut di `ip + lebar` (seperti penurun langsung).
+            Cara::UbahLokal { rumus, lebar } | Cara::RumusLokal { rumus, lebar } => {
+                let tulis = matches!(self.r.cara[ip], Cara::UbahLokal { .. });
+                let rm = &self.r.ubah[rumus];
+                let args = rm.sumber.iter().map(|s| match s {
+                    crate::jit::layak::Sumber::Lokal(x) => {
+                        let v = Self::ambil(isi, *x)?;
+                        Ok(Some(self.ke_f(b, v)))
+                    }
+                    crate::jit::layak::Sumber::Konst(_) => Ok(None),
+                }).collect::<Result<Vec<_>, String>>()?;
+                let hasil = (!tulis).then(|| self.j.nilai_baru(Tipe::F));
+                let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: true, puncak_vm: false };
+                self.dorong(b, Inst::Rumus { rumus, lokal: a, args, tulis, hasil, jaga });
+                if let Some(h) = hasil { isi.push(Some(h)); }
+                let (ke, args) = self.tepi(b, ip, ip + lebar, isi)?;
+                return Ok(Some(Akhir::Lompat { ke, args }));
+            }
             Cara::Sebar => {
                 let pulang = self.r.kembali == crate::jit::layak::KEMBALI_SKALAR && !self.r.ada_defer;
                 let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
@@ -457,12 +515,15 @@ impl Pembangun<'_> {
                         let h = self.j.nilai_baru(tipe);
                         Some((h, j.kode() as i32, Jaga { keadaan: basi.clone(), spek: true, puncak_vm: true }))
                     }
-                    Some(j) => return Err(format!("hasil langsung berspekulasi {j:?}")),
+                    // Jenis lain (128 bit, bool, rune): hasilnya milik VM, dibuka berjaga sesudah panggilan.
+                    Some(_) => None,
                 };
                 let jenis = self.jenis_ip(ip);
+                let buka = hasil.is_none() && self.r.spek[ip].is_some();
                 self.dorong(b, Inst::Langsung { n, ip, jenis, t, a, fungsi, isi: isi_n, taruh: taruh_n, args, basi, hasil: hasil.clone() });
                 isi.truncate(t - a - 1);
                 isi.push(hasil.map(|(h, ..)| h));
+                if buka { self.buka_hasil(b, ip, isi)?; }
             }
             Cara::Panjang | Cara::PanjangLokal(_) => {
                 let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
@@ -980,6 +1041,13 @@ impl Pembangun<'_> {
     fn lebar_ke_vm(&mut self, b: Blok, pos: usize, j: Jenis, isi: &[Option<Nilai>]) -> Result<(), String> {
         if j == Jenis::Lebar { let v = Self::ambil(isi, pos)?; self.dorong(b, Inst::TulisLebar { pos, nilai: v }); }
         Ok(())
+    }
+
+    /// Instruksi `ip` boleh ikut diturunkan bersama instruksi sebelumnya: bukan pemimpin, terjangkau, tanpa titik
+    /// keluar dan tanpa wujud (syarat `gabung` penurun langsung).
+    fn gabung(&self, ip: usize) -> bool {
+        !self.r.pemimpin.get(ip).copied().unwrap_or(true) && self.r.keadaan.get(ip).is_some_and(|k| k.is_some())
+            && !self.r.keluar[ip] && self.r.wujud.get(ip).is_some_and(|w| w.is_empty())
     }
 
     fn ke_l(&mut self, b: Blok, v: Nilai) -> Nilai {

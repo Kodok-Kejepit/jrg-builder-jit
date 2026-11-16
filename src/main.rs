@@ -87,6 +87,10 @@ struct Cli {
     #[arg(long = "emit-llvm")]
     emit_llvm: bool,
 
+    /// Mesin kelima: kompilasi jadi WebAssembly (WASI) lewat backend LLVM, lalu jalankan lewat node
+    #[arg(long = "emit-wasm", conflicts_with_all = ["emit_llvm", "jit", "apk"])]
+    emit_wasm: bool,
+
     /// Bungkus jadi aplikasi Android (lewat backend LLVM)
     #[arg(long = "apk", value_name = "BERKAS")]
     apk: Option<PathBuf>,
@@ -350,7 +354,7 @@ fn run_sumber(nama: &str, src: String, dir: PathBuf, cli: &Cli) -> Result<(), Ve
         return Err(Vec::new());
     }
 
-    if cli.emit_llvm || cli.apk.is_some() {
+    if cli.emit_llvm || cli.apk.is_some() || cli.emit_wasm {
         // `--uji`: `main` buatan yang menjalankan tiap tes (`llvm::uji`); tanpa tes, kalimat yang sama dengan acuan.
         let uji_ast;
         let ast = if cli.uji {
@@ -373,6 +377,7 @@ fn run_sumber(nama: &str, src: String, dir: PathBuf, cli: &Cli) -> Result<(), Ve
             llvm::codegen::CodegenOptions {
                 fast_math: effective_fast_math,
                 full_buffered_stdout: effective_full_buffered_stdout,
+                ptr32: cli.emit_wasm,
             },
             &jalur_impor,
         ).map_err(|errs| {
@@ -385,6 +390,20 @@ fn run_sumber(nama: &str, src: String, dir: PathBuf, cli: &Cli) -> Result<(), Ve
             Vec::new()
         })?;
         let ir = llvm::isi_situs(ir, &mut source_map);
+
+        if cli.emit_wasm {
+            // `-o` bawaan (`a.out`) jadi `<nama-sumber>.wasm` di folder kerja.
+            let berkas = if cli.output == std::path::Path::new("a.out") {
+                PathBuf::from(std::path::Path::new(nama).file_stem().unwrap_or_default()).with_extension("wasm")
+            } else { cli.output.clone() };
+            jrgc::wasm::kompilasi(&ir, &berkas, cli.verbose).map_err(|e| vec![format!("jrgc: --emit-wasm: {}", e)])?;
+            if cli.no_run {
+                eprintln!("[jrgc] wasm: {} (jalankan: node {})", berkas.display(), jrgc::wasm::pemuat_untuk(&berkas).display());
+                return Ok(());
+            }
+            let kode = jrgc::wasm::jalankan(&berkas, &[]).map_err(|e| vec![format!("jrgc: {}", e)])?;
+            keluar(kode);
+        }
 
         if let Some(apk) = &cli.apk {
             let opsi = llvm::apk::OpsiApk {

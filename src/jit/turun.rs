@@ -891,7 +891,7 @@ fn rumus_baca(
 
 /// Simpul rumus yang dipakai dihitung sekali, berurutan (operandnya selalu simpul sebelumnya); nilai field
 /// yang berubah ke penyangga `wb` (bit pecahan), argumen ke-`j` dari `arg`; hasil rumus nilai sebagai bit pecahan.
-fn rumus_hitung(
+pub(super) fn rumus_hitung(
     b: &mut FunctionBuilder, rm: &super::layak::Rumus, wb: StackSlot, ptr: Type,
     arg: impl Fn(&mut FunctionBuilder, usize) -> Value,
 ) -> Option<Value> {

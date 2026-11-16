@@ -149,6 +149,10 @@ pub enum Inst {
     /// `lambat::pola_pilih` (alamat `situs`) dan menyimpan indeksnya di slot rantai; tiap lengan membandingkan indeksnya.
     /// `hasil` = cocok tidaknya (0/1); galat pola lengan ini = deopt `jaga`.
     Rantai { hasil: Nilai, rantai: usize, urutan: usize, lokal: usize, situs: i64, jaga: Jaga },
+    /// `l.m(..)` dengan `m` berumus (`Cara::UbahLokal`/`RumusLokal`, `Fungsi::rumus[rumus]`) atas lokal `lokal`:
+    /// field dibaca dan diperiksa pembantu (gagal = deopt spekulasi `jaga`), rumusnya dihitung native dengan argumen
+    /// `args` (pecahan, `None` = konstanta di rumusnya), lalu field ditulis (`tulis`) atau nilainya jadi `hasil`.
+    Rumus { rumus: usize, lokal: usize, args: Vec<Option<Nilai>>, tulis: bool, hasil: Option<Nilai>, jaga: Jaga },
     /// Literal atas `n` posisi teratas (`lambat::bangun`, situs `SitusBangun` di alamat `situs`), hasilnya milik VM
     /// di posisi `t - n`. Tumpahan seperti `Langkah`.
     Bangun { situs: i64, jenis: i64, t: usize, n: usize, isi: Vec<(usize, Nilai)>, taruh: Vec<(usize, i64)> },
@@ -180,7 +184,7 @@ pub enum Inst {
 
 /// Pembantu `lambat` yang dipanggil lewat `Inst::Pembantu`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Pb { Field, Pola, PolaLokal, Payload, PayloadLokal, MuatGlobal, SimpanGlobal, Indeks, Baca, BacaPecahan, Tulis, JenisSama, PayloadJenisSama, PayloadPanjang, Karakter, KarakterLokal, PayloadAngkaLokal }
+pub enum Pb { Field, Pola, PolaLokal, Payload, PayloadLokal, MuatGlobal, SimpanGlobal, Indeks, Baca, BacaPecahan, Tulis, JenisSama, PayloadJenisSama, PayloadPanjang, Karakter, KarakterLokal, PayloadAngkaLokal, FieldLokal }
 
 /// Argumen `Inst::Pembantu`: konstanta 64/32 bit atau isi native (bit `i64`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -232,6 +236,8 @@ pub struct Fungsi {
     pub posisi_masuk: Vec<usize>,
     /// Panjang stack terbesar di titik deopt mana pun (ukuran slot rekaman).
     pub maks: usize,
+    /// Rumus method (`Rencana::ubah`) yang dirujuk `Inst::Rumus`.
+    pub rumus: Vec<crate::jit::layak::Rumus>,
 }
 
 impl Fungsi {
@@ -275,6 +281,8 @@ impl fmt::Display for Fungsi {
                         writeln!(f, "  {hasil} = L{op:?} {a}, {b}{}{}", jaga(j), jaga(jaga_muat).replace("jaga", "jaga-muat"))?,
                     Inst::Sempit { hasil, a, jaga: j } => writeln!(f, "  {hasil} = sempit {a}{}", jaga(&Some(j.clone())))?,
                     Inst::TulisLebar { pos, nilai } => writeln!(f, "  tulis-lebar {nilai} -> {pos}")?,
+                    Inst::Rumus { rumus, lokal, args, tulis, hasil, jaga: j } => writeln!(f, "  {}rumus #{rumus} lokal {lokal} {args:?}{}{}",
+                        hasil.map_or(String::new(), |h| format!("{h} = ")), if *tulis { " tulis" } else { "" }, jaga(&Some(j.clone())))?,
                     Inst::Rantai { hasil, rantai, urutan, lokal, jaga: j, .. } =>
                         writeln!(f, "  {hasil} = rantai #{rantai}[{urutan}] lokal {lokal}{}", jaga(&Some(j.clone())))?,
                     Inst::Sebar { pos, pulang, jaga: j } => writeln!(f, "  sebar {pos}{}{}", if *pulang { " pulang" } else { "" }, jaga(&Some(j.clone())))?,

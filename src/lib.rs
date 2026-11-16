@@ -28,6 +28,7 @@ pub mod jit;
 
 /// Backend ketiga: lowering AST ke LLVM IR, lalu native lewat `clang`.
 pub mod llvm;
+pub mod wasm;
 
 pub mod fmt;
 pub mod uji;
