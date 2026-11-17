@@ -7,6 +7,9 @@ use crate::jit::layak::{Cara, Jenis, Rencana, KEMBALI_BULAT};
 use crate::vm::opcode::OpCode;
 use crate::vm::value::VmFunction;
 
+#[path = "bayang.rs"]
+mod bayang;
+
 /// Isi native jenis `j`: tipenya, atau `None` kalau posisinya tidak punya isi (`nil`, `()`).
 fn tipe_jenis(j: Jenis) -> Result<Option<Tipe>, String> {
     match j {
@@ -55,6 +58,20 @@ struct Pembangun<'a> {
     /// Struct yang baru dibangun dari angka native di `ip` (langkah 23 penurun langsung): (ip, [(kunci field, nilai)]),
     /// jadi lokal tempat ia tinggal atau disimpan sesudahnya tidak perlu membaca field-nya lagi.
     benih: Option<(usize, Vec<(i64, Nilai)>)>,
+    /// Bayangan varian (`bayang.rs`): aktif, tabel varian, bayangan blok yang sedang dibangun dan posisi yang baru
+    /// diberinya, tepi yang menunggu pemimpinnya, parameter bayangan pemimpin yang sudah mulai, pemimpin yang
+    /// dilarang berbayangan (tepi belakangan tidak cocok: bangun ulang), dan rantai yang lengan pertamanya dilipat.
+    bayang_aktif: bool,
+    varian: Vec<(&'static crate::vm::value::NamaVarian, Option<usize>)>,
+    bayang: std::collections::HashMap<usize, bayang::Bayang>,
+    lahir: Vec<usize>,
+    kini_b: Option<Blok>,
+    beku: bool,
+    sisi: std::collections::HashMap<usize, Vec<(Blok, Blok, bayang::Potret)>>,
+    masuk_bayang: std::collections::HashMap<usize, bayang::Potret>,
+    larang: std::collections::HashSet<usize>,
+    ulang: Option<usize>,
+    lipat: std::collections::HashSet<usize>,
 }
 
 /// JIR titik masuk `r` fungsi `f`; `acak` = deopt acak di tiap instruksi (`JRG_JIT_STRES=deopt-acak`).
@@ -63,7 +80,22 @@ pub type Sisip = [Option<(std::sync::Arc<Fungsi>, u32)>];
 
 pub fn bangun(f: &VmFunction, r: &Rencana, acak: bool, sisip: &Sisip) -> Result<Fungsi, String> {
     periksa_cakupan(f, r)?;
+    let mut larang = std::collections::HashSet::new();
+    loop {
+        match bangun_sekali(f, r, acak, sisip, &larang) {
+            Ok(j) => return Ok(j),
+            Err((e, Some(ip))) if larang.insert(ip) => { let _ = e; }
+            Err((e, _)) => return Err(e),
+        }
+    }
+}
+
+/// Satu percobaan; galat membawa pemimpin yang bayangannya harus dilarang lalu dicoba lagi.
+fn bangun_sekali(f: &VmFunction, r: &Rencana, acak: bool, sisip: &Sisip, larang: &std::collections::HashSet<usize>)
+    -> Result<Fungsi, (String, Option<usize>)> {
     let kode = &f.chunk.code;
+    let bayang_aktif = std::env::var("JRG_JIT_BAYANG").map_or(true, |v| v != "mati")
+        && !kode.iter().any(|i| i.op == OpCode::MakeClosure);
     let mut p = Pembangun {
         f, r, acak, sisip, lanjutan: None, maks_sisip: 0, rantai_sisip: 0,
         j: Fungsi { blok: Vec::new(), masuk: Blok(0), tipe: Vec::new(), posisi_masuk: Vec::new(), maks: 1, rumus: r.ubah.clone() },
@@ -72,36 +104,51 @@ pub fn bangun(f: &VmFunction, r: &Rencana, acak: bool, sisip: &Sisip) -> Result<
         lewati: 0,
         cse_field: Vec::new(),
         benih: None,
+        bayang_aktif, varian: Vec::new(), bayang: Default::default(), lahir: Vec::new(), kini_b: None, beku: false,
+        sisi: Default::default(), masuk_bayang: Default::default(), larang: larang.clone(), ulang: None,
+        lipat: Default::default(),
     };
-    let (peta, daftar) = crate::jit::turun::rantai_pola(f, r);
-    let situs = daftar.iter().map(|d| {
-        let s: Vec<&'static crate::jit::lambat::SitusPola> = d.iter()
-            .map(|&h| crate::jit::lambat::SitusPola::bocor(&f.chunk.constants[kode[h + 1].arg as usize])).collect();
-        crate::jit::lambat::RantaiPola::bocor(s) as *const _ as i64
-    }).collect();
-    p.rantai = (peta, situs);
-    // Blok masuk lebih dulu: parameternya argumen fungsi (atau isi bingkai OSR).
-    let mut params = Vec::new();
-    for (i, j) in r.jenis_masuk.iter().enumerate() {
-        if let Some(t) = tipe_jenis(*j)? {
-            params.push(p.j.nilai_baru(t));
-            p.j.posisi_masuk.push(i);
+    let hasil = p.jalankan();
+    hasil.map_err(|e| (e, p.ulang))
+}
+
+impl Pembangun<'_> {
+    fn jalankan(&mut self) -> Result<Fungsi, String> {
+        let (f, r) = (self.f, self.r);
+        let kode = &f.chunk.code;
+        let p = self;
+        let (peta, daftar) = crate::jit::turun::rantai_pola(f, r);
+        let situs = daftar.iter().map(|d| {
+            let s: Vec<&'static crate::jit::lambat::SitusPola> = d.iter()
+                .map(|&h| crate::jit::lambat::SitusPola::bocor(&f.chunk.constants[kode[h + 1].arg as usize])).collect();
+            crate::jit::lambat::RantaiPola::bocor(s) as *const _ as i64
+        }).collect();
+        p.rantai = (peta, situs);
+        // Blok masuk lebih dulu: parameternya argumen fungsi (atau isi bingkai OSR).
+        let mut params = Vec::new();
+        for (i, j) in r.jenis_masuk.iter().enumerate() {
+            if let Some(t) = tipe_jenis(*j)? {
+                params.push(p.j.nilai_baru(t));
+                p.j.posisi_masuk.push(i);
+            }
         }
-    }
-    p.j.blok.push(DataBlok { ip: r.masuk, params: params.clone(), inst: Vec::new(), akhir: None });
-    for ip in 0..kode.len() {
-        if r.keadaan[ip].is_some() && r.pemimpin[ip] {
-            let b = p.blok_baru(ip)?;
-            p.blok_ip[ip] = Some(b);
+        p.j.blok.push(DataBlok { ip: r.masuk, params: params.clone(), inst: Vec::new(), akhir: None });
+        for ip in 0..kode.len() {
+            if r.keadaan[ip].is_some() && r.pemimpin[ip] {
+                let b = p.blok_baru(ip)?;
+                p.blok_ip[ip] = Some(b);
+            }
         }
+        let ke = p.blok_ip[r.masuk].ok_or("titik masuk bukan pemimpin")?;
+        let args = p.args_ke(Blok(0), r.masuk, &p.isi_masuk(&params)?)?;
+        p.j.blok[0].akhir = Some(Akhir::Lompat { ke, args });
+        p.tepi_bayang(Blok(0), ke, r.masuk, 0)?;
+        p.badan()?;
+        p.j.maks = r.keadaan.iter().flatten().map(|s| s.len()).max().unwrap_or(1).max(1).max(p.maks_sisip);
+        super::periksa::periksa(&p.j)?;
+            let kosong = Fungsi { blok: Vec::new(), masuk: Blok(0), tipe: Vec::new(), posisi_masuk: Vec::new(), maks: 1, rumus: Vec::new() };
+        Ok(std::mem::replace(&mut p.j, kosong))
     }
-    let ke = p.blok_ip[r.masuk].ok_or("titik masuk bukan pemimpin")?;
-    let args = p.args_ke(Blok(0), r.masuk, &p.isi_masuk(&params)?)?;
-    p.j.blok[0].akhir = Some(Akhir::Lompat { ke, args });
-    p.badan()?;
-    p.j.maks = r.keadaan.iter().flatten().map(|s| s.len()).max().unwrap_or(1).max(1).max(p.maks_sisip);
-    super::periksa::periksa(&p.j)?;
-    Ok(p.j)
 }
 
 /// Indeks argumen `Inst::Pembantu` yang berupa posisi stack (digeser saat callee disisipkan); lainnya alamat, kode,
@@ -212,12 +259,16 @@ impl Pembangun<'_> {
                 }
                 let params = self.j.blok[b.0 as usize].params.clone();
                 kini = Some((b, self.isi_dari_params(ip, &params)?));
+                self.mulai_bayang(ip, b);
+                self.kini_b = Some(b);
             }
             let Some((b, mut isi)) = kini.take() else { continue };
             if self.lewati > 0 { self.lewati -= 1; kini = Some((b, isi)); continue; }
             if isi.len() != self.keadaan(ip).len() { return Err(format!("panjang stack di ip {ip} tidak cocok")); }
             // Posisi maya yang tidak boleh melewati instruksi ini diwujudkan ke stack VM dulu.
+            // Isinya tidak berubah, jadi bayangannya tetap (`beku`).
             for (p, j) in self.r.wujud[ip].clone() {
+                self.beku = true;
                 match j {
                     Jenis::Salinan(l) => self.dorong(b, Inst::Muat { lokal: l as usize, ke: p, pindah: false }),
                     j => {
@@ -225,6 +276,7 @@ impl Pembangun<'_> {
                         self.dorong(b, Inst::Taruh { pos: p, alamat: &self.f.chunk.constants[k] as *const _ as i64 });
                     }
                 }
+                self.beku = false;
                 isi[p] = None;
             }
             if self.acak {
@@ -237,11 +289,17 @@ impl Pembangun<'_> {
                 self.akhiri(b, Akhir::Keluar { keadaan: self.keadaan_di(ip, &isi) });
                 continue;
             }
+            let t0 = isi.len();
+            self.lahir.clear();
             match self.cara(b, ip, &mut isi)? {
                 Some(akhir) => {
                     self.akhiri(b, akhir);
                     // Callee yang disisipkan berakhir di blok lanjutan: pemanggil melanjutkan di sana.
-                    if let Some(l) = self.lanjutan.take() { kini = Some(l); }
+                    if let Some(l) = self.lanjutan.take() {
+                        self.rapikan_bayang(t0, &l.1);
+                        self.kini_b = Some(l.0);
+                        kini = Some(l);
+                    }
                 }
                 None => {
                     // Keadaan yang dibawa tepinya (sebelum titik temu melebarkannya: `isi_tepi` yang menulis).
@@ -258,6 +316,7 @@ impl Pembangun<'_> {
                             _ => return Err(format!("posisi {i} sesudah ip {ip} tanpa isi native yang cocok")),
                         }
                     }
+                    self.rapikan_bayang(t0, &isi);
                     kini = Some((b, isi));
                 }
             }
@@ -271,6 +330,7 @@ impl Pembangun<'_> {
             | Inst::Unar { .. } | Inst::BinerL { .. } | Inst::Pilih { .. } | Inst::JagaJika { .. } | Inst::Sempit { .. }
             | Inst::Pembantu { pb: Pb::FieldLokal | Pb::Baca | Pb::BacaPecahan, .. });
         if !murni { self.cse_field.clear(); }
+        if self.bayang_aktif && !self.beku && self.kini_b == Some(b) { self.bayang_inst(&i); }
         self.j.blok[b.0 as usize].inst.push(i);
     }
 
@@ -549,6 +609,20 @@ impl Pembangun<'_> {
                 let (isi_n, taruh_n) = self.tumpahan(&s, t - n..t, isi)?;
                 let jenis = self.jenis_ip(ip);
                 self.dorong(b, Inst::Bangun { situs: situs as *const _ as i64, jenis, t, n, isi: isi_n, taruh: taruh_n });
+                // Varian: penandanya, dan payload angkanya kalau ada (payload tuple dari `BuildTuple` tepat sebelumnya).
+                if let SitusBangun::Varian(nama) = situs {
+                    let muatan: Vec<(Jenis, Nilai)> = match (s[t - 1], isi[t - 1]) {
+                        (j @ (Jenis::Bulat | Jenis::Pecahan), Some(v)) => vec![(j, v)],
+                        _ => Vec::new(),
+                    };
+                    let jumlah = match s[t - 1] {
+                        Jenis::Bulat | Jenis::Pecahan | Jenis::Bool | Jenis::Rune | Jenis::Lebar | Jenis::Kosong | Jenis::Satuan => Some(1),
+                        Jenis::Nilai if ip > 0 && !self.r.pemimpin[ip] && kode[ip - 1].op == OpCode::BuildTuple =>
+                            Some(kode[ip - 1].arg as usize),
+                        _ => None,
+                    };
+                    if let Some(jumlah) = jumlah { self.lahir_varian(b, t - 1, nama, Some(jumlah), muatan); }
+                }
                 isi.truncate(t - n);
                 isi.push(None);
                 // Hasilnya tinggal di posisinya sebagai lokal (`let`), atau disimpan instruksi berikutnya.
@@ -557,9 +631,11 @@ impl Pembangun<'_> {
             }
             Cara::Salinan => match ins.op {
                 // Salinan atau konstanta maya: cuma jenisnya yang berpindah.
-                OpCode::LoadLocal | OpCode::LokalHitung | OpCode::Const => isi.push(None),
-                OpCode::StoreLocal => isi[a] = None,
-                OpCode::SimpanBuang => { isi[a] = None; isi.pop(); }
+                OpCode::LoadLocal => { isi.push(None); self.salin_bayang(a, t); }
+                OpCode::Const => { isi.push(None); self.lahir_konst(b, t, a); }
+                OpCode::LokalHitung => isi.push(None),
+                OpCode::StoreLocal => { isi[a] = None; self.salin_bayang(t - 1, a); }
+                OpCode::SimpanBuang => { isi[a] = None; self.salin_bayang(t - 1, a); isi.pop(); }
                 op => return Err(format!("Cara::Salinan atas {op:?}")),
             },
             Cara::Langsung(n) if self.sisip.get(n).is_some_and(|x| x.is_some()) && self.bisa_sisip(n, ip, isi, &s) => {
@@ -619,9 +695,19 @@ impl Pembangun<'_> {
             Cara::Pola if ip > 0 && self.rantai.0.contains_key(&(ip - 1)) => {
                 let (ri, kk) = self.rantai.0[&(ip - 1)];
                 let lokal = match s[t - 1] { Jenis::Salinan(l) => l as usize, _ => self.f.chunk.code[ip - 1].arg as usize };
+                if let Some(x) = self.bayang.get(&lokal).cloned() {
+                    let mut xs = Vec::new();
+                    if let Some(h) = self.lipat_rantai(&mut xs, &x, self.rantai.1[ri], kk) {
+                        self.dorong_semua(b, xs);
+                        if kk == 0 { self.lipat.insert(ri); }
+                        isi[t - 1] = Some(h);
+                        return Ok(None);
+                    }
+                }
                 let h = self.j.nilai_baru(Tipe::I);
                 let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
-                self.dorong(b, Inst::Rantai { hasil: h, rantai: ri, urutan: kk, lokal, situs: self.rantai.1[ri], jaga });
+                let panggil = kk > 0 && self.lipat.contains(&ri);
+                self.dorong(b, Inst::Rantai { hasil: h, rantai: ri, urutan: kk, lokal, situs: self.rantai.1[ri], panggil, jaga });
                 isi[t - 1] = Some(h);
             }
             Cara::Pola => {
@@ -639,6 +725,16 @@ impl Pembangun<'_> {
             // spekulasi di `ip + 1` dengan puncak milik VM (seperti `buka` yang gagal).
             Cara::Payload if matches!((s[t - 1], self.r.spek[ip]), (Jenis::Salinan(_), Some(Jenis::Bulat | Jenis::Pecahan))) => {
                 let (Jenis::Salinan(l), Some(j)) = (s[t - 1], self.r.spek[ip]) else { unreachable!() };
+                if let Some(x) = self.bayang.get(&(l as usize)).cloned() {
+                    let mut xs = Vec::new();
+                    if let Some((st, v)) = self.lipat_payload(&mut xs, &x, j) {
+                        self.dorong_semua(b, xs);
+                        let jaga_bukan = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
+                        self.dorong(b, Inst::JagaJika { kondisi: st, jaga: jaga_bukan });
+                        isi[t - 1] = Some(v);
+                        return Ok(None);
+                    }
+                }
                 let jk = if j == Jenis::Pecahan { 5 } else { 1 };
                 let (st, k) = (self.j.nilai_baru(Tipe::I), self.j.nilai_baru(tipe_jenis(j)?.ok_or("payload angka")?));
                 let jaga_bukan = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
@@ -811,7 +907,11 @@ impl Pembangun<'_> {
         let tuju = self.keadaan(ke).clone();
         let asal = self.r.tepi.get(&(dari, ke)).cloned().unwrap_or_else(|| tuju.clone());
         let perlu: Vec<usize> = (0..tuju.len().min(asal.len())).filter(|&i| tuju[i].di_vm() && !asal[i].di_vm()).collect();
-        if perlu.is_empty() { return Ok((sasaran, self.args_ke(asal_b, ke, isi)?)); }
+        if perlu.is_empty() {
+            let mut args = self.args_ke(asal_b, ke, isi)?;
+            args.extend(self.tepi_bayang(asal_b, sasaran, ke, tuju.len())?);
+            return Ok((sasaran, args));
+        }
         // Stub: parameternya isi native yang dibawa, nilai lain tidak boleh melintas blok.
         let (mut params, mut args) = (Vec::new(), Vec::new());
         let mut isi_s: Vec<Option<Nilai>> = Vec::new();
@@ -842,7 +942,8 @@ impl Pembangun<'_> {
             }
             isi_s[i] = None;
         }
-        let args_s = self.args_ke(stub, ke, &isi_s)?;
+        let mut args_s = self.args_ke(stub, ke, &isi_s)?;
+        args_s.extend(self.tepi_bayang(stub, sasaran, ke, tuju.len())?);
         self.akhiri(stub, Akhir::Lompat { ke: sasaran, args: args_s });
         Ok((stub, args))
     }
@@ -1194,9 +1295,33 @@ impl Pembangun<'_> {
             Some(j @ (Jenis::Bulat | Jenis::Pecahan)) => Some(self.j.nilai_baru(tipe_jenis(j)?.ok_or("hasil angka")?)),
             _ => None,
         };
+        // Bayangan varian argumen pemanggil yang tidak pernah ditulis callee: rantai `match` dan payload angka atasnya
+        // dilipat (callee cuma membaca posisi parameternya kalau tidak ada instruksi yang menulisnya).
+        let ditulis: Option<std::collections::HashSet<usize>> = c.blok.iter().flat_map(|b| &b.inst)
+            .try_fold(std::collections::HashSet::new(), |mut m, i| bayang::ditulis(i).map(|v| { m.extend(v); m }));
+        let bayang_arg = |me: &Self, l: usize| -> Option<bayang::Bayang> {
+            if ditulis.as_ref().is_none_or(|d| d.contains(&l)) { return None; }
+            me.bayang.get(&(l + geser)).cloned()
+        };
         for blk in c.blok.iter() {
             let mut inst = Vec::with_capacity(blk.inst.len());
             for i in &blk.inst {
+                let mut pra = Vec::new();
+                let lipat = match i {
+                    Inst::Rantai { hasil, lokal, situs, urutan, .. } => bayang_arg(self, *lokal)
+                        .and_then(|x| self.lipat_rantai(&mut pra, &x, *situs, *urutan))
+                        .map(|h| Inst::Pilih { hasil: nv(*hasil), jika: h, ya: h, tidak: h }),
+                    Inst::Pembantu { pb: Pb::PayloadAngkaLokal, args, hasil: Some(st), keluar: Some(k), .. } => {
+                        let (Some(Arg::I64(l)), Some(Arg::I32(jk))) = (args.first(), args.get(2)) else { unreachable!("bentuk payload_angka_lokal") };
+                        let j = if *jk == 5 { Jenis::Pecahan } else { Jenis::Bulat };
+                        bayang_arg(self, *l as usize).and_then(|x| self.lipat_payload(&mut pra, &x, j)).map(|(s0, v)| {
+                            pra.push(Inst::Pilih { hasil: nv(*st), jika: s0, ya: s0, tidak: s0 });
+                            Inst::Pilih { hasil: nv(*k), jika: s0, ya: v, tidak: v }
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(x) = lipat { inst.append(&mut pra); inst.push(x); continue; }
                 inst.push(match i.clone() {
                     Inst::KonstI { hasil, nilai } => Inst::KonstI { hasil: nv(hasil), nilai },
                     Inst::KonstF { hasil, nilai } => Inst::KonstF { hasil: nv(hasil), nilai },
@@ -1230,8 +1355,8 @@ impl Pembangun<'_> {
                         }).collect();
                         Inst::Pembantu { pb, args, hasil: hasil.map(nv), gagal: gagal.map(|(u, j)| (u, jaga(&j))), keluar: keluar.map(nv) }
                     }
-                    Inst::Rantai { hasil, rantai, urutan, lokal, situs, jaga: j } =>
-                        Inst::Rantai { hasil: nv(hasil), rantai: rantai + rantai0, urutan, lokal: lokal + geser, situs, jaga: jaga(&j) },
+                    Inst::Rantai { hasil, rantai, urutan, lokal, situs, panggil, jaga: j } =>
+                        Inst::Rantai { hasil: nv(hasil), rantai: rantai + rantai0, urutan, lokal: lokal + geser, situs, panggil, jaga: jaga(&j) },
                     Inst::Rumus { rumus, lokal, args, tulis, hasil, jaga: j } => Inst::Rumus {
                         rumus: rumus + rumus0, lokal: lokal + geser, args: args.into_iter().map(|x| x.map(nv)).collect(), tulis,
                         hasil: hasil.map(nv), jaga: jaga(&j),

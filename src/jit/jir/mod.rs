@@ -152,8 +152,8 @@ pub enum Inst {
     Sebar { pos: usize, pulang: bool, jaga: Jaga },
     /// Lengan ke-`urutan` rantai `match` `rantai` atas lokal `lokal` (`turun::rantai_pola`): lengan pertama memanggil
     /// `lambat::pola_pilih` (alamat `situs`) dan menyimpan indeksnya di slot rantai; tiap lengan membandingkan indeksnya.
-    /// `hasil` = cocok tidaknya (0/1); galat pola lengan ini = deopt `jaga`.
-    Rantai { hasil: Nilai, rantai: usize, urutan: usize, lokal: usize, situs: i64, jaga: Jaga },
+    /// `hasil` = cocok tidaknya (0/1); galat = deopt `jaga`; `panggil` = memanggil sendiri (lengan awal dilipat).
+    Rantai { hasil: Nilai, rantai: usize, urutan: usize, lokal: usize, situs: i64, panggil: bool, jaga: Jaga },
     /// `l.m(..)` dengan `m` berumus (`Cara::UbahLokal`/`RumusLokal`, `Fungsi::rumus[rumus]`) atas lokal `lokal`:
     /// field dibaca dan diperiksa pembantu (gagal = deopt spekulasi `jaga`), rumusnya dihitung native dengan argumen
     /// `args` (pecahan, `None` = konstanta di rumusnya), lalu field ditulis (`tulis`) atau nilainya jadi `hasil`.

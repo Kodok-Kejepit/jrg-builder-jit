@@ -489,11 +489,11 @@ impl Penurun<'_, '_> {
                     self.tetapkan(*hn, v);
                 }
             }
-            Inst::Rantai { hasil, rantai, urutan, lokal, situs, jaga } => {
+            Inst::Rantai { hasil, rantai, urutan, lokal, situs, panggil, jaga } => {
                 let slot = *self.rantai_slot.entry(*rantai)
                     .or_insert_with(|| self.b.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 8, 3)));
                 // Lengan berikutnya cuma dicapai dari kegagalan lengan sebelumnya (`rantai_pola`): slotnya sudah terisi.
-                if *urutan == 0 {
+                if *urutan == 0 || *panggil {
                     let (l, sp) = (self.i64c(*lokal as i64), self.i64c(*situs));
                     let pilih = self.b.ins().call(self.lb.pola_pilih, &[l, sp]);
                     let c = self.b.inst_results(pilih)[0];

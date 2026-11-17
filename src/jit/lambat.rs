@@ -1010,6 +1010,13 @@ impl SitusPola {
             crate::vm::value::Label::Enum { nama, .. } if *nama as *const _ as usize != self.nama))
     }
 
+    /// `tolak` + `cocok` atas varian `nama` yang diketahui saat kompilasi (bayangan varian JIR), tanpa nilai:
+    /// hasilnya cuma bergantung pada nama varian dan jumlah isi payload-nya (`cocok_enum_bagian`).
+    pub fn cocok_statis(&self, nama: &'static crate::vm::value::NamaVarian, payload: Option<usize>) -> Result<bool, String> {
+        if self.nama != 0 && nama as *const _ as usize != self.nama { return Ok(false); }
+        crate::vm::cocok_enum_bagian(unsafe { &*self.desc }, &nama.tipe, &nama.varian, payload.map(|n| move || n))
+    }
+
     #[inline(always)]
     fn cocok(&self, v: &VmValue) -> Result<bool, String> {
         use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -1063,6 +1070,20 @@ impl RantaiPola {
     /// Hidup selama kode yang memakainya (kode JIT tidak pernah dibebaskan).
     pub fn bocor(situs: Vec<&'static SitusPola>) -> &'static RantaiPola {
         Box::leak(Box::new(RantaiPola { situs: situs.into_boxed_slice() }))
+    }
+}
+
+impl RantaiPola {
+    /// Jawaban `pola_pilih` atas varian yang diketahui saat kompilasi; `None` = ada lengan yang galat (VM yang melapor).
+    pub fn pilih_statis(&self, nama: &'static crate::vm::value::NamaVarian, payload: Option<usize>) -> Option<usize> {
+        for (k, situs) in self.situs.iter().enumerate() {
+            match situs.cocok_statis(nama, payload) {
+                Ok(true) => return Some(k),
+                Ok(false) => {}
+                Err(_) => return None,
+            }
+        }
+        Some(self.situs.len())
     }
 }
 

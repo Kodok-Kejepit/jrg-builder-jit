@@ -1581,39 +1581,39 @@ impl Vm {
 /// Pola enum `desc` (`(tipe, varian, berpayload, jumlah sub-pola)`) atas `v`; `Err` = kalimat galat
 /// sub-pola yang jumlahnya salah. Satu definisi untuk VM dan jalur lambat JIT.
 pub(crate) fn cocok_enum(v: &VmValue, desc: &VmValue) -> Result<bool, String> {
-    let cocok = match (desc, v.bagian_enum()) {
-        (VmValue::Tuple(d), Some((tipe, varian, payload))) => {
-            // Dibaca di tempat: deskriptornya konstanta chunk, payload-nya cuma dihitung.
-            let d = d.lock().unwrap_or_else(|p| p.into_inner());
-            // Varian lebih dulu: yang tidak cocok (kebanyakan lengan) selesai tanpa membanding tipenya.
-            if !matches!(&d[1], VmValue::Str(s) if s.as_str() == varian) { return Ok(false); }
-            let tipe_cocok = match &d[0] { VmValue::Str(t) => t.as_str() == tipe, _ => true };
-            let varian_cocok = true;
-            let payload_cocok = !matches!(d[2], VmValue::Bool(true)) || payload.is_some();
-            // Nama varian cocok tapi jumlah sub-polanya tidak:
-            // salah ketik, bukan "tidak cocok". Di sini, supaya
-            // waktu gagalnya sama dengan interpreter.
-            if tipe_cocok && varian_cocok {
-                if let Some(VmValue::Int(dapat)) = d.get(3) {
-                    let butuh = match payload {
-                        None => 0usize,
-                        Some(VmValue::Tuple(t)) => t.lock().unwrap_or_else(|p| p.into_inner()).len(),
-                        Some(_) => 1,
-                    };
-                    let dapat = *dapat as usize;
-                    if dapat != butuh && !(dapat == 1 && butuh > 1) {
-                        let nama = match (&d[0], &d[1]) {
-                            (VmValue::Str(t), VmValue::Str(x)) => format!("{}::{}", t, x),
-                            (_, VmValue::Str(x)) => x.to_string(),
-                            _ => varian.to_string(),
-                        };
-                        return Err(crate::interpreter::pesan_subpola_varian(&nama, butuh, dapat));
-                    }
-                }
+    match v.bagian_enum() {
+        Some((tipe, varian, payload)) => cocok_enum_bagian(desc, tipe, varian, payload.map(|p| move || match p {
+            VmValue::Tuple(t) => t.lock().unwrap_or_else(|p| p.into_inner()).len(),
+            _ => 1,
+        })),
+        None => Ok(false),
+    }
+}
+
+/// `cocok_enum` atas bagian nilainya: tipe, varian, dan jumlah isi payload (dihitung kalau perlu; `None` = tanpa
+/// payload). Satu definisi untuk VM dan pelipatan pola JIT atas varian yang diketahui (`SitusPola::cocok_statis`).
+pub(crate) fn cocok_enum_bagian(desc: &VmValue, tipe: &str, varian: &str, payload: Option<impl FnOnce() -> usize>) -> Result<bool, String> {
+    let VmValue::Tuple(d) = desc else { return Ok(false) };
+    // Dibaca di tempat: deskriptornya konstanta chunk. Varian lebih dulu: kebanyakan lengan selesai di sini.
+    let d = d.lock().unwrap_or_else(|p| p.into_inner());
+    if !matches!(&d[1], VmValue::Str(s) if s.as_str() == varian) { return Ok(false); }
+    let tipe_cocok = match &d[0] { VmValue::Str(t) => t.as_str() == tipe, _ => true };
+    let payload_cocok = !matches!(d[2], VmValue::Bool(true)) || payload.is_some();
+    // Nama varian cocok tapi jumlah sub-polanya tidak: salah ketik, bukan "tidak cocok". Di sini, supaya waktu
+    // gagalnya sama dengan interpreter.
+    if tipe_cocok {
+        if let Some(VmValue::Int(dapat)) = d.get(3) {
+            let butuh = payload.map_or(0, |f| f());
+            let dapat = *dapat as usize;
+            if dapat != butuh && !(dapat == 1 && butuh > 1) {
+                let nama = match (&d[0], &d[1]) {
+                    (VmValue::Str(t), VmValue::Str(x)) => format!("{}::{}", t, x),
+                    (_, VmValue::Str(x)) => x.to_string(),
+                    _ => varian.to_string(),
+                };
+                return Err(crate::interpreter::pesan_subpola_varian(&nama, butuh, dapat));
             }
-            tipe_cocok && varian_cocok && payload_cocok
         }
-        _ => false,
-    };
-    Ok(cocok)
+    }
+    Ok(tipe_cocok && payload_cocok)
 }
