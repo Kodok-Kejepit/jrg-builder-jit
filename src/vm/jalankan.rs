@@ -1575,14 +1575,14 @@ impl Vm {
     }
 }
 
-/// Pola enum `desc` (`(tipe, varian, berpayload, jumlah sub-pola)`) atas `v`; `Err` = kalimat galat
-/// sub-pola yang jumlahnya salah. Satu definisi untuk VM dan jalur lambat JIT.
 /// `?` atas varian `varian` di fungsi beranotasi keluarga `keluarga` (arg `Propagate`: 0 bebas, 1 `Option`,
 /// 2 `Result`) yang meneruskan keluarga lain — `None` dari `-> Result`, `Err` dari `-> Option`.
 pub(crate) fn sebar_lintas_keluarga(keluarga: u32, varian: &str) -> bool {
     (keluarga == 1 && varian == "Err") || (keluarga == 2 && varian == "None")
 }
 
+/// Pola enum `desc` (`(tipe, varian, berpayload, jumlah sub-pola)`) atas `v`; `Err` = kalimat galat
+/// sub-pola yang jumlahnya salah. Satu definisi untuk VM dan jalur lambat JIT.
 pub(crate) fn cocok_enum(v: &VmValue, desc: &VmValue) -> Result<bool, String> {
     match v.bagian_enum() {
         Some((tipe, varian, payload)) => cocok_enum_bagian(desc, tipe, varian, payload.map(|p| move || match p {
