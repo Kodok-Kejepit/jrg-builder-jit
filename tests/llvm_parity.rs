@@ -853,9 +853,6 @@ const BELUM_DIDUKUNG_LLVM: &[(&str, &str, &str)] = &[
     ("potong: array di dalam nilai bertag",
      "package main\npub fn main() { let v = len(env::args()) > 99 $ 5 : [1, 2, 3]\n wok(v[0:2]) }",
      "di dalam nilai bertag belum didukung backend LLVM"),
-    // Fase POTONG: tipe hasil `t[a:b]` bergantung pada batasnya.
-    ("potong: tuple berbatas variabel", "package main\npub fn main() { let t = (1, 2, 3)\n let i = 1\n wok(t[i:]) }",
-     "batas potongan tuple di backend LLVM harus angka yang sudah pasti saat kompilasi"),
     // Fase SEBAR-TIPE: dua mesin lain menyimpan `2` di field `string`; di LLVM tipe field tetap.
     ("sebar membawa field berjenis lain dari sasarannya",
      "package main\nstruct A { pub x: int, pub y: string }\nstruct B { pub x: int, pub y: int }\npub fn main() { let b = B { x: 1, y: 2 }\n let a = A { x: 5, ...b }\n wok(a.y) }",
@@ -926,11 +923,13 @@ const BELUM_DIDUKUNG_LLVM: &[(&str, &str, &str)] = &[
     ("literal tidak muat di anotasinya", "package main\npub fn main() { let x: u8 = 300\n wok(x) }",
      "tidak muat di `u8`"),
     // Tahap 5: dulu DIVERGENSI — LLVM mengarang `D {x: 0}`, `Some(0)`, varian pertama.
-    ("var struct tanpa nilai awal", "package main\nstruct D { x: int = 5 }\npub fn main() { var a: D\n wok(a) }",
+    // 2026-11-18: dibaca SEBELUM diisi kini ditolak acuan juga (`DITOLAK_INTERP_DAN_LLVM`); yang tersisa di sini
+    // bentuk sah: diisi dulu, baru dibaca — LLVM masih menolak deklarasinya.
+    ("var struct tanpa nilai awal, diisi lalu dibaca", "package main\nstruct D { x: int = 5 }\npub fn main() { var a: D\n a = D {}\n wok(a) }",
      "tidak punya nilai nol"),
-    ("var Option tanpa nilai awal", "package main\npub fn main() { var a: Option<int>\n wok(a) }",
+    ("var Option tanpa nilai awal, diisi lalu dibaca", "package main\npub fn main() { var a: Option<int>\n a = Some(2)\n wok(a) }",
      "tidak punya nilai nol"),
-    ("var enum tanpa nilai awal", "package main\nenum Warna { Merah, Hijau }\npub fn main() { var a: Warna\n wok(a) }",
+    ("var enum tanpa nilai awal, diisi lalu dibaca", "package main\nenum Warna { Merah, Hijau }\npub fn main() { var a: Warna\n a = Warna::Hijau\n wok(a) }",
      "tidak punya nilai nol"),
     // "extern C: fungsi sebagai argumen" (sampai Fase FUNGSI-JEMBATAN) dan
     // "urutan pada array" (sampai Fase UMUM) dulu di sini.
@@ -977,6 +976,13 @@ pub fn main() {
 
 /// `(nama, program, kata-kunci-interpreter, kata-kunci-llvm)`
 const DITOLAK_INTERP_DAN_LLVM: &[(&str, &str, &str, &str)] = &[
+    // 2026-11-18 (surat Bayu–Agus): `var x: T` tanpa nilai nol yang dibaca sebelum diisi — acuan dulu `nil`.
+    ("var struct dibaca sebelum diisi", "package main\nstruct D { x: int = 5 }\npub fn main() { var a: D\n wok(a) }",
+     "`a` dibaca sebelum diisi", "tidak punya nilai nol"),
+    ("var Option dibaca sebelum diisi", "package main\npub fn main() { var a: Option<int>\n wok(a) }",
+     "`a` dibaca sebelum diisi", "tidak punya nilai nol"),
+    ("var enum dibaca sebelum diisi, lewat closure", "package main\nenum Warna { Merah, Hijau }\npub fn main() { var a: Warna\n let f = || a\n wok(f()) }",
+     "`a` dibaca sebelum diisi", "tidak punya nilai nol"),
     // Audit `Result`/`?` 2026-11-18: `?` yang mengubah keluarga kembalian yang DITULIS — acuan saat jalan (dulu
     // diam-diam `None` dari fungsi `-> Result`), LLVM saat kompilasi, satu kalimat (`pesan_sebar_keluarga`).
     ("? atas Option di fungsi -> Result", "package main\nfn f(o: Option<int>) -> Result<int, string> { let v = o?; Ok(v) }\npub fn main() { wok(f(None)) }",

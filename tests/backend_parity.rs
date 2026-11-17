@@ -175,6 +175,19 @@ fn konformans_semantik_nilai_jalan_di_dua_backend() {
 
 /// Program yang WAJIB ditolak oleh KEDUA backend, dengan alasan yang sama.
 const DITOLAK_DUA_BACKEND: &[(&str, &str, &str, &str)] = &[
+    // 2026-11-18 (surat Bayu–Agus): `var x: T` tanpa nilai nol yang dibaca sebelum diisi gagal saat jalan di dua
+    // mesin (dulu `nil` diam-diam), juga lewat closure, `var` modul dan sesudah cabang yang tidak mengisinya.
+    ("var struct dibaca sebelum diisi", "package main\nstruct D { x: int = 5 }\npub fn main() { var a: D\n wok(a) }", "`a` dibaca sebelum diisi", "`a` dibaca sebelum diisi"),
+    ("var Option dibaca sebelum diisi", "package main\npub fn main() { var a: Option<int>\n wok(\"awal\")\n wok(a) }", "`a` dibaca sebelum diisi", "`a` dibaca sebelum diisi"),
+    ("var enum dibaca sebelum diisi, lewat closure", "package main\nenum Warna { Merah, Hijau }\npub fn main() { var a: Warna\n let f = || a\n wok(f()) }", "`a` dibaca sebelum diisi", "`a` dibaca sebelum diisi"),
+    ("var modul dibaca sebelum diisi", "package main\nstruct D { pub x: int }\nvar G: D\nfn baca() -> int { return G.x }\npub fn main() { wok(baca()) }", "`G` dibaca sebelum diisi", "`G` dibaca sebelum diisi"),
+    ("var dibaca sesudah cabang yang tidak mengisinya", "package main\nstruct D { pub x: int }\npub fn main() { var d: D\n if len(\"ab\") > 5 { d = D { x: 1 } }\n wok(d.x) }", "`d` dibaca sebelum diisi", "`d` dibaca sebelum diisi"),
+    // Parser pintar 2026-11-18: bentuk dari bahasa lain dijawab padanannya (`antrean-fase.md` "Parser pintar").
+    ("parser: elif", "var x = 2\nif x == 1 {\n wok(1)\n} elif x == 2 {\n wok(2)\n}\n", "JRG tidak punya `elif`", "JRG tidak punya `elif`"),
+    ("parser: def gaya Python", "def tambah(a, b):\n    return a + b\n", "fungsi di JRG ditulis `fn nama(a, b)", "fungsi di JRG ditulis `fn nama(a, b)"),
+    ("parser: for gaya C", "for (var i = 0; i < 3; i += 1) { wok(i) }\nwok(\"sesudah\")\n", "`for (awal; syarat; langkah)` gaya C bukan bentuk JRG", "`for (awal; syarat; langkah)` gaya C bukan bentuk JRG"),
+    ("parser: ternary gaya C", "let x = 1\nlet y = x > 0 ? 2 : 3\nwok(y)\n", "ternary di JRG ditulis `syarat $ a : b`", "ternary di JRG ditulis `syarat $ a : b`"),
+    ("parser: = di kurung kepala if", "var x = 1\nif (x = 5) { wok(x) }\n", "`=` itu MENUGASKAN nilai, bukan membandingkan", "`=` itu MENUGASKAN nilai, bukan membandingkan"),
     // Audit `Result`/`?` 2026-11-18: `?` yang mengubah keluarga kembalian yang DITULIS gagal saat jalan di dua mesin
     // (dulu diam-diam `None` dari fungsi `-> Result`), satu kalimat (`pesan_sebar_keluarga`), juga lewat JIT.
     ("? atas Option di fungsi -> Result", "fn f(o: Option<int>) -> Result<int, string> { let v = o?; Ok(v) }\nwok(f(Some(1)))\nwok(f(None))\n", "`?` pada Option butuh fungsi ini mengembalikan `Option<..>` juga", "`?` pada Option butuh fungsi ini mengembalikan `Option<..>` juga"),
@@ -9872,4 +9885,19 @@ const PRELUDE_OPSI_BELUM_DI_VM: bool = false;
 fn prelude_belum_di_vm(ekspr: &str, nama: &str, ada_i: bool, ada_v: bool) -> bool {
     let tipe = if ekspr.starts_with("Option::") { "Option" } else if ekspr.starts_with("Result::") { "Result" } else { return false };
     PRELUDE_OPSI_BELUM_DI_VM && ada_i && !ada_v && jrgc::opsi::nama_fungsi(tipe, nama).is_some()
+}
+
+/// Satu salah tulis dari bahasa lain = SATU galat: bentuknya dilompati utuh, tidak berantai (parser pintar).
+#[test]
+fn bentuk_asing_jadi_satu_galat() {
+    let kasus = [
+        "pub fn main() {\n    for (var i = 0; i < 3; i += 1) {\n        wok(i)\n    }\n    wok(\"x\")\n}\n",
+        "pub fn main() {\n    var x = 2\n    if x == 1 {\n        wok(1)\n    } elif x == 2 {\n        wok(2)\n    }\n}\n",
+    ];
+    for src in kasus {
+        let src = format!("package main\n{}", src);
+        let k = jalankan_keluaran_penuh(&src, false);
+        let n = k.matches("error[").count();
+        assert_eq!(n, 1, "satu salah tulis harus satu galat, dapat {}:\n{}", n, k);
+    }
 }

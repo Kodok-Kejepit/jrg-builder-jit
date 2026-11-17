@@ -1,6 +1,18 @@
 // Tabel bersama `tests/llvm_parity.rs` dan `tests/jit_parity.rs`; disisipkan lewat `include!`.
 
 const PARITAS_LLVM: &[(&str, &str)] = &[
+    // Telaah BELUM_DIDUKUNG_LLVM K4 (2026-11-18): `t[a:b]` berbatas variabel, hasilnya bertag — dulu ditolak saat kompilasi.
+    ("potong tuple berbatas variabel, juga negatif, kosong dan campur tipe", r#"package main
+pub fn main() {
+    let t = (1, "dua", 3.5, true)
+    for i in 0..5 { wok(t[i:]) }
+    var a = 1
+    var b = -1
+    wok(t[a:b], t[:a], t[b:], t[a:a], typeof(t[a:b]))
+    let u = (7, 8)
+    wok(u[a:] == (8,), u[0:a] == (7,))
+}
+"#),
     // Method `Option`/`Result` dari prelude JRG (`src/opsi.jrg`), dilayani interpreter, `--vm`, `--jit` dan LLVM.
     ("prelude Option: cadangan, ganti, gabung", r#"package main
 fn dua() -> Option<int> { Some(2) }
