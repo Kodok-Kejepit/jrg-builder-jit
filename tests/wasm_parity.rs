@@ -114,7 +114,8 @@ fn builtin_jembatan_ditolak_keras_lewat_wasm() {
 }
 
 /// Stack: larik lokal besar (stack bayangan wasm 8 MiB, bawaan `wasm-ld` 64 KiB meluap) dan rekursi 20 ribu tingkat
-/// (`node --stack-size=3000`; CI memakai node 24, node bawaan image keluar 1 tanpa keluaran).
+/// (`node --stack-size=3000`). Dibandingkan dengan jawaban tertulis, bukan interpreter: di runner CI interpreter
+/// sendiri menolak 20 ribu tingkat (penjaga stack-nya), dan itu dulu terbaca sebagai kegagalan wasm.
 const STACK_DALAM: &str = r#"fn dalam(n: int) -> int {
     if n == 0 { return 0 }
     return 1 + dalam(n - 1)
@@ -131,42 +132,7 @@ fn main() {
 fn stack_dalam_lewat_wasm() {
     let kerja = folder("stack");
     let p = tulis(&kerja, "stack.jrg", STACK_DALAM);
-    let acuan = jalan(&[p.to_str().unwrap()], &kerja);
-    let Some(mut w) = wasm(&p, &kerja) else { return };
-    // Di runner CI jalan PERTAMA kadang keluar 1 tanpa keluaran apa pun, lalu pemanggilan yang persis sama lulus
-    // (diagnosa 2026-11-17); sebabnya belum ketemu (`dokumentasi/wasm/rencana.md`), jadi diulang sekali dan dicetak.
-    if w.kode != 0 && w.stdout.is_empty() && w.stderr.is_empty() {
-        eprintln!("ULANG stack_dalam_lewat_wasm: jalan pertama keluar {} tanpa keluaran", w.kode);
-        w = wasm(&p, &kerja).expect("alat ada di jalan pertama");
-    }
-    let diag = if (acuan.kode, &acuan.stdout) != (w.kode, &w.stdout) { diagnosa_stack(&kerja) } else { String::new() };
+    let Some(w) = wasm(&p, &kerja) else { return };
     let _ = std::fs::remove_dir_all(&kerja);
-    assert_eq!((acuan.kode, acuan.stdout.as_str()), (w.kode, w.stdout.as_str()), "{}\n{}", w.stderr, diag);
-}
-
-/// Cuma saat gagal: node langsung (tanpa jrgc) di beberapa kedalaman, plus lingkungan, supaya kegagalan yang cuma
-/// muncul di runner CI terbaca dari lognya.
-fn diagnosa_stack(kerja: &Path) -> String {
-    let sh = |c: &str| Command::new("sh").arg("-c").arg(c).current_dir(kerja).output()
-        .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))).unwrap_or_default();
-    let mut d = sh("echo \"ulimit -s $(ulimit -s), node $(node --version), $(uname -srm), PATH node: $(command -v node)\"");
-    let sumber = kerja.join("stack.jrg");
-    for ulang in 1..=2 {
-        let h = jalan(&[sumber.to_str().unwrap(), "--emit-wasm", "-o", kerja.join("stack.wasm").to_str().unwrap()], kerja);
-        d += &format!("ulang {ulang} persis seperti tes: rc {} stdout {:?} stderr {} byte {:?}\n", h.kode, h.stdout,
-            h.stderr.len(), h.stderr.chars().rev().take(200).collect::<String>().chars().rev().collect::<String>());
-    }
-    d += &sh("ls; for ss in '' --stack-size=3000; do node --no-warnings $ss stack.wasm.mjs > o.txt 2>&1; rc=$?; \\
-        echo \"stack.wasm langsung $ss: $(tail -c 300 o.txt | tr '\\n' ' ') [rc $rc]\"; done");
-    d += &sh(&format!("{} stack.jrg --emit-wasm -o s2.wasm > o.txt 2>&1; rc=$?; echo \"lewat jrgc: $(tail -c 300 o.txt | tr '\\n' ' ') [rc $rc]\"", jrgc()));
-    for n in [1000, 5000, 10000, 15000, 20000] {
-        let isi = format!("fn dalam(n: int) -> int {{\n    if n == 0 {{ return 0 }}\n    return 1 + dalam(n - 1)\n}}\nfn main() {{\n    wok(dalam({n}))\n}}\n");
-        let p = tulis(kerja, &format!("r{n}.jrg"), &isi);
-        let _ = jalan(&[p.to_str().unwrap(), "--emit-wasm", "-o", &format!("r{n}.wasm"), "--no-run"], kerja);
-        for ss in ["", "--stack-size=3000"] {
-            let o = sh(&format!("node --no-warnings {ss} r{n}.wasm.mjs > o.txt 2>&1; rc=$?; tail -c 300 o.txt; echo \"[rc $rc]\""));
-            d += &format!("kedalaman {n} {ss}: {}\n", o.replace('\n', " ").trim_end());
-        }
-    }
-    d
+    assert_eq!((w.kode, w.stdout.as_str()), (0, "false 20000\n"), "{}", w.stderr);
 }
