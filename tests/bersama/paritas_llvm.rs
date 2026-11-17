@@ -1,6 +1,21 @@
 // Tabel bersama `tests/llvm_parity.rs` dan `tests/jit_parity.rs`; disisipkan lewat `include!`.
 
 const PARITAS_LLVM: &[(&str, &str)] = &[
+    // Ukuran enum = tipe yang dipancarkan (`{ i32, [n x i64] }`), bukan perataan muatannya: `Option<bool>`/`Option<i32>`
+    // dulu terhitung 8 byte padahal 16, jadi larik yang tumbuh menjawab nilai salah dan `<?>` dengan kode 0; di wasm32
+    // kotak `Option<P>` di dalam tuple ditulis melewati tempatnya dan tampilannya berulang sampai stack habis.
+    ("enum bermuatan kecil di larik dan kotak", r#"struct N { pub x: (bool, Option<N>) }
+fn main() {
+    var a = [Some(true), Some(false)]
+    for i in 0..5 { a = arr::push(a, Some(i % 2 == 0)) }
+    wok(a)
+    let n = N { x: (true, Some(N { x: (false, None) })) }
+    wok(n)
+    var b: []Option<i32> = []
+    for i in 0..4 { b = arr::push(b, Some(i as i32)) }
+    wok(b)
+}
+"#),
     // `str::join` atas larik bukan teks jalan seperti `arr::join` (dulu ditolak LLVM saat kompilasi: literal `[1, 2]`
     // dipaksa ke `[]string` sebelum sampai ke jalur lapis); larik kosong tetap bertipe teks.
     ("str::join atas larik bukan teks", r#"package main
@@ -4729,4 +4744,76 @@ pub fn main() {
      "fn cek(v) { if let Some(n) = v { return n } else { return 0 } }\nfn bagian(x) { match x { Some(a) | Ok(a) => a, n @ Some(_) => 1, _ => 9 } }\npub fn main() {\n  let d = {\"a\": 2}\n  wok(match d { Some(n) => n, _ => -1 })\n  let x = 5\n  wok(match x { Some(n) => n, Ok(k) => k, _ => -2 })\n  wok(match \"t\" { Some(n) => n + \"!\", _ => \"lain\" })\n  wok(match [1] { None => \"kosong\", _ => \"isi\" })\n  wok(cek(\"t\"), cek(3), bagian([1]))\n}\n"),
     ("json::keys/values/has/get atas struct membaca field-nya",
      "struct P { pub z: int, pub a: int, pub m: string = \"s\" }\npub fn main() {\n  let p = P { z: 1, a: 2 }\n  wok(json::keys(p), json::keys({\"b\": 1, \"a\": 2}))\n  wok(json::values(p), json::has(p, \"a\"), json::has(p, \"q\"), json::get(p, \"z\"), json::get(p, \"q\"))\n}\n"),
+    // Antrean B butir 4: `let b = a` atas lokal polos berbagi penyangga sampai salah satunya menulis — tiap bentuk
+    // tulis (indeks, `+=`, tumbuh, push, pop berbagi, `:=`, rantai, saling tukar) memisahkan dulu.
+    ("salin-saat-tulis lokal: tulisan lewat nama mana pun tidak terlihat nama lain", r#"package main
+fn ubah(x: []int) -> []int {
+    var y = x
+    y[0] = 100
+    return y
+}
+pub fn main() {
+    var a = [1, 2, 3]
+    var b = a
+    b[0] = 9
+    wok(a, b)
+    let c = a
+    a += [4]
+    wok(a, c)
+    var d = c
+    d = d + [5]
+    wok(c, d)
+    e := a
+    e[1] = 7
+    wok(a, e)
+    var f = a
+    f = arr::push(f, 6)
+    wok(a, f)
+    var g = a
+    let r = arr::pop(g)
+    g = r[0]
+    g += [8, 8]
+    wok(a, g)
+    var h = a
+    for i in 0..3 { h[i] = h[i] * 2 }
+    wok(a, h)
+    wok(ubah(a), a)
+    var k = a
+    var m = k
+    k = [0]
+    m[0] = -1
+    wok(a, k, m)
+    var p = a
+    a = p
+    p[0] = 55
+    wok(a, p)
+}
+"#),
+    ("tangkap: galat saat jalan jadi Err(Galat)", r#"package main
+fn dalam(n: int) -> int {
+    defer wok("defer dalam jalan")
+    let a = [1, 2]
+    return a[n]
+}
+fn bagi(a: int, b: int) -> int { return a / b }
+pub fn main() {
+    wok(tangkap(|| dalam(1)))
+    match tangkap(|| dalam(5)) {
+        Ok(v) => wok("tidak mungkin", v),
+        Err(g) => wok(g.pesan, str::ends_with(g.berkas, ".jrg"), g.baris, g.kolom),
+    }
+    match tangkap(|| panik("sengaja")) { Err(g) => wok(g.pesan, g.baris, g.kolom), Ok(_) => wok("?") }
+    match tangkap(|| { let d = {"a": 1}
+        d["b"] }) { Err(g) => wok(g.baris, g.pesan), Ok(_) => wok("?") }
+    match tangkap(|| bagi(1, 0)) { Err(g) => wok(g.baris), Ok(_) => wok("?") }
+    var n = 0
+    let r = tangkap(|| { n = 5
+        panik("x") })
+    wok(n, r.is_err())
+    match tangkap(|| tangkap(|| panik("dalam"))) { Ok(Err(g)) => wok("bersarang:", g.pesan), _ => wok("?") }
+    match tangkap(|| 40 + 2) { Ok(x) => wok(x), Err(_) => wok("?") }
+    let p = tangkap(|| assert_eq(1, 2))
+    wok(p.is_err(), typeof(p))
+}
+"#),
 ];

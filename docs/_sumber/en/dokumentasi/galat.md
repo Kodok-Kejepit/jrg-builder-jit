@@ -89,7 +89,7 @@ pub fn main() -> Result<int, string> {
 }
 ```
 ```keluaran
-error: program berhenti karena `Result::Err` merambat keluar dari `main`: config file not found — tangani dengan `match` di dalam `main`, atau pakai `.unwrap_or(...)`, kalau kegagalan ini memang boleh terjadi
+error: the program stopped because `Result::Err` propagated out of `main`: config file not found — handle it with `match` inside `main`, or use `.unwrap_or(...)`, if this failure is allowed to happen
 ```
 
 ## Stopping a program
@@ -116,11 +116,37 @@ error: age cannot be negative
 3 |         panik("age cannot be negative")
   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   |
-  = jejak: `valid_age` dipanggil di panic.jrg:9:5
+  = trace: `valid_age` called at panic.jrg:9:5
 ```
 
-The `jejak:` (trace) line shows where the function was called from. `exit(code)` ends the program with an exit code
+The `trace:` line shows where the function was called from. `exit(code)` ends the program with an exit code
 0–255 and no message.
+
+## Catching an error
+
+`tangkap(f)` runs a function that takes no arguments and answers a `Result`: `Ok` with its value, or `Err` with a
+`Galat` when an error happens while it runs. The fields are `pesan` (the sentence, in the message language),
+`berkas`, `baris` and `kolom` (where it happened). `defer` inside `f` still runs first.
+
+```jrg catch.jrg
+fn divide(a, b) {
+    return a / b
+}
+
+match tangkap(|| divide(10, 0)) {
+    Ok(v) => wok("result:", v),
+    Err(g) => wok("failed at line", g.baris, "-", g.pesan),
+}
+wok("still running")
+```
+```keluaran
+failed at line 2 - `10 / 0` — cannot divide by zero, the result is never defined. Check the divisor before dividing
+still running
+```
+
+Every error is caught, including a stack that runs out, except `exit()`, which ends the program on purpose, and
+running out of memory. Nothing is rolled back: what `f` changed before the error stays changed. `panik(g)` raises a
+caught `Galat` again, with a note saying where it first happened.
 
 ## Checking assumptions
 
@@ -133,7 +159,7 @@ assert_eq([1, 2], [1, 2])
 assert_eq(2 + 2, "4")
 ```
 ```keluaran
-error: assert_eq gagal — kiri `4` (int), kanan `4` (string)
+error: assert_eq failed — left `4` (int), right `4` (string)
  --> assert.jrg:3:1
   |
 3 | assert_eq(2 + 2, "4")

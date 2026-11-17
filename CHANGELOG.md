@@ -8,6 +8,11 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
 
 ### Memutus
 
+- **Pesan JRG tampil dalam bahasa Inggris secara bawaan** (galat, peringatan, laporan uji, REPL, `jrgm`, `--help`).
+  Bahasa Indonesia tetap ada: `jrgm language id` (untuk semua jalan berikutnya), `jrgc --bahasa id`, atau
+  `JRG_BAHASA=id`. Keluaran program tidak berubah; skrip yang membandingkan teks galat perlu memasang bahasanya.
+  Biner `--emit-llvm` memilih bahasa galatnya sendiri saat jalan dengan aturan yang sama, dan `jrgm new` menulis
+  kerangka proyek dalam bahasa pesan.
 - **`proses::jalankan` dan `proses::keluaran` menghentikan program yang keluarannya melewati 256 MiB** dan menjawab
   `Err` (dulu `jrgc` mati kehabisan memori); penampung `proses::mulai` yang penuh menunggu dibaca.
 - **`jrgm new` menolak folder yang sudah ada** (dulu `src/main.jrg` di dalamnya ditimpa templat) **dan nama di luar
@@ -21,6 +26,10 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
   yang tidak sah atau berbeda-beda; byte sesudah badan dibuang. HTTPS menuntut paling sedikit TLS 1.2.
 
 ### Baru
+
+- **`tangkap(f)` menangkap galat saat jalan** di tiga mesin: `Ok(nilai)`, atau `Err(Galat)` berisi `pesan`, `berkas`,
+  `baris`, `kolom`. Semua galat ditangkap (juga stack habis) kecuali `exit()` dan memori habis; `defer` jalan dulu;
+  `panik(g)` melempar ulang dengan tempat asalnya.
 
 - **Pembaca berkas bertahap `fs::open`, `fs::read_line`, `fs::read_chunk`, `fs::close`**: untuk berkas di atas 256 MiB
   yang ditolak `fs::read`.
@@ -36,6 +45,9 @@ mungkin terjadi; semuanya dicatat di bagian **Memutus**.
   situs.
 
 ### Kinerja
+
+- **`var b = a` di biner `--emit-llvm` tidak lagi menyalin array**: dua nama berbagi isinya sampai salah satunya
+  menulis (16 ribu salinan 16 ribu elemen: 1,2 detik dan 1,9 GB, sekarang 4 ms).
 
 - **`--emit-llvm`: `match` atas bilangan bulat berlengan literal dan rentang jadi satu lompatan bertabel**, bukan
   perbandingan berurutan — `match_dispatch` 710 → 580 ms, setara C.

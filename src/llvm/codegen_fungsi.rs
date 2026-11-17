@@ -61,6 +61,8 @@ impl Codegen {
             _ => std::collections::HashSet::new(),
         };
         let tangkap_lama = std::mem::replace(&mut self.tangkapan, tangkap);
+        let bagi_lama = std::mem::replace(&mut self.calon_bagi, crate::interpreter::capture::calon_bagi(&decl.body));
+        let milik_lama = std::mem::take(&mut self.milik_lokal);
         let ditangkap = match &*decl.body {
             FnBody::Block(b) => crate::interpreter::capture::ditangkap_closure_blok(b),
             _ => std::collections::HashSet::new(),
@@ -212,6 +214,10 @@ impl Codegen {
         if self.is_main_fn {
             self.ensure_extern("declare void @jrg_situs_pasang(ptr, ptr, ptr) nounwind", "jrg_situs_pasang");
             self.emit("call void @jrg_situs_pasang(ptr @jrg_situs_isi, ptr @jrg_situs_n, ptr @jrg_situs_teks)".to_string());
+            self.ensure_extern("declare void @jrg_terjemah_pasang(ptr, i64) nounwind", "jrg_terjemah_pasang");
+            let n = self.fresh("terjemah.n.");
+            self.emit(format!("{} = load i64, ptr @jrg_terjemah_n", n));
+            self.emit(format!("call void @jrg_terjemah_pasang(ptr @jrg_terjemah_teks, i64 {})", n));
         }
 
         if self.is_main_fn && self.options.full_buffered_stdout {
@@ -274,6 +280,8 @@ impl Codegen {
         self.lokal_tumbuh = tumbuh_lama;
         self.tangkapan = tangkap_lama;
         self.ditangkap_closure = ditangkap_lama;
+        self.calon_bagi = bagi_lama;
+        self.milik_lokal = milik_lama;
         self.fn_bersarang = sarang_lama;
         self.ret_ditebak = ditebak_lama;
         self.tipe_argumen = arg_lama;

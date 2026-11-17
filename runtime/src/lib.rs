@@ -185,6 +185,11 @@ const PESAN_MEMORI_HABIS: &str = "memori habis — program ini meminta lebih ban
         bantuan: biner `--emit-llvm` tidak membebaskan salinan lama, jadi menyalin koleksi besar \
         berulang-ulang menghabiskan memori; pakai bentuk yang mengubah di tempat \
         (`a += [x]`, `q = q.push(x)`, `q = q.rest()`), atau jalankan tanpa `--emit-llvm`";
+/// Padanan Inggris yang dicetak saat cadangan pun habis (tanpa alokasi); sama dengan tabel `jrgc` (dijaga tes).
+const PESAN_MEMORI_HABIS_EN: &str = "out of memory — this program asks for more memory than is available\n  \
+        help: an `--emit-llvm` binary does not free old copies, so copying a large collection over and over \
+        uses up memory; use the forms that change in place \
+        (`a += [x]`, `q = q.push(x)`, `q = q.rest()`), or run without `--emit-llvm`";
 
 /// Kalau `ptr..ptr+len` berakhir PERSIS di kursor arena, perpanjang kursornya
 /// sebanyak `tambahan` byte dan kembalikan `true`.
@@ -294,11 +299,12 @@ fn panic_handler(_info: &core::panic::PanicInfo) -> ! {
     // Cadangannya pun habis saat melapor: kalimatnya ditulis apa adanya, tanpa lokasi.
     if unsafe { CADANGAN_TERPAKAI } {
         write_all(FD_STDERR, b"error: ");
-        write_all(FD_STDERR, PESAN_MEMORI_HABIS.as_bytes());
+        let pesan = if bahasa::inggris() { PESAN_MEMORI_HABIS_EN } else { PESAN_MEMORI_HABIS };
+        write_all(FD_STDERR, pesan.as_bytes());
         write_all(FD_STDERR, b"\n");
         unsafe { exit(PANIC_EXIT_CODE) }
     }
-    write_all(FD_STDERR, b"ada yang gagal saat program jalan\n");
+    write_all(FD_STDERR, bahasa::pilih("ada yang gagal saat program jalan\n", "something failed while the program was running\n").as_bytes());
     unsafe { exit(PANIC_EXIT_CODE) }
 }
 
@@ -582,7 +588,7 @@ pub unsafe extern "C" fn jrg_situs_pasang(isi: *const [u32; 3], n: *const i32, t
 fn bentuk_galat(s: &str, situs: i32) -> String {
     let mut baris = s.lines();
     let mut out = String::from("error: ");
-    out.push_str(baris.next().unwrap_or(""));
+    out.push_str(&bahasa::t(baris.next().unwrap_or("")));
     let mut gutter = 2usize;
     let (isi, n, teks) = unsafe { SITUS };
     if situs > 0 && situs <= n && !isi.is_null() {
@@ -602,9 +608,9 @@ fn bentuk_galat(s: &str, situs: i32) -> String {
         out.push('\n');
         for _ in 0..gutter { out.push(' '); }
         out.push_str("= ");
-        out.push_str(jenis);
+        out.push_str(if jenis == "bantuan" { bahasa::pilih("bantuan", "help") } else { bahasa::pilih("catatan", "note") });
         out.push_str(": ");
-        out.push_str(isi);
+        out.push_str(&bahasa::t(isi));
     }
     out
 }
@@ -643,6 +649,7 @@ fn mati() -> ! {
     let situs = core::mem::replace(&mut p.situs, 0);
     // Goroutine `spawn` yang gagal cuma menghentikan dirinya; stack yang habis tidak bisa.
     if unsafe { !TAK_GUGUR && jrg_ko_gugur(1) != 0 } {
+        let mut s = bahasa::t(&s);
         s.push('\n');
         write_all(FD_STDERR, b"goroutine error: ");
         write_all(FD_STDERR, s.as_bytes());
@@ -1305,7 +1312,7 @@ pub unsafe extern "C" fn jrg_uji_lapor(rc: i32, pp: *const u8, pl: i64, okp: *co
     let uji = &mut *core::ptr::addr_of_mut!(UJI);
     if rc == 0 {
         uji.0 += 1;
-        write_out(&format!("{}\n", borrow_str(okp, okl)), 0);
+        write_out(&format!("{}\n", bahasa::t(borrow_str(okp, okl))), 0);
         return;
     }
     uji.1 += 1;
@@ -1314,7 +1321,41 @@ pub unsafe extern "C" fn jrg_uji_lapor(rc: i32, pp: *const u8, pl: i64, okp: *co
     let sebab = pesan.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
     let b = if situs > 0 && situs <= *n { *baris.add((situs - 1) as usize) } else { 0 };
     let t = if b > 0 { borrow_str(gbp, gbl).replacen('\u{2}', &b.to_string(), 1) } else { borrow_str(gp, gl).to_string() };
-    write_out(&format!("{}\n", t.replacen('\u{1}', sebab, 1)), 0);
+    write_out(&format!("{}\n", bahasa::t(&t.replacen('\u{1}', sebab, 1))), 0);
+}
+
+/// `Galat` milik `tangkap` di IR (`codegen_korutin::daftar_galat`): field urut abjad.
+#[repr(C)]
+pub struct TeksMentah { p: *const u8, n: i64 }
+#[repr(C)]
+pub struct GalatTangkap { baris: i64, berkas: TeksMentah, kolom: i64, pesan: TeksMentah }
+
+/// Isi `Galat` dari galat badan `tangkap`: kalimat pertamanya dalam bahasa pesan, lokasinya dari blok situs yang
+/// dirender `jrgc` (`--> berkas:baris:kolom`), `""`/0/0 kalau tidak ada — aturan `interpreter::tangkap::rekam`.
+#[no_mangle]
+pub unsafe extern "C" fn jrg_tangkap_rekam(p: *const u8, n: i64, out: *mut GalatTangkap) {
+    let situs = core::mem::replace(&mut (*core::ptr::addr_of_mut!(PANIK)).situs, 0);
+    let pesan = borrow_str(p, n);
+    let kalimat = pesan.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let (mut berkas, mut baris, mut kolom) = (String::new(), 0i64, 0i64);
+    let (isi, jml, teks) = SITUS;
+    if situs > 0 && situs <= jml && !isi.is_null() {
+        let [awal, panjang, _] = *isi.add((situs - 1) as usize);
+        let b = core::slice::from_raw_parts(teks.add(awal as usize), panjang as usize);
+        let blok = core::str::from_utf8(b).unwrap_or("");
+        if let Some(i) = blok.find("--> ") {
+            let lok = blok[i + 4..].split(|c: char| c == '\n' || c.is_whitespace()).next().unwrap_or("");
+            let mut bagian = lok.rsplitn(3, ':');
+            if let (Some(k), Some(l), Some(f)) = (bagian.next(), bagian.next(), bagian.next()) {
+                if let (Ok(k), Ok(l)) = (k.parse::<i64>(), l.parse::<i64>()) { berkas = f.to_string(); baris = l; kolom = k; }
+            }
+        }
+    }
+    let o = &mut *out;
+    o.baris = baris;
+    o.kolom = kolom;
+    emit_string(bahasa::t(kalimat), &mut o.pesan.p, &mut o.pesan.n);
+    emit_string(berkas, &mut o.berkas.p, &mut o.berkas.n);
 }
 
 /// Rangkuman (`\u{3}` total, `\u{4}` lulus, `\u{5}` gagal); jawabannya kode keluar `main` buatan.
@@ -1323,7 +1364,7 @@ pub unsafe extern "C" fn jrg_uji_akhir(tp: *const u8, tl: i64) -> i64 {
     let (l, g) = *core::ptr::addr_of!(UJI);
     let t = borrow_str(tp, tl).replacen('\u{3}', &(l + g).to_string(), 1)
         .replacen('\u{4}', &l.to_string(), 1).replacen('\u{5}', &g.to_string(), 1);
-    write_out(&format!("{}\n", t), 0);
+    write_out(&format!("{}\n", bahasa::t(&t)), 0);
     if g > 0 { 1 } else { 0 }
 }
 
@@ -2466,6 +2507,9 @@ pub extern "C" fn jrg_acak63() -> i64 {
 mod json_inti;
 // `kutip_inti.rs` juga SALINAN PERSIS `src/kutip_inti.rs`.
 mod kutip_inti;
+// `terjemah_inti.rs` SALINAN PERSIS `src/terjemah/inti.rs`; bahasa galat saat jalan di `bahasa.rs`.
+mod terjemah_inti;
+mod bahasa;
 
 #[cfg(not(test))]
 mod json_llvm {
