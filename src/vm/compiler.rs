@@ -84,9 +84,6 @@ fn nama_global(awalan: Option<&str>, nama: &str) -> String {
     }
 }
 
-/// Nama telanjang milik unit yang sedang dikompilasi: nama globalnya dan jenisnya.
-/// Di VM semua unit berbagi satu tabel global, jadi nama milik modul diterjemahkan DI
-/// SINI — dulu ia juga didefinisikan telanjang, dan dua modul saling menimpa.
 /// `var x: T` tanpa nilai awal untuk `T` tanpa nilai nol: isinya penanda belum-diisi (sama dengan interpreter).
 pub(crate) fn penanda_belum_isi(ty: Option<&crate::parser::TypeExpr>, span: crate::lexer::Span) -> Option<VmValue> {
     let t = ty?;
@@ -98,6 +95,9 @@ pub(crate) fn catat_belum_isi(nama: &str) { UNIT.with(|u| { u.borrow_mut().belum
 
 pub(crate) fn belum_isi(nama: &str) -> bool { UNIT.with(|u| u.borrow().belum_isi.contains(nama)) }
 
+/// Nama telanjang milik unit yang sedang dikompilasi: nama globalnya dan jenisnya.
+/// Di VM semua unit berbagi satu tabel global, jadi nama milik modul diterjemahkan DI
+/// SINI — dulu ia juga didefinisikan telanjang, dan dua modul saling menimpa.
 pub(crate) fn milik_unit(nama: &str) -> Option<(String, Milik)> {
     UNIT.with(|u| {
         let u = u.borrow();
