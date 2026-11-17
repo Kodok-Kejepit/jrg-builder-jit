@@ -133,6 +133,25 @@ fn stack_dalam_lewat_wasm() {
     let p = tulis(&kerja, "stack.jrg", STACK_DALAM);
     let acuan = jalan(&[p.to_str().unwrap()], &kerja);
     let Some(w) = wasm(&p, &kerja) else { return };
+    let diag = if (acuan.kode, &acuan.stdout) != (w.kode, &w.stdout) { diagnosa_stack(&kerja) } else { String::new() };
     let _ = std::fs::remove_dir_all(&kerja);
-    assert_eq!((acuan.kode, acuan.stdout.as_str()), (w.kode, w.stdout.as_str()), "{}", w.stderr);
+    assert_eq!((acuan.kode, acuan.stdout.as_str()), (w.kode, w.stdout.as_str()), "{}\n{}", w.stderr, diag);
+}
+
+/// Cuma saat gagal: node langsung (tanpa jrgc) di beberapa kedalaman, plus lingkungan, supaya kegagalan yang cuma
+/// muncul di runner CI terbaca dari lognya.
+fn diagnosa_stack(kerja: &Path) -> String {
+    let sh = |c: &str| Command::new("sh").arg("-c").arg(c).current_dir(kerja).output()
+        .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))).unwrap_or_default();
+    let mut d = sh("echo \"ulimit -s $(ulimit -s), node $(node --version), $(uname -srm)\"");
+    for n in [1000, 5000, 10000, 15000, 20000] {
+        let isi = format!("fn dalam(n: int) -> int {{\n    if n == 0 {{ return 0 }}\n    return 1 + dalam(n - 1)\n}}\nfn main() {{\n    wok(dalam({n}))\n}}\n");
+        let p = tulis(kerja, &format!("r{n}.jrg"), &isi);
+        let _ = jalan(&[p.to_str().unwrap(), "--emit-wasm", "-o", &format!("r{n}.wasm"), "--no-run"], kerja);
+        for ss in ["", "--stack-size=3000"] {
+            let o = sh(&format!("node --no-warnings {ss} r{n}.wasm.mjs > o.txt 2>&1; rc=$?; tail -c 300 o.txt; echo \"[rc $rc]\""));
+            d += &format!("kedalaman {n} {ss}: {}\n", o.replace('\n', " ").trim_end());
+        }
+    }
+    d
 }
