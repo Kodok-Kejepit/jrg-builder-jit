@@ -24,8 +24,13 @@ fn folder(nama: &str) -> PathBuf {
     d
 }
 
+/// Satu program wasm sekaligus: di runner CI rekursi 20 ribu tingkat keluar 1 tanpa keluaran selama tes wasm lain
+/// jalan bersamaan, sedangkan program yang sama lulus sendirian sesudahnya (diagnosa `stack_dalam_lewat_wasm`).
+static SATU_SATU: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// `None` = alat WASI tidak ada dan tidak diwajibkan (tes dilewati, alasannya dicetak).
 fn wasm(berkas: &Path, kerja: &Path) -> Option<Hasil> {
+    let _giliran = SATU_SATU.lock().unwrap_or_else(|e| e.into_inner());
     let keluar = kerja.join(format!("{}.wasm", berkas.file_stem().unwrap().to_string_lossy()));
     let h = jalan(&[berkas.to_str().unwrap(), "--emit-wasm", "-o", keluar.to_str().unwrap()], berkas.parent().unwrap());
     if h.kode != 0 && (h.stderr.contains("butuh wasi-sysroot") || h.stderr.contains("butuh compiler-rt wasm")
