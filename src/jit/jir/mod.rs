@@ -76,7 +76,14 @@ pub struct Keadaan {
     pub fid: Option<u32>,
     pub geser: usize,
     pub induk: Option<Box<Keadaan>>,
+    /// Varian berbayangan yang isi stack VM-nya basi: diwujudkan sebelum deopt menulis rekamannya.
+    pub maya: Vec<Maya>,
 }
+
+/// Varian di posisi `pos` yang isi stack VM-nya mungkin basi (bayangan varian, JIR-3b): penanda `tag` (indeks
+/// `TabelVarian` di `tabel`), payload `muatan` (bit `pecahan` = pecahan), basi kalau bit penandanya ada di `basi`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Maya { pub pos: usize, pub tag: Nilai, pub muatan: Vec<Nilai>, pub basi: u64, pub pecahan: u64, pub tabel: i64 }
 
 /// Jaga yang gagal = deopt di `keadaan`. `spek`: kegagalannya dicatat (`GAGAL_SPEK`), kompilasi berikutnya tidak
 /// berspekulasi lagi di sana.
@@ -185,6 +192,8 @@ pub enum Inst {
     /// Pembantu `pb` atas `args`; statusnya yang lolos `gagal` = deopt; `hasil` = statusnya sebagai bulat (0/1);
     /// `keluar` = kata yang ditulis pembantu ke penyangga (`Arg::Wadah`), bertipe nilainya.
     Pembantu { pb: Pb, args: Vec<Arg>, hasil: Option<Nilai>, gagal: Option<(Uji, Jaga)>, keluar: Option<Nilai> },
+    /// Varian berbayangan ditulis ke stack VM kalau isinya basi (`lambat::wujud_varian`).
+    Wujud(Maya),
 }
 
 /// Pembantu `lambat` yang dipanggil lewat `Inst::Pembantu`.
@@ -268,6 +277,7 @@ impl fmt::Display for Keadaan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let isi: Vec<String> = self.isi.iter().map(|x| x.map_or("_".into(), |v| v.to_string())).collect();
         write!(f, "@{} [{}]", self.ip, isi.join(" "))?;
+        for m in &self.maya { write!(f, " maya {}={}", m.pos, m.tag)?; }
         if let Some(i) = &self.induk { write!(f, " < fid {} +{} {i}", self.fid.unwrap_or(0), self.geser)?; }
         Ok(())
     }
@@ -324,6 +334,7 @@ impl fmt::Display for Fungsi {
                     Inst::CekMetode { pos, jaga: j, .. } => writeln!(f, "  cek-metode {pos}{}", jaga(&Some(j.clone())))?,
                     Inst::IterAda { hasil, slot, .. } => writeln!(f, "  {hasil} = iter-ada {slot}")?,
                     Inst::Maju { slot, .. } => writeln!(f, "  maju {slot}")?,
+                    Inst::Wujud(m) => writeln!(f, "  wujud {} tag {} [{}] basi {:#x}", m.pos, m.tag, daftar(&m.muatan), m.basi)?,
                     Inst::Pembantu { pb, args, hasil, gagal, keluar } => writeln!(f, "  {}{pb:?} {args:?}{}{}",
                         hasil.map_or(String::new(), |h| format!("{h} = ")), gagal.as_ref().map_or(String::new(), |(u, _)| format!(" gagal {u:?}")),
                         keluar.map_or(String::new(), |k| format!(" -> {k}")))?,

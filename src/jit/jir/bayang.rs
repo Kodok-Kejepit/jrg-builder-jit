@@ -1,10 +1,11 @@
-//! Bayangan varian (JIR-3b langkah 1): posisi stack berisi varian enum yang penanda dan payload angkanya diketahui
-//! sebagai isi native. Stack VM tetap memegang nilai yang benar (deopt membacanya); bayangan menggantikan `pola_pilih`
-//! dan bukaan payload, dibawa lintas titik temu sebagai parameter blok tambahan.
+//! Bayangan varian (JIR-3b, `jir-rencana.md` langkah 103–104): posisi berisi varian yang penanda dan payload
+//! angkanya isi native; `pola_pilih` dan bukaan payload dilipat darinya, dibawa lintas titik temu sebagai parameter
+//! blok. Varian berbayangan lengkap tidak dibangun (`basi`) dan ditulis ke stack VM (`Inst::Wujud`) sebelum dibaca.
 
 use std::collections::HashMap;
 
 use super::{Akhir, Arg, Banding, Biner, Blok, Inst, Jenis, Nilai, Pb, Pembangun, Tipe};
+use crate::jit::jir::Maya;
 use crate::vm::value::{Label, NamaVarian, VmValue};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -15,6 +16,8 @@ pub(super) struct Bayang {
     pub mungkin: u64,
     /// Isi payload: jenisnya (`Bulat`/`Pecahan`), nilainya, dan bit tag yang payload-nya memang isi ini.
     pub muatan: Vec<(Jenis, Nilai, u64)>,
+    /// Bit tag yang isi stack VM-nya mungkin basi (varian tidak dibangun): diwujudkan sebelum dibaca.
+    pub basi: u64,
 }
 
 /// Bayangan per posisi, urut posisi.
@@ -25,7 +28,7 @@ pub(super) fn ditulis(i: &Inst) -> Option<Vec<usize>> {
     Some(match i {
         Inst::KonstI { .. } | Inst::KonstF { .. } | Inst::KonstL { .. } | Inst::Biner { .. } | Inst::Unar { .. }
         | Inst::BinerL { .. } | Inst::Pilih { .. } | Inst::JagaJika { .. } | Inst::Undi { .. } | Inst::Sempit { .. }
-        | Inst::Rantai { .. } | Inst::CekMetode { .. } | Inst::IterAda { .. } => vec![],
+        | Inst::Rantai { .. } | Inst::CekMetode { .. } | Inst::IterAda { .. } | Inst::Wujud(_) => vec![],
         Inst::Muat { lokal, ke, pindah } => if *pindah { vec![*ke, *lokal] } else { vec![*ke] },
         Inst::Simpan { ke, dari, buang, .. } => if *buang { vec![*ke, *dari] } else { vec![*ke] },
         Inst::Salin { ke, .. } => vec![*ke],
@@ -51,30 +54,144 @@ pub(super) fn ditulis(i: &Inst) -> Option<Vec<usize>> {
     })
 }
 
+/// Posisi stack yang dibaca `i` dari stack VM; `None` = tidak diketahui (dianggap semua).
+pub(super) fn dibaca(i: &Inst) -> Option<Vec<usize>> {
+    Some(match i {
+        Inst::KonstI { .. } | Inst::KonstF { .. } | Inst::KonstL { .. } | Inst::Biner { .. } | Inst::Unar { .. }
+        | Inst::BinerL { .. } | Inst::Pilih { .. } | Inst::JagaJika { .. } | Inst::Undi { .. } | Inst::Sempit { .. }
+        | Inst::Wujud(_) | Inst::Taruh { .. } | Inst::TulisVm { .. } | Inst::TulisLebar { .. } | Inst::TeksBulat { .. } => vec![],
+        Inst::Muat { lokal, .. } => vec![*lokal],
+        Inst::Simpan { dari, .. } | Inst::Salin { dari, .. } | Inst::Pindah { dari, .. } => vec![*dari],
+        Inst::Tukar { x, y } => vec![*x, *y],
+        Inst::Buang { pos } | Inst::Benar { pos, .. } | Inst::Buka { pos, .. } | Inst::BukaLebar { pos, .. }
+        | Inst::Panjang { pos, .. } | Inst::CekMetode { pos, .. } | Inst::Sebar { pos, .. } => vec![*pos],
+        Inst::IterAda { slot, .. } | Inst::Maju { slot, .. } => vec![*slot],
+        Inst::Rantai { lokal, .. } | Inst::Rumus { lokal, .. } => vec![*lokal],
+        Inst::Bangun { t, n, .. } => (t - n..*t).collect(),
+        Inst::Pembantu { pb, args, .. } => super::posisi_pb(*pb).iter()
+            .filter_map(|k| match args.get(*k) { Some(Arg::I64(p)) => Some(*p as usize), _ => None }).collect(),
+        _ => return None,
+    })
+}
+
 impl Pembangun<'_> {
-    pub(super) fn tag_varian(&mut self, nama: &'static NamaVarian, payload: Option<usize>) -> Option<u32> {
+    pub(super) fn tag_varian(&mut self, nama: &'static NamaVarian, payload: Option<usize>, konst: usize) -> Option<u32> {
         let i = match self.varian.iter().position(|(n, p)| std::ptr::eq(*n, nama) && *p == payload) {
             Some(i) => i,
-            None => { self.varian.push((nama, payload)); self.varian.len() - 1 }
+            None => {
+                self.varian.push((nama, payload));
+                self.tabel.0.write().unwrap_or_else(|p| p.into_inner()).push((nama, payload, konst));
+                self.varian.len() - 1
+            }
         };
         (i < 64).then_some(i as u32)
     }
 
-    /// Posisi `pos` kini varian `nama` dengan payload `muatan` (atau tanpa isi native: `payload` jumlahnya saja).
-    pub(super) fn lahir_varian(&mut self, b: Blok, pos: usize, nama: &'static NamaVarian, payload: Option<usize>, muatan: Vec<(Jenis, Nilai)>) {
-        if !self.bayang_aktif { return; }
-        let Some(i) = self.tag_varian(nama, payload) else { return };
+    /// Posisi `pos` kini varian `nama` dengan payload `muatan` (atau tanpa isi native: `payload` jumlahnya saja);
+    /// `basi` = varian itu tidak ditulis ke stack VM (bayangannya harus lengkap).
+    pub(super) fn lahir_varian(&mut self, b: Blok, pos: usize, nama: &'static NamaVarian, payload: Option<usize>,
+        muatan: Vec<(Jenis, Nilai)>, konst: usize, basi: bool) -> bool {
+        if !self.bayang_aktif { return false; }
+        let Some(i) = self.tag_varian(nama, payload, konst) else { return false };
         let tag = self.konst_i(b, i as i64);
         let bit = 1u64 << i;
-        self.bayang.insert(pos, Bayang { tag, mungkin: bit, muatan: muatan.into_iter().map(|(j, v)| (j, v, bit)).collect() });
+        let x = Bayang { tag, mungkin: bit, muatan: muatan.into_iter().map(|(j, v)| (j, v, bit)).collect(), basi: 0 };
+        let basi = basi && self.lengkap(&x) & bit != 0;
+        self.bayang.insert(pos, Bayang { basi: if basi { bit } else { 0 }, ..x });
         self.lahir.push(pos);
+        basi
     }
 
-    /// Konstanta ke-`k` yang berupa varian tanpa payload.
+    /// Konstanta ke-`k` yang berupa varian tanpa payload (maya bagi `Rencana`: isinya belum di stack VM).
     pub(super) fn lahir_konst(&mut self, b: Blok, pos: usize, k: usize) {
-        if let Some(VmValue::Map(m)) = self.f.chunk.constants.get(k) {
-            if let Label::Enum { nama, payload: None } = &m.label { self.lahir_varian(b, pos, nama, None, Vec::new()); }
+        if let Some(c @ VmValue::Map(m)) = self.f.chunk.constants.get(k) {
+            if let Label::Enum { nama, payload: None } = &m.label {
+                self.lahir_varian(b, pos, nama, None, Vec::new(), c as *const VmValue as usize, true);
+            }
         }
+    }
+
+    /// `BuildTuple` tepat sebelum `BuildEnum` di `ip` (puncak `t`) yang baru dibangun dari angka native saja, sebagai
+    /// instruksi terakhir blok `b`: isinya, urut elemen.
+    pub(super) fn tuple_native(&self, b: Blok, ip: usize, t: usize) -> Option<Vec<(Jenis, Nilai)>> {
+        let kode = &self.f.chunk.code;
+        if ip == 0 || self.r.pemimpin[ip] || kode[ip - 1].op != crate::vm::opcode::OpCode::BuildTuple { return None; }
+        let n = kode[ip - 1].arg as usize;
+        let Some(Inst::Bangun { situs, t: tt, n: nn, isi, taruh, .. }) = self.j.blok[b.0 as usize].inst.last() else { return None };
+        let tuple = matches!(unsafe { &*(*situs as *const crate::jit::lambat::SitusBangun) }, crate::jit::lambat::SitusBangun::Tuple);
+        if !tuple || *nn != n || *tt != t - 1 + n || !taruh.is_empty() { return None; }
+        let s = self.r.keadaan[ip - 1].as_ref()?;
+        (0..n).map(|k| {
+            let p = t - 1 + k;
+            let j = *s.get(p)?;
+            if !matches!(j, Jenis::Bulat | Jenis::Pecahan) { return None; }
+            isi.iter().find(|(q, _)| *q == p).map(|(_, v)| (j, *v))
+        }).collect()
+    }
+
+    /// Bit tag yang bisa dibangun ulang dari bayangan `x` saja.
+    pub(super) fn lengkap(&self, x: &Bayang) -> u64 {
+        let t = self.tabel.0.read().unwrap_or_else(|p| p.into_inner());
+        (0..64).filter(|i| x.mungkin >> i & 1 == 1).filter(|&i| match t[i] {
+            (_, _, k) if k != 0 => true,
+            (_, None, _) => true,
+            (_, Some(n), _) => x.muatan.len() >= n && x.muatan[..n].iter().all(|m| m.2 >> i & 1 == 1),
+        }).fold(0, |m, i| m | 1 << i)
+    }
+
+    pub(super) fn maya_dari(&self, pos: usize, x: &Bayang) -> Maya {
+        Maya {
+            pos, tag: x.tag, muatan: x.muatan.iter().map(|m| m.1).collect(), basi: x.basi,
+            pecahan: x.muatan.iter().enumerate().filter(|(_, m)| m.0 == Jenis::Pecahan).fold(0, |a, (k, _)| a | 1 << k),
+            tabel: self.tabel as *const _ as i64,
+        }
+    }
+
+    /// Varian basi di posisi `pos` ditulis ke stack VM di blok `b` (langsung, tanpa `dorong`).
+    pub(super) fn wujudkan(&mut self, b: Blok, pos: usize) {
+        let Some(x) = self.bayang.get(&pos).cloned() else { return };
+        if x.basi == 0 { return; }
+        let m = self.maya_dari(pos, &x);
+        self.j.blok[b.0 as usize].inst.push(Inst::Wujud(m));
+        if self.kini_b == Some(b) { if let Some(y) = self.bayang.get_mut(&pos) { y.basi = 0; } }
+    }
+
+    /// `dorong` atas blok yang sedang dibangun: pemindahan varian basi tidak dikerjakan (bayangannya yang pindah,
+    /// `true`); selain itu varian basi yang dibaca instruksinya diwujudkan dulu.
+    pub(super) fn cegat(&mut self, b: Blok, i: &Inst) -> bool {
+        let basi = |me: &Self, p: &usize| me.bayang.get(p).is_some_and(|x| x.basi != 0);
+        // Cuma kalau SEMUA varian yang mungkin basi: tujuannya tidak ditulis, jadi basi untuk semuanya.
+        let semua = |me: &Self, p: &usize| me.bayang.get(p).is_some_and(|x| x.basi == x.mungkin);
+        let lewat = match i {
+            Inst::Simpan { dari, nilai: None, .. } => semua(self, dari),
+            Inst::Muat { lokal, .. } => semua(self, lokal),
+            Inst::Salin { dari, .. } | Inst::Pindah { dari, .. } => semua(self, dari),
+            Inst::Buang { pos } => basi(self, pos),
+            _ => false,
+        };
+        if lewat { return true; }
+        // Pemindahan yang tetap dikerjakan menyalin isi basinya apa adanya (bayangannya ikut, dengan bit basi sama).
+        if matches!(i, Inst::Simpan { nilai: None, .. } | Inst::Muat { .. } | Inst::Salin { .. } | Inst::Pindah { .. }) { return false; }
+        let baca: Vec<usize> = match dibaca(i) {
+            Some(ps) => ps,
+            None => self.bayang.keys().copied().collect(),
+        };
+        for p in baca { if basi(self, &p) { self.wujudkan(b, p); } }
+        false
+    }
+
+    /// Semua varian basi blok ini diwujudkan (sebelum VM menjalankan sesuatu atasnya).
+    pub(super) fn wujudkan_semua(&mut self, b: Blok) {
+        let mut ps: Vec<usize> = self.bayang.iter().filter(|(_, x)| x.basi != 0).map(|(p, _)| *p).collect();
+        ps.sort();
+        for p in ps { self.wujudkan(b, p); }
+    }
+
+    /// Bayangan basi di keadaan deopt (posisi di bawah `panjang`).
+    pub(super) fn maya_keadaan(&self, panjang: usize) -> Vec<Maya> {
+        let mut v: Vec<Maya> = self.bayang.iter().filter(|(p, x)| x.basi != 0 && **p < panjang).map(|(p, x)| self.maya_dari(*p, x)).collect();
+        v.sort_by_key(|m| m.pos);
+        v
     }
 
     pub(super) fn salin_bayang(&mut self, dari: usize, ke: usize) {
@@ -136,6 +253,14 @@ impl Pembangun<'_> {
 
     /// Argumen parameter bayangan `params` dari potret tepi yang berangkat dari `asal`; `None` = tidak cocok.
     fn args_bayang(&mut self, asal: Blok, params: &Potret, potret: &Potret) -> Option<Vec<Nilai>> {
+        // Varian basi yang bayangannya tidak dibawa ke tujuan: ditulis di asal tepinya.
+        for (pos, e) in potret {
+            if e.basi != 0 && !params.iter().any(|(p, _)| p == pos) {
+                let m = self.maya_dari(*pos, e);
+                self.j.blok[asal.0 as usize].inst.push(Inst::Wujud(m));
+                if self.kini_b == Some(asal) { if let Some(y) = self.bayang.get_mut(pos) { y.basi = 0; } }
+            }
+        }
         let mut args = Vec::new();
         for (pos, pb) in params {
             let e = potret.iter().find(|(p, _)| p == pos).map(|x| x.1.clone()).filter(|e| {
@@ -144,6 +269,12 @@ impl Pembangun<'_> {
                     perlu == 0 || e.muatan.get(k).is_some_and(|(je, _, se)| je == j && perlu & !se == 0)
                 })
             })?;
+            // Varian yang tujuannya anggap sudah di stack VM: ditulis di asal tepinya.
+            if e.basi & !pb.basi != 0 {
+                let m = self.maya_dari(*pos, &e);
+                self.j.blok[asal.0 as usize].inst.push(Inst::Wujud(m));
+                if self.kini_b == Some(asal) { if let Some(y) = self.bayang.get_mut(pos) { y.basi = 0; } }
+            }
             args.push(e.tag);
             for (k, (j, _, _)) in pb.muatan.iter().enumerate() {
                 let v = match e.muatan.get(k) { Some((je, v, _)) if je == j => *v, _ => self.isi_nol(asal, *j) };
@@ -171,6 +302,7 @@ impl Pembangun<'_> {
         tepi.retain(|(a, s, _)| if lihat.contains(&(*a, *s)) { false } else { lihat.push((*a, *s)); true });
         if !self.bayang_aktif || self.larang.contains(&ip) || tepi.is_empty() {
             self.masuk_bayang.insert(ip, Vec::new());
+            for (asal, _, potret) in tepi { self.args_bayang(asal, &Vec::new(), &potret); }
             return;
         }
         let mut params: Potret = Vec::new();
@@ -188,7 +320,9 @@ impl Pembangun<'_> {
                 let v = self.j.nilai_baru(if j == Jenis::Pecahan { Tipe::F } else { Tipe::I });
                 muatan.push((j, v, ada & !hilang));
             }
-            params.push((*pos, Bayang { tag: self.j.nilai_baru(Tipe::I), mungkin, muatan }));
+            let mut x = Bayang { tag: self.j.nilai_baru(Tipe::I), mungkin, muatan, basi: 0 };
+            x.basi = semua.iter().fold(0, |m, e| m | e.basi) & self.lengkap(&x);
+            params.push((*pos, x));
         }
         for (_, x) in &params {
             let blok = &mut self.j.blok[b.0 as usize].params;
@@ -256,6 +390,52 @@ impl Pembangun<'_> {
         if baik == 0 { return None; }
         let st = self.lipat_tag(keluar, x, |t| baik >> t & 1 == 0);
         Some((st, v))
+    }
+
+    /// `PayloadJenisSama` (nama jenis di alamat `nama`) atau `PayloadPanjang` (`nama` = `None`) atas posisi berbayangan
+    /// `x`: (gagal 0/1 — varian yang pembantunya menjawab VM, deopt — dan jawabannya).
+    pub(super) fn lipat_payload_bentuk(&mut self, keluar: &mut Vec<Inst>, x: &Bayang, nama: Option<i64>) -> Option<(Nilai, Nilai)> {
+        let nama = match nama {
+            Some(a) => match unsafe { &*(a as *const VmValue) } { VmValue::Str(s) => Some(s.as_str().to_string()), _ => return None },
+            None => None,
+        };
+        // Jawaban tiap varian yang mungkin: `None` = pembantunya menjawab VM (bukan payload yang terukur).
+        let mut jawab: Vec<(u32, Option<i64>)> = Vec::new();
+        for t in (0..64u32).filter(|t| x.mungkin >> t & 1 == 1) {
+            let (_, payload) = *self.varian.get(t as usize)?;
+            let jenis = match payload {
+                None => None,
+                Some(1) => match x.muatan.first() {
+                    Some((j, _, sah)) if sah >> t & 1 == 1 =>
+                        Some(if *j == Jenis::Pecahan { VmValue::Float(0.0).type_name() } else { VmValue::Int(0).type_name() }),
+                    _ => return None,
+                },
+                Some(_) => Some(VmValue::tuple(Vec::new()).type_name()),
+            };
+            jawab.push((t, match (&nama, jenis, payload) {
+                (_, None, _) => None,
+                (Some(n), Some(j), _) => Some((n == j) as i64),
+                (None, _, Some(n)) if n > 1 => Some(n as i64),
+                (None, _, _) => None,
+            }));
+        }
+        if jawab.iter().all(|(_, j)| j.is_none()) { return None; }
+        let gagal = self.lipat_tag(keluar, x, |t| jawab.iter().any(|(u, j)| *u == t && j.is_none()));
+        let mut v: Option<Nilai> = None;
+        for (t, j) in jawab.iter().filter_map(|(t, j)| j.map(|j| (*t, j))) {
+            let k = self.j.nilai_baru(Tipe::I);
+            keluar.push(Inst::KonstI { hasil: k, nilai: j });
+            v = Some(match v {
+                None => k,
+                Some(lain) => {
+                    let sama = self.lipat_tag(keluar, x, |u| u == t);
+                    let h = self.j.nilai_baru(Tipe::I);
+                    keluar.push(Inst::Pilih { hasil: h, jika: sama, ya: k, tidak: lain });
+                    h
+                }
+            });
+        }
+        Some((gagal, v.expect("ada jawaban")))
     }
 
     /// Kumpulan instruksi ke blok `b` lewat `dorong` (supaya jejak bayangan dan CSE ikut).

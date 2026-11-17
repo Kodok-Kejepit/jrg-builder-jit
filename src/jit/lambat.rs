@@ -1087,6 +1087,30 @@ impl RantaiPola {
     }
 }
 
+/// Tabel varian satu fungsi JIR (bayangan varian, JIR-3b): penanda = indeks. `konst` = alamat konstanta chunk varian
+/// tanpa payload (disalin, bukan dibangun ulang), 0 kalau tidak ada. Ditambah saat kompilasi, dibaca saat jalan.
+pub struct TabelVarian(pub std::sync::RwLock<Vec<(&'static crate::vm::value::NamaVarian, Option<usize>, usize)>>);
+
+/// Varian berbayangan di posisi `pos` yang isi stack VM-nya basi (penanda `tag` di bit `basi`) ditulis dari
+/// penanda dan payload-nya (`isi`, bit `pecahan` = isi pecahan); penanda lain = isinya sudah benar.
+pub extern "C" fn wujud_varian(pos: i64, tabel: *const TabelVarian, tag: i64, basi: i64, pecahan: i64, isi: *const i64) {
+    if (basi as u64 >> tag) & 1 == 0 { return; }
+    let (nama, payload, konst) = unsafe { &*tabel }.0.read().unwrap_or_else(|p| p.into_inner())[tag as usize];
+    let skalar = |k: usize| {
+        let b = unsafe { *isi.add(k) };
+        if (pecahan as u64 >> k) & 1 == 1 { VmValue::Float(f64::from_bits(b as u64)) } else { VmValue::Int(b as i128) }
+    };
+    let v = if konst != 0 { unsafe { &*(konst as *const VmValue) }.clone() } else {
+        VmValue::varian_nama(nama, match payload {
+            None => None,
+            Some(1) => Some(skalar(0)),
+            Some(n) => Some(VmValue::tuple((0..n).map(skalar).collect())),
+        })
+    };
+    let (vm, basis) = konteks();
+    *sediakan(vm, basis, pos as usize) = v;
+}
+
 /// Rantai lengan atas lokal `slot`: indeks lengan pertama yang cocok, banyaknya lengan kalau tidak ada,
 /// `1000 + k` kalau pola lengan ke-`k` galat (lengan sebelumnya tidak cocok). Urutannya sama dengan
 /// `pola_lokal` per lengan; lokal yang tak terbaca = galat di lengan pertama (VM yang menjalankan).
