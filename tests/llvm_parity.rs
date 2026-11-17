@@ -977,6 +977,16 @@ pub fn main() {
 
 /// `(nama, program, kata-kunci-interpreter, kata-kunci-llvm)`
 const DITOLAK_INTERP_DAN_LLVM: &[(&str, &str, &str, &str)] = &[
+    // Audit `Result`/`?` 2026-11-18: `?` yang mengubah keluarga kembalian yang DITULIS — acuan saat jalan (dulu
+    // diam-diam `None` dari fungsi `-> Result`), LLVM saat kompilasi, satu kalimat (`pesan_sebar_keluarga`).
+    ("? atas Option di fungsi -> Result", "package main\nfn f(o: Option<int>) -> Result<int, string> { let v = o?; Ok(v) }\npub fn main() { wok(f(None)) }",
+     "`?` pada Option butuh fungsi ini mengembalikan `Option<..>` juga", "`?` pada Option butuh fungsi ini mengembalikan `Option<..>` juga"),
+    ("? atas Result di fungsi -> Option", "package main\nfn f(r: Result<int, string>) -> Option<int> { let v = r?; Some(v) }\npub fn main() { wok(f(Err(\"x\"))) }",
+     "`?` pada Result butuh fungsi ini mengembalikan `Result<..>` juga", "`?` pada Result butuh fungsi ini mengembalikan `Result<..>` juga"),
+    ("? atas bukan Option/Result: satu kalimat yang menyebut tipe", "package main\nfn f() -> int { let v = 5?; v }\npub fn main() { wok(f()) }",
+     "operator `?` hanya berlaku untuk Result/Option, dapat `int`", "operator `?` hanya berlaku untuk Result/Option, dapat `int`"),
+    ("method prelude: jumlah argumen salah", "package main\npub fn main() { let o: Option<int> = None\n wok(o.or_else()) }",
+     "method `or_else` butuh 1 argumen (f), dapat 0", "method `or_else` butuh 1 argumen (f), dapat 0"),
     // Fase ISI-SISIP: penerima `arr::insert` yang bukan larik — satu kalimat (acuan saat jalan, LLVM saat kompilasi).
     ("arr::insert atas bukan larik", "package main\npub fn main() { wok(arr::insert(5, 0, 1)) }",
      "arr::insert: argumen ke-1 harus array, dapat `int`", "arr::insert: argumen ke-1 harus array, dapat `int`"),

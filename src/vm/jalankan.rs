@@ -1339,16 +1339,13 @@ impl Vm {
                 OpCode::Propagate => {
                     let v = self.pop(sp)?;
                     let (ty, variant, payload) = Self::tagged_parts(&v).ok_or_else(|| {
-                        VmError::at(
-                            format!("operator `?` hanya berlaku untuk Result/Option, dapat `{}`", v.type_name_penuh()),
-                            sp,
-                        )
+                        VmError::at(crate::interpreter::pesan_sebar_bukan_hasil(&v.type_name_penuh()), sp)
                     })?;
                     if ty != "Result" && ty != "Option" {
-                        return Err(VmError::at(
-                            format!("operator `?` hanya berlaku untuk Result/Option, dapat `{}`", ty),
-                            sp,
-                        ));
+                        return Err(VmError::at(crate::interpreter::pesan_sebar_bukan_hasil(&ty), sp));
+                    }
+                    if sebar_lintas_keluarga(arg, &variant) {
+                        return Err(VmError::at(crate::interpreter::pesan_sebar_keluarga(&ty), sp));
                     }
 
                     if variant == "Err" || variant == "None" {
@@ -1580,6 +1577,12 @@ impl Vm {
 
 /// Pola enum `desc` (`(tipe, varian, berpayload, jumlah sub-pola)`) atas `v`; `Err` = kalimat galat
 /// sub-pola yang jumlahnya salah. Satu definisi untuk VM dan jalur lambat JIT.
+/// `?` atas varian `varian` di fungsi beranotasi keluarga `keluarga` (arg `Propagate`: 0 bebas, 1 `Option`,
+/// 2 `Result`) yang meneruskan keluarga lain — `None` dari `-> Result`, `Err` dari `-> Option`.
+pub(crate) fn sebar_lintas_keluarga(keluarga: u32, varian: &str) -> bool {
+    (keluarga == 1 && varian == "Err") || (keluarga == 2 && varian == "None")
+}
+
 pub(crate) fn cocok_enum(v: &VmValue, desc: &VmValue) -> Result<bool, String> {
     match v.bagian_enum() {
         Some((tipe, varian, payload)) => cocok_enum_bagian(desc, tipe, varian, payload.map(|p| move || match p {

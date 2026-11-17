@@ -884,9 +884,12 @@ pub extern "C" fn biner(ip: i64, jenis: *const Jenis, t: i64, nilai: *const i64)
 /// `Propagate` (`?`) atas posisi `p`: 0 = `Ok`/`Some`, posisinya jadi payload; 1 = `Err`/`None`, tidak
 /// disentuh (fungsinya kembali dengan nilai itu); 2 = bukan `Result`/`Option` (VM yang melapor).
 pub extern "C" fn sebar(p: i64) -> i32 {
+    // 32 bit atas: keluarga kembalian yang ditulis fungsinya (arg `Propagate`); `?` lintas keluarga = VM yang melapor.
+    let (pos, keluarga) = ((p & 0xffff_ffff) as usize, (p >> 32) as u32);
     let (vm, basis) = konteks();
-    let v = sediakan(vm, basis, p as usize);
+    let v = sediakan(vm, basis, pos);
     match Vm::tagged_parts(v) {
+        Some((_, var, _)) if crate::vm::sebar_lintas_keluarga(keluarga, &var) => 2,
         Some((ty, var, isi)) if ty == "Result" || ty == "Option" => match var.as_str() {
             "Ok" | "Some" => { *v = isi.unwrap_or(VmValue::Nil); 0 }
             "Err" | "None" => 1,

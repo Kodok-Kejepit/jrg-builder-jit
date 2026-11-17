@@ -156,7 +156,8 @@ pub enum Inst {
     BukaLebar { hasil: Nilai, pos: usize, jaga: Jaga },
     /// `?` atas nilai milik VM di `pos` (`lambat::sebar`): `Ok`/`Some` dibuka di tempat; `Err`/`None` kembali dengan
     /// nilai itu kalau `pulang`, selain itu (dan bukan `Result`/`Option`) deopt `jaga` — VM yang menjalankannya.
-    Sebar { pos: usize, pulang: bool, jaga: Jaga },
+    /// `keluarga` = arg opcode-nya (keluarga kembalian yang ditulis fungsinya; lain = VM yang melapor).
+    Sebar { pos: usize, pulang: bool, keluarga: u32, jaga: Jaga },
     /// Lengan ke-`urutan` rantai `match` `rantai` atas lokal `lokal` (`turun::rantai_pola`): lengan pertama memanggil
     /// `lambat::pola_pilih` (alamat `situs`) dan menyimpan indeksnya di slot rantai; tiap lengan membandingkan indeksnya.
     /// `hasil` = cocok tidaknya (0/1); galat = deopt `jaga`; `panggil` = memanggil sendiri (lengan awal dilipat).
@@ -302,7 +303,7 @@ impl fmt::Display for Fungsi {
                         hasil.map_or(String::new(), |h| format!("{h} = ")), if *tulis { " tulis" } else { "" }, jaga(&Some(j.clone())))?,
                     Inst::Rantai { hasil, rantai, urutan, lokal, jaga: j, .. } =>
                         writeln!(f, "  {hasil} = rantai #{rantai}[{urutan}] lokal {lokal}{}", jaga(&Some(j.clone())))?,
-                    Inst::Sebar { pos, pulang, jaga: j } => writeln!(f, "  sebar {pos}{}{}", if *pulang { " pulang" } else { "" }, jaga(&Some(j.clone())))?,
+                    Inst::Sebar { pos, pulang, jaga: j, .. } => writeln!(f, "  sebar {pos}{}{}", if *pulang { " pulang" } else { "" }, jaga(&Some(j.clone())))?,
                     Inst::BukaLebar { hasil, pos, jaga: j } => writeln!(f, "  {hasil} = buka-lebar {pos}{}", jaga(&Some(j.clone())))?,
                     Inst::Biner { hasil, op, a, b, jaga: j } => writeln!(f, "  {hasil} = {op:?} {a}, {b}{}", jaga(j))?,
                     Inst::Unar { hasil, op, a, jaga: j } => writeln!(f, "  {hasil} = {op:?} {a}{}", jaga(j))?,

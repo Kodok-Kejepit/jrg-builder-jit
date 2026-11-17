@@ -1910,7 +1910,8 @@ pub fn turunkan(
             Cara::Sebar => {
                 // 1 = `Err`/`None`: fungsinya kembali dengan nilai itu (masuk dari VM), selain itu VM yang menjalankannya.
                 let p = i64c(&mut b, t as i64 - 1);
-                let c = b.ins().call(f_sebar, &[p]);
+                let pk = i64c(&mut b, (t as i64 - 1) | (ins.arg as i64) << 32);
+                let c = b.ins().call(f_sebar, &[pk]);
                 let c = b.inst_results(c)[0];
                 if r.kembali == super::layak::KEMBALI_SKALAR && !r.ada_defer {
                     let (pulang, terus) = (b.create_block(), b.create_block());

@@ -529,9 +529,10 @@ impl Penurun<'_, '_> {
                 let v = self.b.ins().uextend(types::I64, v);
                 self.tetapkan(*hasil, v);
             }
-            Inst::Sebar { pos, pulang, jaga } => {
+            Inst::Sebar { pos, pulang, keluarga, jaga } => {
                 let p = self.i64c(*pos as i64);
-                let c = self.b.ins().call(self.lb.sebar, &[p]);
+                let pk = self.i64c(*pos as i64 | (*keluarga as i64) << 32);
+                let c = self.b.ins().call(self.lb.sebar, &[pk]);
                 let c = self.b.inst_results(c)[0];
                 // 1 = `Err`/`None`: fungsinya kembali dengan nilai itu (masuk dari VM).
                 if *pulang {

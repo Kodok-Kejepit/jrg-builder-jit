@@ -518,7 +518,7 @@ impl Pembangun<'_> {
             Cara::Sebar => {
                 let pulang = self.r.kembali == crate::jit::layak::KEMBALI_SKALAR && !self.r.ada_defer;
                 let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: false, puncak_vm: false };
-                self.dorong(b, Inst::Sebar { pos: t - 1, pulang, jaga });
+                self.dorong(b, Inst::Sebar { pos: t - 1, pulang, keluarga: ins.arg, jaga });
             }
             // `Typeof; Const; Eq` (dan `AmbilPayload` di depannya, atau `Len` sesudah `AmbilPayload`) jadi satu: hasilnya
             // di puncak, lanjut di `ip + lebar` (seperti penurun langsung).
@@ -952,6 +952,9 @@ impl Pembangun<'_> {
         for i in perlu {
             match asal[i] {
                 Jenis::Fungsi(c) => self.dorong(stub, Inst::Taruh { pos: i, alamat: &self.r.callee_nilai[c] as *const _ as i64 }),
+                // Konstanta varian yang basi untuk semua variannya: bayangannya yang dibawa (`tepi_bayang` mewujudkannya
+                // di sini kalau tujuannya tidak membawanya).
+                j if j.konstanta().is_some() && self.bayang.get(&i).is_some_and(|x| x.basi != 0 && x.basi == x.mungkin) => {}
                 j if j.konstanta().is_some() => {
                     let k = j.konstanta().expect("baru diperiksa") as usize;
                     self.dorong(stub, Inst::Taruh { pos: i, alamat: &self.f.chunk.constants[k] as *const _ as i64 });
@@ -1432,7 +1435,7 @@ impl Pembangun<'_> {
                     Inst::IterAda { hasil, slot, jaga: j } => Inst::IterAda { hasil: nv(hasil), slot: slot + geser, jaga: jaga(&j) },
                     Inst::Maju { slot, jaga: j } => Inst::Maju { slot: slot + geser, jaga: jaga(&j) },
                     Inst::CekMetode { pos, label, jaga: j } => Inst::CekMetode { pos: pos + geser, label, jaga: jaga(&j) },
-                    Inst::Sebar { pos, pulang, jaga: j } => Inst::Sebar { pos: pos + geser, pulang, jaga: jaga(&j) },
+                    Inst::Sebar { pos, pulang, keluarga, jaga: j } => Inst::Sebar { pos: pos + geser, pulang, keluarga, jaga: jaga(&j) },
                     Inst::Wujud(m) => Inst::Wujud(super::Maya {
                         pos: m.pos + geser, tag: nv(m.tag), muatan: m.muatan.iter().map(|v| nv(*v)).collect(), ..m
                     }),
