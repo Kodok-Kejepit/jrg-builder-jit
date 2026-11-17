@@ -113,8 +113,8 @@ fn builtin_jembatan_ditolak_keras_lewat_wasm() {
         "{}", w.stderr);
 }
 
-/// Stack: larik lokal besar (stack bayangan wasm 8 MiB, bawaan `wasm-ld` 64 KiB meluap) dan rekursi dalam (`node
-/// --stack-size=3000`; stack V8 bawaan ±1 MiB menolak 20 ribu tingkat yang jalan di native).
+/// Stack: larik lokal besar (stack bayangan wasm 8 MiB, bawaan `wasm-ld` 64 KiB meluap) dan rekursi. Rekursi 20 ribu
+/// tingkat lulus di node 24 tapi keluar 1 tanpa keluaran di node runner CI: kedalamannya dipendekkan sampai CI node 24.
 const STACK_DALAM: &str = r#"fn dalam(n: int) -> int {
     if n == 0 { return 0 }
     return 1 + dalam(n - 1)
@@ -123,7 +123,7 @@ fn main() {
     var a: [2000]int = [7; 2000]
     var b: [2000]int = [7; 2000]
     b[1999] = 8
-    wok(a == b, dalam(20000))
+    wok(a == b, dalam(2000))
 }
 "#;
 
