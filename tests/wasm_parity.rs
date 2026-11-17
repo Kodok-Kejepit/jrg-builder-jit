@@ -148,7 +148,13 @@ fn stack_dalam_lewat_wasm() {
 fn diagnosa_stack(kerja: &Path) -> String {
     let sh = |c: &str| Command::new("sh").arg("-c").arg(c).current_dir(kerja).output()
         .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))).unwrap_or_default();
-    let mut d = sh("echo \"ulimit -s $(ulimit -s), node $(node --version), $(uname -srm)\"");
+    let mut d = sh("echo \"ulimit -s $(ulimit -s), node $(node --version), $(uname -srm), PATH node: $(command -v node)\"");
+    let sumber = kerja.join("stack.jrg");
+    for ulang in 1..=2 {
+        let h = jalan(&[sumber.to_str().unwrap(), "--emit-wasm", "-o", kerja.join("stack.wasm").to_str().unwrap()], kerja);
+        d += &format!("ulang {ulang} persis seperti tes: rc {} stdout {:?} stderr {} byte {:?}\n", h.kode, h.stdout,
+            h.stderr.len(), h.stderr.chars().rev().take(200).collect::<String>().chars().rev().collect::<String>());
+    }
     d += &sh("ls; for ss in '' --stack-size=3000; do node --no-warnings $ss stack.wasm.mjs > o.txt 2>&1; rc=$?; \\
         echo \"stack.wasm langsung $ss: $(tail -c 300 o.txt | tr '\\n' ' ') [rc $rc]\"; done");
     d += &sh(&format!("{} stack.jrg --emit-wasm -o s2.wasm > o.txt 2>&1; rc=$?; echo \"lewat jrgc: $(tail -c 300 o.txt | tr '\\n' ' ') [rc $rc]\"", jrgc()));
