@@ -144,6 +144,9 @@ fn diagnosa_stack(kerja: &Path) -> String {
     let sh = |c: &str| Command::new("sh").arg("-c").arg(c).current_dir(kerja).output()
         .map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))).unwrap_or_default();
     let mut d = sh("echo \"ulimit -s $(ulimit -s), node $(node --version), $(uname -srm)\"");
+    d += &sh("ls; for ss in '' --stack-size=3000; do node --no-warnings $ss stack.wasm.mjs > o.txt 2>&1; rc=$?; \\
+        echo \"stack.wasm langsung $ss: $(tail -c 300 o.txt | tr '\\n' ' ') [rc $rc]\"; done");
+    d += &sh(&format!("{} stack.jrg --emit-wasm -o s2.wasm > o.txt 2>&1; rc=$?; echo \"lewat jrgc: $(tail -c 300 o.txt | tr '\\n' ' ') [rc $rc]\"", jrgc()));
     for n in [1000, 5000, 10000, 15000, 20000] {
         let isi = format!("fn dalam(n: int) -> int {{\n    if n == 0 {{ return 0 }}\n    return 1 + dalam(n - 1)\n}}\nfn main() {{\n    wok(dalam({n}))\n}}\n");
         let p = tulis(kerja, &format!("r{n}.jrg"), &isi);
