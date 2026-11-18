@@ -484,7 +484,18 @@ unsafe fn ke_jvalue(env: Env, tipe: &str, v: &Value, ke: usize, nama: &str)
             }
             Value::Struct { name, .. } if name == "JavaObj" => {
                 let id = id_dari_handle(v, nama)?;
-                let (g, _) = ambil_global(id, nama)?;
+                let (g, kelas) = ambil_global(id, nama)?;
+                // JNI tidak memeriksa jenis argumen objek: objek kelas lain dibaca di offset yang salah dan JVM
+                // mati SIGSEGV (AGI-20261118-10). Diperiksa `IsInstanceOf` atas kelas di deskriptornya.
+                let cls = cari_kelas(env, &lain[1..lain.len() - 1])?;
+                let cek: extern "C" fn(Env, *mut c_void, *mut c_void) -> u8 =
+                    std::mem::transmute(fungsi(env, idx::IS_INSTANCE_OF));
+                let cocok = cek(env, g, cls) != 0;
+                hapus_lokal(env, cls);
+                if !cocok {
+                    return Err(format!("{}: argumen ke-{} butuh objek `{}`, dapat objek `{}`",
+                        nama, ke + 1, lain[1..lain.len() - 1].replace('/', "."), kelas));
+                }
                 (JValue { l: g }, None)
             }
             _ => return Err(salah("objek Java (hasil `jvm::baru`) atau `nil`")),

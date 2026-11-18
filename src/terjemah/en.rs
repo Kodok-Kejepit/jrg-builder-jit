@@ -2320,6 +2320,8 @@ pub(crate) static TABEL: &[(&str, &str)] = &[
      "the connection no longer exists"),
 
     // ── ffi: C/C++, .NET, JVM/Kotlin, pekerja py/js/php/lua, wasm ─────────────────────────────────────────────────
+    ("{}: argumen ke-{} butuh objek `{}`, dapat objek `{}`",
+     "{}: argument {} needs an object of `{}`, got an object of `{}`"),
     ("tipe {} belum bisa dipakai di blok extern \"C++\"",
      "the type {} cannot be used in an extern \"C++\" block yet"),
     ("128-bit tidak punya padanan yang portabel di ABI C++",

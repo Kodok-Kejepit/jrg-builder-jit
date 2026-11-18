@@ -8239,6 +8239,31 @@ class Titik(val x: Double, val y: Double) {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// AGI-20261118-10: JNI tidak memeriksa jenis argumen objek, jadi `Date` ke parameter `Integer` dulu dibaca di
+    /// offset yang salah (jawaban karangan atau SIGSEGV). Sekarang ditolak lewat `IsInstanceOf`, di dua mesin.
+    #[test]
+    fn objek_java_kelas_lain_ditolak_sebelum_jni() {
+        if !Command::new("java").arg("-version").output().map(|o| o.status.success()).unwrap_or(false) {
+            eprintln!("LEWAT: `java` tidak ada");
+            return;
+        }
+        let src = "package main\n\
+             fn buka(r) { return r.unwrap_or(nil) }\n\
+             pub fn main() {\n\
+             wok(jvm::mulai([]))\n\
+             let n = buka(jvm::baru(\"java.lang.Integer\", \"(I)V\", [5]))\n\
+             let m = buka(jvm::baru(\"java.lang.Integer\", \"(I)V\", [9]))\n\
+             let d = buka(jvm::baru(\"java.util.Date\", \"()V\", []))\n\
+             wok(jvm::panggil(n, \"compareTo\", \"(Ljava/lang/Integer;)I\", [m]))\n\
+             wok(jvm::panggil(n, \"compareTo\", \"(Ljava/lang/Integer;)I\", [d]))\n\
+             }\n";
+        let i = jalankan_keluaran_penuh(src, false);
+        let v = jalankan_keluaran_penuh(src, true);
+        assert_eq!(i, v, "dua mesin harus sama");
+        assert!(i.contains("Ok(-1)"), "pembanding sah hilang:\n{i}");
+        assert!(i.contains("butuh objek `java.lang.Integer`, dapat objek `java.util.Date`"), "{i}");
+    }
+
     /// Kegagalan classpath yang paling sering: `kotlin-stdlib.jar` lupa
     /// dipasang. Pesan JVM aslinya tidak menyebut jar itu sama sekali.
     #[test]
