@@ -1284,8 +1284,8 @@ impl Pembangun<'_> {
         let cocok = match self.r.spek[ip] {
             Some(Jenis::Bulat) => kembali.iter().all(|a| matches!(a, Akhir::Kembali { hasil: super::Hasil::Bulat, .. })),
             Some(Jenis::Pecahan) => kembali.iter().all(|a| matches!(a, Akhir::Kembali { hasil: super::Hasil::Pecahan, .. })),
-            // Hasil milik VM belum: struct yang dibangun tepat sebelum `Return` memakai ulang lokal bingkainya sendiri
-            // (`StrukturUlang`), dan disisipkan `nil` ditemukan `paritas_llvm_lewat_jit` sebelum didorong.
+            // Hasil milik VM: `StrukturUlang` di callee jadi `Struktur` saat disalin (lihat `sisipkan`).
+            None => kembali.iter().all(|a| matches!(a, Akhir::KembaliNilai { .. })),
             _ => false,
         };
         if kembali.is_empty() || !cocok { return false; }
@@ -1502,6 +1502,14 @@ impl Pembangun<'_> {
                         let mut j2 = vec![Jenis::Kosong; geser];
                         j2.extend_from_slice(asli);
                         let j2: &'static [Jenis] = Box::leak(j2.into_boxed_slice());
+                        // Bingkai callee yang disisipkan adalah bingkai pemanggil: lokal yang dipakai ulang
+                        // `StrukturUlang` milik pemanggil dan masih terlihat sesudahnya, jadi jadi `Struktur` biasa.
+                        use crate::jit::lambat::SitusBangun;
+                        let situs = match unsafe { &*(situs as *const SitusBangun) } {
+                            SitusBangun::StrukturUlang(l, b) =>
+                                SitusBangun::bocor(SitusBangun::Struktur(l.clone(), b.clone())) as *const _ as i64,
+                            _ => situs,
+                        };
                         Inst::Bangun {
                             situs, jenis: j2.as_ptr() as i64, t: tb + geser, n: nn,
                             isi: bi.into_iter().map(|(p, v)| (p + geser, nv(v))).collect(),

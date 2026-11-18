@@ -4575,3 +4575,33 @@ fn jir_payload_campur_sama_dengan_vm() {
     let deopt: usize = r.stderr.lines().find_map(|l| l.strip_prefix("[jit] deopt: ")).and_then(|n| n.trim().parse().ok()).unwrap_or(0);
     assert!(deopt < 50, "deopt {deopt} kali:\n{}", r.stderr);
 }
+
+/// A2 (langkah 107): callee berhasil struct milik VM disisipkan. `StrukturUlang` callee (pakai ulang lokal sebentuk)
+/// jadi `Struktur` di salinannya, karena bingkainya bingkai pemanggil: `p` yang masih dibaca tidak boleh ditimpa.
+const JIR_STRUCT_SISIP: &str = r#"package main
+struct P { pub x: f64, pub y: f64 }
+impl P {
+    fn maju(self, d: f64) -> P { return P { x: self.x + d, y: self.y * 1.5 } }
+}
+pub fn main() {
+    var p: P = P { x: 1.0, y: 1.0 }
+    var t: f64 = 0.0
+    for i in 0..3000 {
+        let q = p.maju(0.5)
+        t = t + q.x + p.x
+        if i % 3 == 0 { p = q } else { p = p.maju(0.25) }
+        if p.y > 1000.0 { p = P { x: p.x, y: 1.0 } }
+    }
+    wok(t, p.x, p.y)
+}
+"#;
+
+#[test]
+fn jir_struct_disisipkan_sama_dengan_vm() {
+    let v = jalankan(JIR_STRUCT_SISIP, &["--vm"], &[]);
+    assert!(v.sukses, "{}{}", v.stdout, v.stderr);
+    for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..], &[JIR, ACAK][..]] {
+        let j = jalankan(JIR_STRUCT_SISIP, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+}
