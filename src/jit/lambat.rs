@@ -1095,7 +1095,8 @@ impl RantaiPola {
 pub struct TabelVarian(pub std::sync::RwLock<Vec<(&'static crate::vm::value::NamaVarian, Option<usize>, usize)>>);
 
 /// Varian berbayangan di posisi `pos` yang isi stack VM-nya basi (penanda `tag` di bit `basi`) ditulis dari
-/// penanda dan payload-nya (`isi`, bit `pecahan` = isi pecahan); penanda lain = isinya sudah benar.
+/// penanda dan payload-nya (`isi`, bit `pecahan` = isi pecahan; bit 63 = cuma payload tuple-nya); penanda lain =
+/// isinya sudah benar.
 pub extern "C" fn wujud_varian(pos: i64, tabel: *const TabelVarian, tag: i64, basi: i64, pecahan: i64, isi: *const i64) {
     if (basi as u64 >> tag) & 1 == 0 { return; }
     let (nama, payload, konst) = unsafe { &*tabel }.0.read().unwrap_or_else(|p| p.into_inner())[tag as usize];
@@ -1103,7 +1104,9 @@ pub extern "C" fn wujud_varian(pos: i64, tabel: *const TabelVarian, tag: i64, ba
         let b = unsafe { *isi.add(k) };
         if (pecahan as u64 >> k) & 1 == 1 { VmValue::Float(f64::from_bits(b as u64)) } else { VmValue::Int(b as i128) }
     };
-    let v = if konst != 0 { unsafe { &*(konst as *const VmValue) }.clone() } else {
+    let v = if pecahan < 0 {
+        VmValue::tuple((0..payload.unwrap_or(0)).map(skalar).collect())
+    } else if konst != 0 { unsafe { &*(konst as *const VmValue) }.clone() } else {
         VmValue::varian_nama(nama, match payload {
             None => None,
             Some(1) => Some(skalar(0)),

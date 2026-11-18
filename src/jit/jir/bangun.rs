@@ -1342,10 +1342,58 @@ impl Pembangun<'_> {
         for l in 0..a {
             if baca_semua || ditulis.as_ref().is_none_or(|d| d.contains(&l)) { self.wujudkan(b, l + geser); }
         }
-        for blk in c.blok.iter() {
+        // Konstanta bulat callee (indeks `Baca` atas tuple maya).
+        let konst_callee: std::collections::HashMap<Nilai, i64> = c.blok.iter().flat_map(|b| &b.inst)
+            .filter_map(|i| match i { Inst::KonstI { hasil, nilai } => Some((*hasil, *nilai)), _ => None }).collect();
+        for (bi, blk) in c.blok.iter().enumerate() {
             let mut inst = Vec::with_capacity(blk.inst.len());
+            // Tuple maya (langkah 105): `PayloadLokal` yang dilipat — (posisi callee, bayangan, varian yang sah).
+            let mut tmaya: Option<(usize, bayang::Bayang, u64)> = None;
             for i in &blk.inst {
                 let mut pra = Vec::new();
+                // `PayloadLokal` atas argumen berbayangan yang semua variannya ber-payload tuple lengkap: tidak ditulis.
+                if let Inst::Pembantu { pb: Pb::PayloadLokal, args, gagal: Some((_, jg)), .. } = i {
+                    if let (Some(Arg::I64(l)), Some(Arg::I64(ke))) = (args.first(), args.get(1)) {
+                        let ke = *ke as usize;
+                        if let Some(x) = bayang_arg(self, *l as usize).filter(|_| bayang::tuple_tak_bocor(&c, bi, ke)) {
+                            let baik = self.tuple_baik(&x);
+                            if baik != 0 {
+                                let bukan = self.lipat_tag(&mut pra, &x, |t| baik >> t & 1 == 0);
+                                pra.push(Inst::JagaJika { kondisi: bukan, jaga: jaga(jg) });
+                                inst.append(&mut pra);
+                                tmaya = Some((ke, x, baik));
+                                continue;
+                            }
+                        }
+                    }
+                }
+                // `Baca` elemen konstan atas tuple maya: isi bayangannya.
+                if let (Some((ke, x, baik)), Inst::Pembantu { pb: pb @ (Pb::Baca | Pb::BacaPecahan), args, keluar: Some(kv), .. }) = (&tmaya, i) {
+                    let k = match (args.first(), args.get(1)) {
+                        (Some(Arg::I64(p)), Some(Arg::Isi(v))) if *p as usize == *ke => konst_callee.get(v).copied(),
+                        _ => None,
+                    };
+                    let j = if *pb == Pb::BacaPecahan { Jenis::Pecahan } else { Jenis::Bulat };
+                    let isi = k.and_then(|k| x.muatan.get(k as usize).filter(|m| m.0 == j && baik & !m.2 == 0)
+                        .filter(|_| (0..64u32).filter(|t| baik >> t & 1 == 1).all(|t| self.jumlah_payload(t) > k as usize)));
+                    if let Some(m) = isi {
+                        inst.push(Inst::Pilih { hasil: nv(*kv), jika: m.1, ya: m.1, tidak: m.1 });
+                        continue;
+                    }
+                }
+                // Tuple maya yang dibuang tidak pernah ada di stack VM: tidak ada yang perlu dilepas.
+                if matches!((&tmaya, i), (Some((ke, _, _)), Inst::Buang { pos }) if pos == ke) { tmaya = None; continue; }
+                // Pembaca lain tuple maya: ditulis dulu ke stack VM; penulisnya: bayangannya selesai.
+                if let Some((ke, x, baik)) = tmaya.clone() {
+                    if bayang::dibaca(i).is_none_or(|d| d.contains(&ke)) {
+                        let mut m = self.maya_dari(ke + geser, &bayang::Bayang { basi: baik, ..x });
+                        m.tuple = true;
+                        inst.push(Inst::Wujud(m));
+                        tmaya = None;
+                    } else if bayang::ditulis(i).is_none_or(|d| d.contains(&ke)) {
+                        tmaya = None;
+                    }
+                }
                 let lipat = match i {
                     Inst::Rantai { hasil, lokal, situs, urutan, .. } => bayang_arg(self, *lokal)
                         .and_then(|x| self.lipat_rantai(&mut pra, &x, *situs, *urutan))
@@ -1441,6 +1489,14 @@ impl Pembangun<'_> {
                     }),
                     lain => return Err(format!("instruksi callee tak bisa disisipkan: {lain:?}")),
                 });
+                // Deopt sesudah `PayloadLokal` yang dilipat menulis tuple-nya dulu (posisi callee, digeser `deopt`).
+                if let Some((ke, x, baik)) = &tmaya {
+                    let mut m = self.maya_dari(*ke, &bayang::Bayang { basi: *baik, ..x.clone() });
+                    m.tuple = true;
+                    if let Some(akhir) = inst.last_mut() {
+                        for j in bayang::jaga_inst(akhir) { j.keadaan.maya.push(m.clone()); }
+                    }
+                }
             }
             let akhir = match blk.akhir.clone().expect("diperiksa") {
                 Akhir::Lompat { ke, args } => Akhir::Lompat { ke: nb(ke), args: args.into_iter().map(nv).collect() },
@@ -1448,10 +1504,23 @@ impl Pembangun<'_> {
                     kondisi: nv(kondisi), ya: nb(ya), ya_args: ya_args.into_iter().map(nv).collect(),
                     tidak: nb(tidak), tidak_args: tidak_args.into_iter().map(nv).collect(),
                 },
-                Akhir::Keluar { keadaan: k } => Akhir::Keluar { keadaan: keadaan(&k) },
+                Akhir::Keluar { keadaan: k } => {
+                    let mut kk = keadaan(&k);
+                    if let Some((ke, x, baik)) = &tmaya {
+                        let mut m = self.maya_dari(*ke, &bayang::Bayang { basi: *baik, ..x.clone() });
+                        m.tuple = true;
+                        kk.maya.push(m);
+                    }
+                    Akhir::Keluar { keadaan: kk }
+                }
                 Akhir::Kembali { nilai, .. } => Akhir::Lompat { ke: lanjut, args: vec![nv(nilai)] },
                 // Hasil milik VM: ke posisi fungsinya, seperti `Return` VM.
                 Akhir::KembaliNilai { pos } => {
+                    if let Some((ke, x, baik)) = tmaya.take().filter(|t| t.0 == pos) {
+                        let mut m = self.maya_dari(ke + geser, &bayang::Bayang { basi: baik, ..x });
+                        m.tuple = true;
+                        inst.push(Inst::Wujud(m));
+                    }
                     if let Some(x) = self.bayang.get(&(pos + geser)).filter(|x| x.basi != 0) {
                         inst.push(Inst::Wujud(self.maya_dari(pos + geser, x)));
                     }

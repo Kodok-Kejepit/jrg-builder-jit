@@ -4479,3 +4479,52 @@ fn jir_bayang_varian_sama_dengan_vm() {
     let (dengan, tanpa) = (rantai(""), rantai("mati"));
     assert!(dengan < tanpa, "tidak ada rantai yang dilipat bayangan: {dengan} lawan {tanpa}");
 }
+
+/// JIR-3b langkah 105: payload tuple dibaca per elemen dari bayangan di callee yang disisipkan (`PayloadLokal` +
+/// `Baca` dilipat), tuple-nya diwujudkan cuma saat deopt atau dibaca utuh (`wok`), varian yang lolos ke larik.
+const JIR_TUPLE: &str = r#"enum Bentuk { Kotak(int, int), Garis(int, int, int), Skala(int), Kosong }
+
+fn luas(b: Bentuk, acc: int) -> int {
+    match b {
+        Bentuk::Kotak(p, l) => (acc + p * l) % 1000003,
+        Bentuk::Garis(a, c, d) => {
+            if acc < a { return a }
+            return acc - c + d
+        }
+        Bentuk::Skala(f) => { if f > 1 { return acc + f }
+            return acc }
+        Bentuk::Kosong => acc,
+    }
+}
+
+fn main() {
+    var acc = 0
+    var simpan = []
+    for i in 0..20000 {
+        let s = i % 4
+        var b = Bentuk::Kosong
+        if s == 0 { b = Bentuk::Kotak(i % 7, 3) }
+        else if s == 1 { b = Bentuk::Garis(i % 5, 2, 9) }
+        else if s == 2 { b = Bentuk::Skala(i % 3) }
+        acc = luas(b, acc)
+        if i % 6000 == 1 { simpan = simpan + [b]
+            wok(b) }
+    }
+    wok(acc, simpan)
+    wok(luas(Bentuk::Kotak(170141183460469231731687303715884105727, 2), 1))
+}
+"#;
+
+#[test]
+fn jir_payload_tuple_sama_dengan_vm() {
+    let v = jalankan(JIR_TUPLE, &["--vm"], &[]);
+    assert!(!v.sukses && v.stdout.lines().count() == 5, "{}{}", v.stdout, v.stderr);
+    for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..], &[JIR, STRES, ("JRG_JIT_BAYANG", "mati")][..]] {
+        let j = jalankan(JIR_TUPLE, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    let pl = |bayang: &str| jalankan(JIR_TUPLE, &["--jit"], &[JIR, ("JRG_JIT_LOG", "jir"), ("JRG_JIT_BAYANG", bayang)])
+        .stderr.matches("PayloadLokal").count();
+    let (dengan, tanpa) = (pl(""), pl("mati"));
+    assert!(dengan < tanpa, "tidak ada PayloadLokal yang dilipat: {dengan} lawan {tanpa}");
+}

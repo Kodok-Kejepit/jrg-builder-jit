@@ -83,7 +83,8 @@ pub struct Keadaan {
 /// Varian di posisi `pos` yang isi stack VM-nya mungkin basi (bayangan varian, JIR-3b): penanda `tag` (indeks
 /// `TabelVarian` di `tabel`), payload `muatan` (bit `pecahan` = pecahan), basi kalau bit penandanya ada di `basi`.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Maya { pub pos: usize, pub tag: Nilai, pub muatan: Vec<Nilai>, pub basi: u64, pub pecahan: u64, pub tabel: i64 }
+/// `tuple`: yang ditulis cuma payload tuple-nya (`PayloadLokal` yang dilipat, langkah 105), bukan variannya.
+pub struct Maya { pub pos: usize, pub tag: Nilai, pub muatan: Vec<Nilai>, pub basi: u64, pub pecahan: u64, pub tabel: i64, pub tuple: bool }
 
 /// Jaga yang gagal = deopt di `keadaan`. `spek`: kegagalannya dicatat (`GAGAL_SPEK`), kompilasi berikutnya tidak
 /// berspekulasi lagi di sana.

@@ -389,7 +389,8 @@ impl Penurun<'_, '_> {
         }
         let isi = self.b.ins().stack_addr(self.ptr, s, 0);
         let tag = self.v(m.tag);
-        let (pos, tabel, basi, pecahan) = (self.i64c((m.pos + geser) as i64), self.i64c(m.tabel), self.i64c(m.basi as i64), self.i64c(m.pecahan as i64));
+        let bentuk = if m.tuple { 1i64 << 63 } else { 0 };
+        let (pos, tabel, basi, pecahan) = (self.i64c((m.pos + geser) as i64), self.i64c(m.tabel), self.i64c(m.basi as i64), self.i64c(m.pecahan as i64 | bentuk));
         self.b.ins().call(self.lb.wujud_varian, &[pos, tabel, tag, basi, pecahan, isi]);
     }
 

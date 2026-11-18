@@ -143,7 +143,7 @@ impl Pembangun<'_> {
         Maya {
             pos, tag: x.tag, muatan: x.muatan.iter().map(|m| m.1).collect(), basi: x.basi,
             pecahan: x.muatan.iter().enumerate().filter(|(_, m)| m.0 == Jenis::Pecahan).fold(0, |a, (k, _)| a | 1 << k),
-            tabel: self.tabel as *const _ as i64,
+            tabel: self.tabel as *const _ as i64, tuple: false,
         }
     }
 
@@ -440,4 +440,64 @@ impl Pembangun<'_> {
 
     /// Kumpulan instruksi ke blok `b` lewat `dorong` (supaya jejak bayangan dan CSE ikut).
     pub(super) fn dorong_semua(&mut self, b: Blok, xs: Vec<Inst>) { for i in xs { self.dorong(b, i); } }
+}
+
+/// Jaga milik instruksi `i` (keadaan deopt-nya), untuk ditambah tuple maya (langkah 105).
+pub(super) fn jaga_inst(i: &mut Inst) -> Vec<&mut super::Jaga> {
+    match i {
+        Inst::Biner { jaga, .. } | Inst::Unar { jaga, .. } => jaga.iter_mut().collect(),
+        Inst::BinerL { jaga, jaga_muat, .. } => jaga.iter_mut().chain(jaga_muat.iter_mut()).collect(),
+        Inst::Sempit { jaga, .. } | Inst::JagaJika { jaga, .. } | Inst::Buka { jaga, .. } | Inst::BukaLebar { jaga, .. }
+        | Inst::MuatUpval { jaga, .. } | Inst::SimpanUpval { jaga, .. } | Inst::Sebar { jaga, .. }
+        | Inst::Rantai { jaga, .. } | Inst::Rumus { jaga, .. } | Inst::CekMetode { jaga, .. }
+        | Inst::IterAda { jaga, .. } | Inst::Maju { jaga, .. } | Inst::Panjang { jaga, .. } => vec![jaga],
+        Inst::Pembantu { gagal, .. } => gagal.iter_mut().map(|(_, j)| j).collect(),
+        Inst::Langsung { hasil, .. } => hasil.iter_mut().map(|(_, _, j)| j).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Posisi `ke` callee (blok `bi`) tidak dibaca dan tidak hidup sebagai milik VM di keadaan deopt blok mana pun yang
+/// terjangkau sesudah blok `bi`: tuple yang dilipat di sana tidak perlu ada di stack VM di luar blok itu.
+pub(super) fn tuple_tak_bocor(c: &super::Fungsi, bi: usize, ke: usize) -> bool {
+    let penerus = |b: usize| -> Vec<usize> {
+        match &c.blok[b].akhir {
+            Some(Akhir::Lompat { ke, .. }) => vec![ke.0 as usize],
+            Some(Akhir::Cabang { ya, tidak, .. }) => vec![ya.0 as usize, tidak.0 as usize],
+            _ => Vec::new(),
+        }
+    };
+    let hidup = |k: &super::Keadaan| k.isi.len() > ke && k.isi[ke].is_none();
+    let (mut lihat, mut tumpuk) = (vec![false; c.blok.len()], penerus(bi));
+    while let Some(b) = tumpuk.pop() {
+        if b >= c.blok.len() || lihat[b] { continue; }
+        lihat[b] = true;
+        for i in &c.blok[b].inst {
+            if dibaca(i).is_none_or(|d| d.contains(&ke)) { return false; }
+            if jaga_inst(&mut i.clone()).iter().any(|j| hidup(&j.keadaan)) { return false; }
+        }
+        match &c.blok[b].akhir {
+            Some(Akhir::Keluar { keadaan }) if hidup(keadaan) => return false,
+            Some(Akhir::KembaliNilai { pos }) if *pos == ke => return false,
+            _ => {}
+        }
+        tumpuk.extend(penerus(b));
+    }
+    true
+}
+
+impl Pembangun<'_> {
+    /// Bit varian yang payload tuple-nya (dua isi atau lebih) seluruhnya ada di bayangan `x`.
+    pub(super) fn tuple_baik(&self, x: &Bayang) -> u64 {
+        let t = self.tabel.0.read().unwrap_or_else(|p| p.into_inner());
+        (0..64).filter(|i| x.mungkin >> i & 1 == 1).filter(|&i| match t[i] {
+            (_, Some(n), 0) if n >= 2 => x.muatan.len() >= n && x.muatan[..n].iter().all(|m| m.2 >> i & 1 == 1),
+            _ => false,
+        }).fold(0, |m, i| m | 1 << i)
+    }
+
+    /// Jumlah isi payload varian `t` (tabel).
+    pub(super) fn jumlah_payload(&self, t: u32) -> usize {
+        self.tabel.0.read().unwrap_or_else(|p| p.into_inner()).get(t as usize).and_then(|e| e.1).unwrap_or(0)
+    }
 }
