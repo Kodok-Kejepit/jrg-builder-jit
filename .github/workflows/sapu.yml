@@ -43,6 +43,15 @@ jobs:
           exit $rc
         shell: bash
 
+      # Aset mesin Praktik hasil build CI, diunduh ke `docs/aset/` tanpa membangun wasm di laptop.
+      - name: Simpan aset Praktik
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: praktik-aset
+          path: docs/aset/jrg-web.js
+          if-no-files-found: warn
+
       - name: Simpan log sapuan
         if: always()
         uses: actions/upload-artifact@v4
