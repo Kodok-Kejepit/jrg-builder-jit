@@ -256,6 +256,6 @@ mod uji_bentuk {
         assert_eq!(satu.reshape(&[1, 1]).unwrap().shape, vec![1, 1]);
         let nol = Nd::baru(Buf::F64(vec![]), vec![2, 0]).unwrap();
         let h = super::reduce::per_sumbu(&nol, super::reduce::Reduksi::Jumlah, 0).unwrap();
-        assert_eq!((h.shape, h.size()), (vec![0], 0));
+        assert_eq!((h.shape.clone(), h.size()), (vec![0], 0));
     }
 }
