@@ -2320,6 +2320,8 @@ pub(crate) static TABEL: &[(&str, &str)] = &[
      "the connection no longer exists"),
 
     // ── ffi: C/C++, .NET, JVM/Kotlin, pekerja py/js/php/lua, wasm ─────────────────────────────────────────────────
+    ("{}: JVM menolak membuat referensi objek (memori habis?)",
+     "{}: the JVM refused to create an object reference (out of memory?)"),
     ("{}: argumen ke-{} butuh objek `{}`, dapat objek `{}`",
      "{}: argument {} needs an object of `{}`, got an object of `{}`"),
     ("tipe {} belum bisa dipakai di blok extern \"C++\"",
