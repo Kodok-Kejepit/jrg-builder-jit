@@ -146,9 +146,7 @@ static int jrg_ko_fatal;
 
 static void jrg_ko_buntu(void) {
     static const char pesan[] =
-        "kebuntuan: semua goroutine sedang menunggu channel atau kunci dan tidak ada yang bisa melanjutkan\n"
-        "  catatan: di interpreter dan `--vm` program ini menggantung selamanya; backend "
-        "`--emit-llvm` menjalankan goroutine sebagai korutin satu utas, jadi ia bisa melihatnya";
+        "kebuntuan: semua goroutine sedang menunggu channel atau kunci dan tidak ada yang bisa melanjutkan";
     jrg_ko_fatal = 1;
     jrg_panic((const unsigned char *)pesan, (int64_t)(sizeof pesan - 1));
 }

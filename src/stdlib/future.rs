@@ -29,8 +29,10 @@ pub fn register(vm: &mut Vm) {
         let ch_clone = ch.clone();
         let globals  = HashMap::new(); // goroutine dapat globals dari caller
 
-        // Spawn OS thread untuk eksekusi fn
+        // Spawn OS thread untuk eksekusi fn. Badannya aktor kebuntuan (`antrean::buntu`), seperti interpreter.
+        let aktor = crate::antrean::buntu::lahir();
         std::thread::spawn(move || {
+            let _aktor = aktor;
             let mut vm = crate::vm::vm::Vm::new();
             for (k, v) in globals { vm.globals.insert(k, v); }
             // Kegagalan IKUT dibawa, tidak ditelan jadi `nil`.
@@ -55,7 +57,7 @@ pub fn register(vm: &mut Vm) {
         if !klaim(&serah) {
             return Err(crate::interpreter::tugas::pesan_sudah_diserahkan("future::await"));
         }
-        let val = c.recv().map_err(|e| format!("future::await: {}", e))?.unwrap_or(Nil);
+        let val = c.recv().map_err(|e| crate::interpreter::tugas::sebut_siapa("future::await", e))?.unwrap_or(Nil);
         cek_gagal_vm(val)
     });
 
@@ -132,7 +134,7 @@ pub fn register(vm: &mut Vm) {
                 return Err(crate::interpreter::tugas::pesan_sudah_diserahkan(
                     &format!("future::all: elemen ke-{}", i)));
             }
-            let v = c.recv().map_err(|e| format!("future::all: {}", e))?.unwrap_or(Nil);
+            let v = c.recv().map_err(|e| crate::interpreter::tugas::sebut_siapa("future::all", e))?.unwrap_or(Nil);
             hasil.push(cek_gagal_vm(v)?);
         }
         Ok(Array(Arc::new(Mutex::new(hasil))))
@@ -219,7 +221,9 @@ pub fn register(vm: &mut Vm) {
         let done_ch = VmChannel::new(1);
         let done_clone = done_ch.clone();
 
+        let aktor = crate::antrean::buntu::lahir();
         std::thread::spawn(move || {
+            let _aktor = aktor;
             let mut vm = crate::vm::vm::Vm::new();
             // Hasilnya DIKIRIM, bukan dibuang.
             let hasil = match vm.call_value_immediate(fn_val, args) {
@@ -242,7 +246,7 @@ pub fn register(vm: &mut Vm) {
         if !klaim(&serah) {
             return Err(crate::interpreter::tugas::pesan_sudah_diserahkan("task::join"));
         }
-        cek_gagal_vm(c.recv().ok().flatten().unwrap_or(Nil))
+        cek_gagal_vm(c.recv().map_err(|e| crate::interpreter::tugas::sebut_siapa("task::join", e))?.unwrap_or(Nil))
     });
 
     // Ditolak apa pun argumennya, seperti interpreter: menyebut bentuk `(t: Task)` untuk
