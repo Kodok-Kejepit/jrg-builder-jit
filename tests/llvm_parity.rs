@@ -844,11 +844,13 @@ const BELUM_DIDUKUNG_LLVM: &[(&str, &str, &str)] = &[
     ("larik fungsi bawaan berbeda tipe hasil",
      "package main\npub fn main() {\n let hs = [len, typeof]\n wok(hs[0](\"abc\"))\n}",
      "`fn(nilai bertag) -> string` sebagai `fn(nilai bertag) -> int`"),
-    // Fase AMAN-43: acuan menjawab struct ber-field tambahan; dulu kalimat pertamanya "tipe `unit`
-    // tidak punya method `y`" dan kalimat yang benar menunjuk `<lapis>`, bukan panggilan pemakai.
-    ("json::merge atas struct ditolak di situs panggil",
-     "package main\nstruct P { pub x: int, pub y: int }\npub fn main() { let q = json::merge(dict { y: 2 }, P { x: 1, y: 0 })\n wok(q.y) }",
-     "`json::merge` atas struct `P` belum bisa di backend LLVM"),
+    // `json::merge` struct+dict yang tidak muat di tata letak struct-nya (acuan: struct berfield tambahan/berjenis lain).
+    ("json::merge membawa kunci yang bukan field",
+     "package main\nstruct P { pub x: int, pub y: int }\npub fn main() { wok(json::merge(dict { z: 2 }, P { x: 1, y: 0 })) }",
+     "dict-nya membawa kunci yang bukan field struct `P` (field-nya: x, y)"),
+    ("json::merge mengganti jenis field",
+     "package main\nstruct P { pub x: int, pub y: int }\npub fn main() { wok(json::merge(P { x: 1, y: 0 }, dict { y: \"t\" })) }",
+     "kunci `y` di dict bernilai `string`, sedangkan field `P.y` bertipe `int`"),
     // Fase POTONG-BERTAG (#848): tipe elemennya tidak diketahui dari tag; dulu ditolak saat kompilasi.
     ("potong: array di dalam nilai bertag",
      "package main\npub fn main() { let v = len(env::args()) > 99 $ 5 : [1, 2, 3]\n wok(v[0:2]) }",
@@ -887,6 +889,13 @@ const BELUM_DIDUKUNG_LLVM: &[(&str, &str, &str)] = &[
     // tanpa pesan (pemeriksaan tagnya cuma tahu "ini array").
     ("nilai bertag: array<int> dibuka sebagai []string", "package main\npub fn main() {\n    var x = nil\n    x = [1, 2, 3]\n    let a: []string = x\n    wok(len(a))\n    wok(a[0])\n}\n",
      "nilai bertipe `array<int>` tidak bisa mengisi tempat yang bertipe `array<string>`"),
+    // AGI-20261118-02: kunci dict campur yang LITERAL ditimpa tipe lain lalu dibaca `d["a"]`/`d.a`/`dict::get` —
+    // tipe statis kunci cuma petunjuk, dulu payload skalar dibuka tanpa cek tag (pointer/byte mentah bocor). Sekarang
+    // lewat `buka_terperiksa`: gagal keras menyebut tipe asli, bukan membaca memori mentah sebagai skalar.
+    ("dict campur: kunci int ditimpa string, dibaca lewat indeks", "package main\npub fn main() {\n    var d = {\"a\": 1, \"b\": \"teks\"}\n    d[\"a\"] = \"rahasia\"\n    wok(\"mulai\")\n    let x = d[\"a\"]\n    wok(x)\n}\n",
+     "tidak bisa mengisi tempat yang bertipe `int`"),
+    ("dict campur: kunci string ditimpa array, dibaca lewat field", "package main\npub fn main() {\n    var d = {\"a\": \"hello\", \"b\": 1}\n    d[\"a\"] = [65, 66]\n    wok(\"mulai\")\n    wok(d.a)\n}\n",
+     "tidak bisa mengisi tempat yang bertipe `string`"),
     ("nilai bertag: isi dict campur dibuka sebagai []float", "package main\npub fn main() {\n    var d = {\"a\": 1, \"b\": \"teks\"}\n    d[\"c\"] = [1, 2, 3]\n    let a: []float = d[\"c\"]\n    wok(a)\n    let k = \"c\"\n    let b: [][]int = d[k]\n    wok(len(b))\n    wok(b)\n}\n",
      "nilai bertipe `array<int>` tidak bisa mengisi tempat yang bertipe `array<float>`"),
     // Fase BUNGKUS: nilai bertag yang tagnya tidak cocok dengan tipe variabelnya gagal saat

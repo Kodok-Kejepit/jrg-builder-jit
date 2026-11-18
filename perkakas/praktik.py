@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Mesin Praktik JRG di situs (`docs/aset/jrg-web.js`): `tulis` menulis asetnya,
-`periksa` memastikan ia masih interpreter yang sama dengan `jrgc`."""
+`periksa` memastikan VM di peramban menjawab sama dengan `jrgc` (interpreter, jadi diuji lintas mesin)."""
 import base64, hashlib, json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
@@ -34,7 +34,7 @@ def tulis():
     fungsi = pekerja[pekerja.index("function pekerjaJrg"):].strip()
     ASET.write_text(
         "// docs/aset/jrg-web.js — DIBANGUN `perkakas/bangun_praktik.sh`; jangan disunting.\n"
-        "// Interpreter JRG yang sama dengan `jrgc` (crate `web/`), dalam WebAssembly.\n"
+        "// VM JRG yang sama dengan `jrgc --vm` (crate `web/`), dalam WebAssembly.\n"
         "window.JRG_WEB = {\n"
         f'  sidik: "{sidik()}",\n'
         f"  pekerja: {fungsi},\n"

@@ -1186,7 +1186,7 @@ mod tests {
 #define Q(f) printf("VM_%s %zu\n", #f, offsetof(struct JNIInvokeInterface_, f)/sizeof(void*))
 int main(void){
   P(GetVersion);P(FindClass);P(GetObjectClass);P(GetMethodID);P(CallObjectMethodA);
-  P(ExceptionOccurred);P(ExceptionClear);P(DeleteLocalRef);P(GetStaticMethodID);
+  P(ExceptionOccurred);P(ExceptionClear);P(DeleteLocalRef);P(NewLocalRef);P(GetStaticMethodID);
   P(CallStaticObjectMethodA);P(CallStaticBooleanMethodA);P(CallStaticByteMethodA);
   P(CallStaticCharMethodA);P(CallStaticShortMethodA);P(CallStaticIntMethodA);
   P(CallStaticLongMethodA);P(CallStaticFloatMethodA);P(CallStaticDoubleMethodA);
