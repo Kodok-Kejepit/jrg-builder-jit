@@ -2666,6 +2666,8 @@ pub(crate) static TABEL: &[(&str, &str)] = &[
      ": needs an integer, got "),
     (": bentuknya {} dimensi, batasnya 32 — sama dengan numpy",
      ": the shape has {} dimensions, the limit is 32 — the same as numpy"),
+    (": hasil kali bentuknya melebihi ukuran mesin",
+     ": the product of its shape is too large for this machine"),
     (": bentuk harus angka atau array angka, dapat `{}`",
      ": the shape must be a number or an array of numbers, got `{}`"),
     ("wokwok::set butuh (array, indeks..., nilai) — minimal tiga argumen, dapat ",
