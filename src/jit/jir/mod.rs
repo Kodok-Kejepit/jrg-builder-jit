@@ -50,6 +50,8 @@ pub enum Biner {
 pub enum Unar {
     /// Negasi bulat; `MIN` dijaga.
     INeg,
+    /// Bit pecahan sebagai bulat, dan sebaliknya (slot payload berjenis campur di bayangan varian).
+    BitF, DariBit,
     FNeg,
     /// `!` atas `bool` (0/1).
     Bukan,

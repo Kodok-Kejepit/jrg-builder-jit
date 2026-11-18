@@ -4528,3 +4528,50 @@ fn jir_payload_tuple_sama_dengan_vm() {
     let (dengan, tanpa) = (pl(""), pl("mati"));
     assert!(dengan < tanpa, "tidak ada PayloadLokal yang dilipat: {dengan} lawan {tanpa}");
 }
+
+/// JIR-3b: slot payload yang jenisnya bercampur antar-varian (bulat di `Kotak`, pecahan di `Titik`) dibawa sebagai bit
+/// lewat titik temu (`BitF`/`DariBit`, jenis per penanda di `TabelVarian`); pola tunggal (`PolaLokal`) dilipat; lengan
+/// payload tunggal tidak dilipat sebagai tuple (dulu deopt tiap putaran).
+const JIR_CAMPUR: &str = r#"enum B { Kotak(int, int), Titik(float, float), Skala(float), Diam }
+
+fn nilai(b: B, acc: int) -> int {
+    match b {
+        B::Kotak(p, l) => (acc + p * l) % 1000003,
+        B::Titik(x, y) => { if x > y { return acc + 2 }
+            return acc + 1 }
+        B::Skala(f) => { if f > 1.0 { return acc + 3 }
+            return acc }
+        B::Diam => acc,
+    }
+}
+
+fn main() {
+    var acc = 0
+    var simpan = []
+    for i in 0..20000 {
+        let s = i % 4
+        var b = B::Diam
+        if s == 0 { b = B::Kotak(i % 7, 3) }
+        else if s == 1 { b = B::Titik(1.5, 0.25) }
+        else if s == 2 { b = B::Skala(1.25) }
+        acc = nilai(b, acc)
+        if i % 6000 == 1 { simpan = simpan + [b]
+            wok(b) }
+    }
+    wok(acc, simpan)
+}
+"#;
+
+#[test]
+fn jir_payload_campur_sama_dengan_vm() {
+    let v = jalankan(JIR_CAMPUR, &["--vm"], &[]);
+    assert!(v.sukses, "{}{}", v.stdout, v.stderr);
+    for env in [&[JIR][..], &[JIR, STRES][..], &[JIR, STRES, ACAK][..], &[JIR, ACAK][..]] {
+        let j = jalankan(JIR_CAMPUR, &["--jit"], env);
+        assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
+    }
+    // Tanpa badai deopt: lengan `Skala` (payload tunggal) tidak dijaga sebagai tuple.
+    let r = jalankan(JIR_CAMPUR, &["--jit"], &[JIR, ("JRG_JIT_LOG", "ringkas")]);
+    let deopt: usize = r.stderr.lines().find_map(|l| l.strip_prefix("[jit] deopt: ")).and_then(|n| n.trim().parse().ok()).unwrap_or(0);
+    assert!(deopt < 50, "deopt {deopt} kali:\n{}", r.stderr);
+}

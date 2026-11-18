@@ -930,6 +930,8 @@ impl Penurun<'_, '_> {
             Unar::IBukanBit => self.b.ins().bnot(x),
             Unar::KeBool => { let c = self.b.ins().icmp_imm_s(IntCC::NotEqual, x, 0); self.b.ins().uextend(types::I64, c) }
             Unar::KeF => self.b.ins().fcvt_from_sint(types::F64, x),
+            Unar::BitF => self.b.ins().bitcast(types::I64, MemFlagsData::new(), x),
+            Unar::DariBit => self.b.ins().bitcast(types::F64, MemFlagsData::new(), x),
             Unar::KeL => self.b.ins().sextend(types::I128, x),
             Unar::KeLU => self.b.ins().uextend(types::I128, x),
             Unar::BukanBitL => self.b.ins().bnot(x),
