@@ -177,13 +177,13 @@ fn konformans_semantik_nilai_jalan_di_dua_backend() {
 const DITOLAK_DUA_BACKEND: &[(&str, &str, &str, &str)] = &[
     // 2026-11-19 (AGI-20261119-05): `json::get`/`has`/`keys`/`values`/`merge` melihat handle pustaka, enum dan field privat
     // sebagai dict biasa — memalsukan id handle orang lain, menimpa field privat, merusak tipe enum.
-    ("json::merge memalsukan handle pustaka", "package main\npub fn main() { let mine = ptr::new(\"a\")\n let forged = json::merge(mine, {\"id\": 1})\n wok(ptr::get(forged)) }", "adalah pegangan pustaka `Ptr`", "is a library handle `Ptr`"),
-    ("json::get membaca id handle pustaka", "package main\npub fn main() { let mine = ptr::new(\"a\")\n wok(json::get(mine, \"id\")) }", "adalah pegangan pustaka `Ptr`", "is a library handle `Ptr`"),
-    ("json::keys atas enum", "package main\npub fn main() { wok(json::keys(Option::Some(42))) }", "harus dict atau struct", "must be a dict or a struct"),
-    ("json::merge merusak enum", "package main\npub fn main() { wok(json::merge(Option::Some(42), {\"x\": 1})) }", "harus dict atau struct", "must be a dict or a struct"),
-    ("json::get membaca field privat", "package main\nstruct Akun { pub nama: string, _saldo: int }\nfn buat(n: string, s: int) -> Akun { return Akun { nama: n, _saldo: s } }\npub fn main() { let a = buat(\"budi\", 100)\n wok(json::get(a, \"_saldo\")) }", "bersifat private", "is private"),
-    ("json::has atas field privat", "package main\nstruct Akun { pub nama: string, _saldo: int }\nfn buat(n: string, s: int) -> Akun { return Akun { nama: n, _saldo: s } }\npub fn main() { let a = buat(\"budi\", 100)\n wok(json::has(a, \"_saldo\")) }", "bersifat private", "is private"),
-    ("json::merge menimpa field privat", "package main\nstruct Akun { pub nama: string, _saldo: int }\nfn buat(n: string, s: int) -> Akun { return Akun { nama: n, _saldo: s } }\npub fn main() { let a = buat(\"budi\", 100)\n wok(json::merge(a, {\"_saldo\": 999999})) }", "bersifat private", "is private"),
+    ("json::merge memalsukan handle pustaka", "package main\npub fn main() { let mine = ptr::new(\"a\")\n let forged = json::merge(mine, {\"id\": 1})\n wok(ptr::get(forged)) }", "adalah pegangan pustaka `ptr`", "adalah pegangan pustaka `ptr`"),
+    ("json::get membaca id handle pustaka", "package main\npub fn main() { let mine = ptr::new(\"a\")\n wok(json::get(mine, \"id\")) }", "adalah pegangan pustaka `ptr`", "adalah pegangan pustaka `ptr`"),
+    ("json::keys atas enum", "package main\npub fn main() { wok(json::keys(Option::Some(42))) }", "harus dict atau struct", "harus dict atau struct"),
+    ("json::merge merusak enum", "package main\npub fn main() { wok(json::merge(Option::Some(42), {\"x\": 1})) }", "harus dict atau struct", "harus dict atau struct"),
+    ("json::get membaca field privat", "package main\nstruct Akun { pub nama: string, _saldo: int }\nfn buat(n: string, s: int) -> Akun { return Akun { nama: n, _saldo: s } }\npub fn main() { let a = buat(\"budi\", 100)\n wok(json::get(a, \"_saldo\")) }", "bersifat private", "bersifat private"),
+    ("json::has atas field privat", "package main\nstruct Akun { pub nama: string, _saldo: int }\nfn buat(n: string, s: int) -> Akun { return Akun { nama: n, _saldo: s } }\npub fn main() { let a = buat(\"budi\", 100)\n wok(json::has(a, \"_saldo\")) }", "bersifat private", "bersifat private"),
+    ("json::merge menimpa field privat", "package main\nstruct Akun { pub nama: string, _saldo: int }\nfn buat(n: string, s: int) -> Akun { return Akun { nama: n, _saldo: s } }\npub fn main() { let a = buat(\"budi\", 100)\n wok(json::merge(a, {\"_saldo\": 999999})) }", "bersifat private", "bersifat private"),
     // 2026-11-18 (Bayu, parser pintar): bentuk dari bahasa lain dijawab padanan JRG-nya, bukan galat generik.
     ("class jadi struct/enum/trait", "package main\nclass Foo { }\n", "`class` bukan bentuk JRG", "`class` bukan bentuk JRG"),
     ("interface jadi trait", "package main\ninterface X { }\n", "`interface` bukan bentuk JRG", "`interface` bukan bentuk JRG"),
