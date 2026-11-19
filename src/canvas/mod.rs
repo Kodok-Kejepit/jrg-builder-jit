@@ -729,7 +729,7 @@ pub fn canvas_update(handle: &CanvasHandle) -> CanvasResult<bool> {
             (std::mem::take(&mut b.ditekan), b.ditahan.clone(), b.tetikus, b.tombol_tetikus)
         };
         // `Escape` menutup, sama dengan jendela `"tab"`.
-        if tahan.contains("Escape") { inner.is_open = false; return Ok(false); }
+        if tahan.contains("Escape") { inner.is_open = false; inner.web = None; return Ok(false); }
         inner.keys.pressed.extend(tekan);
         ditahan.extend(tahan);
         if !ada_masukan { inner.mouse_x = tetikus.0; inner.mouse_y = tetikus.1; inner.mouse_btns = tombol; }
@@ -902,6 +902,17 @@ pub fn angka_i32(v: &crate::interpreter::Value) -> Result<i32, String> {
     }
 }
 
+/// Besar koordinat dan ukuran yang masih berarti: kanvas paling besar 16 juta piksel, jadi nilai di luar ±100 juta tidak menggambar
+/// apa pun yang berbeda — tapi membuat `f32` tak bisa menambah 1 (di atas 2^24) dan hitungan `i32` meluap (AGI-20261119-09).
+pub const MAKS_KOORDINAT: f64 = 1.0e8;
+
+pub fn periksa_besar(f: f64) -> Result<f64, String> {
+    if f.abs() > MAKS_KOORDINAT {
+        return Err(format!("terlalu besar: {} (paling jauh ±{} dari asal)", f, MAKS_KOORDINAT as i64));
+    }
+    Ok(f)
+}
+
 /// Angka untuk menggambar. NaN dan tak hingga ditolak: dulu jadi 0 tanpa suara.
 pub fn angka_f64(v: &crate::interpreter::Value) -> Result<f64, String> {
     use crate::interpreter::Value;
@@ -963,13 +974,16 @@ pub fn dispatch_canvas_method(
     };
     let get_i = |idx: usize| -> Result<i32, Signal> {
         match args.get(idx) {
-            Some(v) => angka_i32(v).map_err(|e| tolak(idx, e)),
+            Some(v) => angka_i32(v).and_then(|n| periksa_besar(n as f64).map(|_| n)).map_err(|e| tolak(idx, e)),
             None => Ok(0),
         }
     };
     let get_f = |idx: usize| -> Result<f32, Signal> {
         match args.get(idx) {
-            Some(v) => angka_f64(v).map(|f| f as f32).map_err(|e| tolak(idx, e)),
+            // Terhingga SESUDAH jadi `f32` juga: `1e40` terhingga sebagai `f64` tapi tak hingga sebagai `f32`.
+            Some(v) => angka_f64(v).and_then(periksa_besar).map(|f| f as f32)
+                .and_then(|f| if f.is_finite() { Ok(f) } else { Err("harus angka yang terhingga".to_string()) })
+                .map_err(|e| tolak(idx, e)),
             None => Ok(0.0),
         }
     };
@@ -1006,6 +1020,8 @@ pub fn dispatch_canvas_method(
             let new_title = get_str(0);
             lock!(inner, mut);
             inner.title = new_title.clone();
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(w) = &inner.web { w.bersama.lock().unwrap_or_else(|p| p.into_inner()).judul = new_title.clone(); }
             #[cfg(feature = "canvas")]
             if let Some(ref j) = inner.window {
                 j.judul(&new_title);
@@ -1016,6 +1032,9 @@ pub fn dispatch_canvas_method(
         "close" => {
             lock!(inner, mut);
             inner.is_open = false;
+            // Pelayan mode `web` ikut berhenti dan portnya dilepas (dulu hidup sampai proses berakhir).
+            #[cfg(not(target_arch = "wasm32"))]
+            { inner.web = None; }
             #[cfg(feature = "canvas")]
             { inner.window = None; }
             Ok(Value::Unit)
@@ -1251,8 +1270,15 @@ pub fn dispatch_canvas_method(
             let (fw, fh) = (inner.width as f32, inner.height as f32);
             let g = &mut *inner;
             let mut p = pena!(g);
-            for c in 0..=cols { let x = (c * cw) as f32; p.garis(x, 0.0, x, fh, col); }
-            for r in 0..=rows { let y = (r * ch) as f32; p.garis(0.0, y, fw, y, col); }
+            // Garis di luar kanvas tidak terlihat, jadi cuma yang jatuh di dalam yang digambar (dulu `cols` seratus juta memutar
+            // seratus juta garis di kanvas 4x4). Sel selebar nol atau negatif cuma punya garis pertama.
+            let terlihat = |n: i32, sisi: i32, lebar: f32| -> i64 {
+                if n < 0 { return -1; }
+                if sisi <= 0 { return 0.min(n as i64); }
+                (n as i64).min((lebar / sisi as f32).floor() as i64 + 1)
+            };
+            for c in 0..=terlihat(cols, cw, fw) { let x = (c * cw as i64) as f32; p.garis(x, 0.0, x, fh, col); }
+            for r in 0..=terlihat(rows, ch, fh) { let y = (r * ch as i64) as f32; p.garis(0.0, y, fw, y, col); }
             Ok(Value::Unit)
         }
 
@@ -1374,7 +1400,7 @@ pub fn dispatch_canvas_method(
             if args.len() < 4 { cerr!("clip butuh 4 arg: (x,y,w,h)"); }
             let (x, y, w, h) = (get_i(0)?, get_i(1)?, get_i(2)?, get_i(3)?);
             lock!(inner, mut);
-            inner.st.potong = Some((x, y, x + w, y + h));
+            inner.st.potong = Some((x, y, x.saturating_add(w), y.saturating_add(h)));
             Ok(Value::Unit)
         }
         "clip_reset" => { lock!(inner, mut); inner.st.potong = None; Ok(Value::Unit) }

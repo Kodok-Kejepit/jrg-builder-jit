@@ -37,6 +37,13 @@ impl<'a> Pena<'a> {
 
     fn bulat(v: f32, geser: f32) -> i32 { (v + geser).floor() as i32 }
 
+    /// Piksel di koordinat `i64` (hitungan menengah yang bisa melewati `i32`): di luar framebuffer dibuang sebelum menyentuh `plot`.
+    #[inline]
+    fn plot64(&mut self, x: i64, y: i64, col: Colour) {
+        if x < 0 || y < 0 || x >= self.fb.width as i64 || y >= self.fb.height as i64 { return; }
+        self.plot(x as i32, y as i32, col);
+    }
+
     pub fn piksel(&mut self, x: f32, y: f32, col: Colour) {
         match self.ragam() {
             Ragam::Geser(e, f) => self.plot(Self::bulat(x, e), Self::bulat(y, f), col),
@@ -44,15 +51,18 @@ impl<'a> Pena<'a> {
         }
     }
 
+    /// Bresenham dengan aritmetika `i64`: selisih dua `i32` bisa melewati `i32` (`MIN` ke `1` dulu panik di debug dan menggantung
+    /// tanpa akhir di rilis, karena `dx` terbungkus jadi negatif — AGI-20261119-09).
     fn garis_bulat(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, col: Colour) {
-        let (mut x, mut y) = (x0, y0);
-        let dx = (x1 - x0).abs();
-        let dy = -(y1 - y0).abs();
-        let sx: i32 = if x0 < x1 { 1 } else { -1 };
-        let sy: i32 = if y0 < y1 { 1 } else { -1 };
+        let (mut x, mut y) = (x0 as i64, y0 as i64);
+        let (x1, y1) = (x1 as i64, y1 as i64);
+        let dx = (x1 - x).abs();
+        let dy = -(y1 - y).abs();
+        let sx: i64 = if x < x1 { 1 } else { -1 };
+        let sy: i64 = if y < y1 { 1 } else { -1 };
         let mut err = dx + dy;
         loop {
-            self.plot(x, y, col);
+            self.plot64(x, y, col);
             if x == x1 && y == y1 { break; }
             let e2 = 2 * err;
             if e2 >= dy { if x == x1 { break; } err += dy; x += sx; }
@@ -105,10 +115,10 @@ impl<'a> Pena<'a> {
     pub fn lingkaran(&mut self, cx: f32, cy: f32, r: i32, col: Colour) {
         match self.ragam() {
             Ragam::Geser(e, f) => {
-                let (cx, cy) = (Self::bulat(cx, e), Self::bulat(cy, f));
-                if r <= 0 { self.plot(cx, cy, col); return; }
-                let (mut x, mut y) = (0i32, r);
-                let mut d = 3 - 2 * r;
+                let (cx, cy) = (Self::bulat(cx, e) as i64, Self::bulat(cy, f) as i64);
+                if r <= 0 { self.plot64(cx, cy, col); return; }
+                let (mut x, mut y) = (0i64, r as i64);
+                let mut d = 3 - 2 * r as i64;
                 self.delapan(cx, cy, x, y, col);
                 while y >= x {
                     x += 1;
@@ -124,20 +134,20 @@ impl<'a> Pena<'a> {
         }
     }
 
-    fn delapan(&mut self, cx: i32, cy: i32, x: i32, y: i32, col: Colour) {
+    fn delapan(&mut self, cx: i64, cy: i64, x: i64, y: i64, col: Colour) {
         for (px, py) in [(cx+x, cy+y), (cx-x, cy+y), (cx+x, cy-y), (cx-x, cy-y),
                          (cx+y, cy+x), (cx-y, cy+x), (cx+y, cy-x), (cx-y, cy-x)] {
-            self.plot(px, py, col);
+            self.plot64(px, py, col);
         }
     }
 
     pub fn isi_lingkaran(&mut self, cx: f32, cy: f32, r: i32, col: Colour) {
         match self.ragam() {
             Ragam::Geser(e, f) => {
-                let (cx, cy) = (Self::bulat(cx, e), Self::bulat(cy, f));
-                if r <= 0 { self.plot(cx, cy, col); return; }
-                let (mut x, mut y) = (0i32, r);
-                let mut d = 3 - 2 * r;
+                let (cx, cy) = (Self::bulat(cx, e) as i64, Self::bulat(cy, f) as i64);
+                if r <= 0 { self.plot64(cx, cy, col); return; }
+                let (mut x, mut y) = (0i64, r as i64);
+                let mut d = 3 - 2 * r as i64;
                 self.garis_datar(cx, cy, x, y, col);
                 while y >= x {
                     x += 1;
@@ -154,10 +164,13 @@ impl<'a> Pena<'a> {
     }
 
     /// Empat potong baris lingkaran terisi, di koordinat layar (sudah digeser).
-    fn garis_datar(&mut self, cx: i32, cy: i32, x: i32, y: i32, col: Colour) {
+    /// Potongan baris dipotong ke framebuffer SEBELUM digambar: lingkaran berjari-jari miliaran dulu menggantung (AGI-20261119-09).
+    fn garis_datar(&mut self, cx: i64, cy: i64, x: i64, y: i64, col: Colour) {
+        let (w, h) = (self.fb.width as i64, self.fb.height as i64);
         for (ax, ay, lebar) in [(cx - x, cy + y, 2 * x), (cx - x, cy - y, 2 * x),
                                 (cx - y, cy + x, 2 * y), (cx - y, cy - x, 2 * y)] {
-            for px in ax..ax + lebar { self.plot(px, ay, col); }
+            if ay < 0 || ay >= h { continue; }
+            for px in ax.max(0)..(ax + lebar).min(w) { self.plot64(px, ay, col); }
         }
     }
 
@@ -170,13 +183,15 @@ impl<'a> Pena<'a> {
     pub fn isi_segitiga(&mut self, p: [(f32, f32); 3], col: Colour) {
         match self.ragam() {
             Ragam::Geser(e, f) => {
-                let mut q = [(0i32, 0i32); 3];
-                for (i, &(x, y)) in p.iter().enumerate() { q[i] = (Self::bulat(x, e), Self::bulat(y, f)); }
+                let mut q = [(0i64, 0i64); 3];
+                for (i, &(x, y)) in p.iter().enumerate() { q[i] = (Self::bulat(x, e) as i64, Self::bulat(y, f) as i64); }
                 q.sort_by_key(|t| t.1);
                 let ((ax, ay), (bx, by), (cx, cy)) = (q[0], q[1], q[2]);
                 let total = cy - ay;
                 if total == 0 { return; }
-                for y in ay..=cy {
+                let (lebar, tinggi) = (self.fb.width as i64, self.fb.height as i64);
+                // Baris dan kolom di luar framebuffer tidak digambar, jadi tidak perlu dilewati satu per satu (dulu miliaran).
+                for y in ay.max(0)..=cy.min(tinggi - 1) {
                     let kedua = y >= by;
                     let seg = if kedua { cy - by } else { by - ay };
                     let seg = if seg == 0 { 1 } else { seg };
@@ -186,7 +201,7 @@ impl<'a> Pena<'a> {
                     let mut xb = if kedua { bx as f32 + (cx - bx) as f32 * beta }
                                  else { ax as f32 + (bx - ax) as f32 * beta };
                     if xa > xb { std::mem::swap(&mut xa, &mut xb); }
-                    for x in (xa as i32)..=(xb as i32) { self.plot(x, y, col); }
+                    for x in (xa as i64).max(0)..=(xb as i64).min(lebar - 1) { self.plot64(x, y, col); }
                 }
             }
             Ragam::Umum => {
@@ -227,10 +242,13 @@ impl<'a> Pena<'a> {
         };
         match self.ragam() {
             Ragam::Geser(e, f) => {
-                let (ox, oy) = (Self::bulat(dx, e), Self::bulat(dy, f));
-                for v in 0..h {
-                    for u in 0..w {
-                        if let Some(c) = ambil(u, v) { self.plot(ox + u, oy + v, c); }
+                let (ox, oy) = (Self::bulat(dx, e) as i64, Self::bulat(dy, f) as i64);
+                // Cuma `u`/`v` yang jatuh di dalam sumber punya isi: dulu `w`/`h` berukuran miliaran diputar penuh.
+                let (u0, u1) = ((-(sx as i64)).max(0), (w as i64).min(sw as i64 - sx as i64));
+                let (v0, v1) = ((-(sy as i64)).max(0), (h as i64).min(sh as i64 - sy as i64));
+                for v in v0..v1 {
+                    for u in u0..u1 {
+                        if let Some(c) = ambil(u as i32, v as i32) { self.plot64(ox + u, oy + v, c); }
                     }
                 }
             }

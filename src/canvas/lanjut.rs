@@ -138,12 +138,14 @@ impl<'a> Kuas<'a> {
         let xpxl2 = xend2;
         let ypxl2 = yend2.floor();
 
-        let mut x = xpxl1 + 1.0;
-        while x < xpxl2 {
+        // Dihitung dengan penghitung bulat, bukan `x += 1.0`: di atas 2^24 `f32` tidak bisa menambah 1 (`16777216.0 + 1.0` tetap
+        // sama), jadi garis empat piksel pun menggantung tanpa akhir (AGI-20261119-09).
+        let langkah = ((xpxl2 - xpxl1 - 1.0).max(0.0) as i64).min(1 << 28);
+        for i in 1..=langkah {
+            let x = xpxl1 + i as f32;
             taruh(self, x, antar.floor(), 1.0 - antar.fract());
             taruh(self, x, antar.floor() + 1.0, antar.fract());
             antar += gradien;
-            x += 1.0;
         }
         taruh(self, xpxl2, ypxl2, (1.0 - yend2.fract()) * xgap2);
         taruh(self, xpxl2, ypxl2 + 1.0, yend2.fract() * xgap2);
@@ -226,7 +228,8 @@ impl<'a> Kuas<'a> {
         let r = rx.abs().max(ry.abs());
         let n = ((r * 0.8) as usize).clamp(12, 512);
         let rentang = akhir - mulai;
-        let n = ((n as f32 * (rentang.abs() / std::f32::consts::TAU)).ceil() as usize).max(3);
+        // Dijepit lagi sesudah dikali rentang: sudut besar (`1e30`) dulu membuat `Vec` raksasa dan panik `capacity overflow`.
+        let n = ((n as f32 * (rentang.abs() / std::f32::consts::TAU)).ceil() as usize).clamp(3, 8192);
         (0..=n).map(|i| {
             let t = mulai + rentang * i as f32 / n as f32;
             (cx + rx * t.cos(), cy + ry * t.sin())
