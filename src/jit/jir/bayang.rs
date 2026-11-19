@@ -331,6 +331,24 @@ impl Pembangun<'_> {
             for (asal, _, potret) in tepi { self.args_bayang(asal, &Vec::new(), &potret); }
             return;
         }
+        // Tepi yang tidak sepakat soal struct berbayangan basi (sebagian membawanya, sebagian nilai VM, mis. masuk OSR di
+        // tengah loop): bangun ulang dengan petunjuk, supaya tepi yang tidak membawanya membuka struct VM-nya.
+        if tepi.len() > 1 {
+            let mut baru: Vec<Hint> = Vec::new();
+            for (_, _, potret) in &tepi {
+                for (pos, e) in potret {
+                    if tepi.iter().all(|(_, _, q)| q.iter().any(|(r, _)| r == pos)) { continue; }
+                    if let Some(h) = self.hint_dari(*pos, e) {
+                        if !self.hint.get(&ip).is_some_and(|v| v.contains(&h)) && !baru.contains(&h) { baru.push(h); }
+                    }
+                }
+            }
+            if !baru.is_empty() {
+                self.hint_baru.entry(ip).or_default().extend(baru);
+                self.ulang = Some(ip);
+                self.minta_ulang = true;
+            }
+        }
         let mut params: Potret = Vec::new();
         for (pos, _) in &tepi[0].2 {
             let semua: Vec<&Bayang> = tepi.iter().filter_map(|(_, _, p)| p.iter().find(|(q, _)| q == pos).map(|x| &x.1)).collect();

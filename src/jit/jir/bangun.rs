@@ -76,6 +76,8 @@ struct Pembangun<'a> {
     /// Petunjuk bayangan struct per kepala loop (`bayang::Hint`): yang dipakai percobaan ini, dan yang baru ditemukan.
     hint: std::collections::HashMap<usize, Vec<bayang::Hint>>,
     hint_baru: std::collections::HashMap<usize, Vec<bayang::Hint>>,
+    /// `mulai_bayang` menemukan tepi yang tidak sepakat soal struct berbayangan: bangun ulang dengan petunjuknya.
+    minta_ulang: bool,
 }
 
 /// JIR titik masuk `r` fungsi `f`; `acak` = deopt acak di tiap instruksi (`JRG_JIT_STRES=deopt-acak`).
@@ -115,7 +117,7 @@ fn bangun_sekali(f: &VmFunction, r: &Rencana, acak: bool, sisip: &Sisip, larang:
         sisi: Default::default(), masuk_bayang: Default::default(), larang: larang.clone(), ulang: None,
         lipat: Default::default(),
         tabel: Box::leak(Box::new(crate::jit::lambat::TabelVarian(Default::default()))),
-        hint: hint.clone(), hint_baru: Default::default(),
+        hint: hint.clone(), hint_baru: Default::default(), minta_ulang: false,
     };
     let hasil = p.jalankan();
     let mut tumbuh = false;
@@ -278,6 +280,7 @@ impl Pembangun<'_> {
                 let params = self.j.blok[b.0 as usize].params.clone();
                 kini = Some((b, self.isi_dari_params(ip, &params)?));
                 self.mulai_bayang(ip, b);
+                if self.minta_ulang { return Err(format!("tepi ke ip {ip} tidak sepakat soal struct berbayangan: bangun ulang dengan petunjuk")); }
                 self.kini_b = Some(b);
             }
             let Some((b, mut isi)) = kini.take() else { continue };
