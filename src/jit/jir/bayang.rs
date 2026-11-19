@@ -667,7 +667,7 @@ impl Pembangun<'_> {
     pub(super) fn field_bayang(&self, x: &Bayang, nama: &str, j: Jenis) -> Option<Nilai> {
         if x.mungkin.count_ones() != 1 { return None; }
         let tag = x.mungkin.trailing_zeros() as usize;
-        let k = (self.indeks_field(tag, nama)? + 1) % x.muatan.len().max(1);
+        let k = self.indeks_field(tag, nama)?;
         let (jm, v, sah) = *x.muatan.get(k)?;
         (sah >> tag & 1 == 1 && jm == j).then_some(v)
     }
@@ -793,7 +793,7 @@ impl Pembangun<'_> {
         let bit = 1u64 << tag;
         let mut muatan = x.muatan.clone();
         for &(q, v) in &rm.tulis { muatan[q] = (Jenis::Pecahan, nilai[v]?, bit); }
-        self.bayang.insert(pos, Bayang { muatan, basi: x.basi | bit, ..x });
+        self.bayang.insert(pos, Bayang { muatan, basi: x.basi, ..x });
         Some(None)
     }
 
