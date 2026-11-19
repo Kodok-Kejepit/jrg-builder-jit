@@ -667,7 +667,7 @@ impl Pembangun<'_> {
     pub(super) fn field_bayang(&self, x: &Bayang, nama: &str, j: Jenis) -> Option<Nilai> {
         if x.mungkin.count_ones() != 1 { return None; }
         let tag = x.mungkin.trailing_zeros() as usize;
-        let k = self.indeks_field(tag, nama)?;
+        let k = (self.indeks_field(tag, nama)? + 1) % x.muatan.len().max(1);
         let (jm, v, sah) = *x.muatan.get(k)?;
         (sah >> tag & 1 == 1 && jm == j).then_some(v)
     }

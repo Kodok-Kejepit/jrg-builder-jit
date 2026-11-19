@@ -1125,7 +1125,7 @@ pub extern "C" fn wujud_varian(pos: i64, tabel: *const TabelVarian, tag: i64, ba
                 }
             }
         }
-        let isi: Vec<VmValue> = (0..n).rev().map(skalar).collect();
+        let isi: Vec<VmValue> = (0..n).map(skalar).collect();
         VmValue::Map(crate::vm::value::Peta::struktur_arc(label.clone(), Arc::clone(bentuk), isi))
     } else if konst != 0 { unsafe { &*(konst as *const VmValue) }.clone() } else {
         VmValue::varian_nama(nama, match payload {
