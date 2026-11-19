@@ -252,7 +252,7 @@ impl Pembangun<'_> {
         // ulang dengan petunjuk, supaya tepi masuk membuka struct VM-nya jadi bayangan dan kepala loop membawanya.
         let baru: Vec<Hint> = potret.iter().filter(|(p, _)| !params.iter().any(|(q, _)| q == p))
             .filter_map(|(p, e)| self.hint_dari(*p, e))
-            .filter(|h| !self.hint.get(&ke).is_some_and(|v| v.contains(h))).collect();
+            .filter(|h| !self.hint.get(&ke).is_some_and(|v| v.iter().any(|x| hint_sama(x, h)))).collect();
         if !baru.is_empty() && !self.larang.contains(&ke) {
             self.hint_baru.entry(ke).or_default().extend(baru);
             self.ulang = Some(ke);
@@ -339,7 +339,7 @@ impl Pembangun<'_> {
                 for (pos, e) in potret {
                     if tepi.iter().all(|(_, _, q)| q.iter().any(|(r, _)| r == pos)) { continue; }
                     if let Some(h) = self.hint_dari(*pos, e) {
-                        if !self.hint.get(&ip).is_some_and(|v| v.contains(&h)) && !baru.contains(&h) { baru.push(h); }
+                        if !self.hint.get(&ip).is_some_and(|v| v.iter().any(|x| hint_sama(x, &h))) && !baru.iter().any(|x| hint_sama(x, &h)) { baru.push(h); }
                     }
                 }
             }
@@ -603,6 +603,10 @@ impl Pembangun<'_> {
 /// Petunjuk dari tepi yang datang belakangan: posisi `pos` di kepala loop sebaiknya berbayangan struct `situs`
 /// (alamat `SitusBangun`), slot pecahan `apung`, `n` field. Tepi masuk yang tidak membawanya membuka struct VM-nya.
 pub(super) type Hint = (usize, i64, u64, usize);
+
+/// Dua petunjuk yang sama: posisi, slot pecahan dan jumlah field yang sama, dari struct yang sama. Alamat `SitusBangun`
+/// berbeda tiap percobaan bangun (dibocorkan baru), jadi tidak boleh dibandingkan langsung.
+pub(super) fn hint_sama(a: &Hint, b: &Hint) -> bool { a.0 == b.0 && a.2 == b.2 && a.3 == b.3 && sama_situs(a.1, b.1) }
 
 impl Pembangun<'_> {
     /// Bit penanda yang STRUCT (entri tabel yang punya alamat situs).

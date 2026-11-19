@@ -88,11 +88,13 @@ pub fn bangun(f: &VmFunction, r: &Rencana, acak: bool, sisip: &Sisip) -> Result<
     periksa_cakupan(f, r)?;
     let mut larang = std::collections::HashSet::new();
     let mut hint = std::collections::HashMap::new();
+    let mut percobaan = 0;
     loop {
         match bangun_sekali(f, r, acak, sisip, &larang, &mut hint) {
             Ok(j) => return Ok(j),
-            // Petunjuk baru: coba lagi dengannya (tepi masuk membuka struct VM jadi bayangan).
-            Err((_, Some(_), true)) => {}
+            // Petunjuk baru: coba lagi dengannya (tepi masuk membuka struct VM jadi bayangan). Berbatas: tiap percobaan
+            // membangun ulang seluruh unit, dan petunjuk yang tak kunjung menyelesaikan masalahnya tidak boleh berputar.
+            Err((_, Some(_), true)) if percobaan < 6 => percobaan += 1,
             Err((e, Some(ip), false)) if larang.insert(ip) => { let _ = e; }
             Err((e, _, _)) => return Err(e),
         }
@@ -123,7 +125,7 @@ fn bangun_sekali(f: &VmFunction, r: &Rencana, acak: bool, sisip: &Sisip, larang:
     let mut tumbuh = false;
     for (k, v) in std::mem::take(&mut p.hint_baru) {
         let d = hint.entry(k).or_default();
-        for h in v { if !d.contains(&h) { d.push(h); tumbuh = true; } }
+        for h in v { if !d.iter().any(|x| bayang::hint_sama(x, &h)) { d.push(h); tumbuh = true; } }
     }
     hasil.map_err(|e| (e, p.ulang, tumbuh))
 }
