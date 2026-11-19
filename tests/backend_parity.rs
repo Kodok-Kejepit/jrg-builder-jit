@@ -175,6 +175,14 @@ fn konformans_semantik_nilai_jalan_di_dua_backend() {
 
 /// Program yang WAJIB ditolak oleh KEDUA backend, dengan alasan yang sama.
 const DITOLAK_DUA_BACKEND: &[(&str, &str, &str, &str)] = &[
+    // 2026-11-18 (Bayu, parser pintar): bentuk dari bahasa lain dijawab padanan JRG-nya, bukan galat generik.
+    ("class jadi struct/enum/trait", "package main\nclass Foo { }\n", "`class` bukan bentuk JRG", "`class` bukan bentuk JRG"),
+    ("interface jadi trait", "package main\ninterface X { }\n", "`interface` bukan bentuk JRG", "`interface` bukan bentuk JRG"),
+    ("public jadi pub", "package main\npublic fn f() { }\n", "bukan pengubah di JRG", "bukan pengubah di JRG"),
+    ("=== jadi ==", "package main\npub fn main() { let a = 1\n let b = 2\n wok(a === b) }\n", "`===` bukan bentuk JRG", "`===` bukan bentuk JRG"),
+    ("!== jadi !=", "package main\npub fn main() { let a = 1\n let b = 2\n wok(a !== b) }\n", "`!==` bukan bentuk JRG", "`!==` bukan bentuk JRG"),
+    ("badan titik dua Python", "package main\nfn f() -> int: return 5\n", "dibuka kurung kurawal", "dibuka kurung kurawal"),
+    ("if titik dua Python", "package main\npub fn main() { if true: wok(1) }\n", "dibuka kurung kurawal", "dibuka kurung kurawal"),
     // 2026-11-18 (surat Bayu–Agus): kebuntuan yang terlihat dilaporkan di dua mesin (`antrean::buntu`), seperti LLVM
     // — dulu menggantung selamanya tanpa pesan.
     ("kebuntuan: main menerima dari channel tanpa pengirim", "package main\npub fn main() { let c = make_chan(int)\n wok(<-c) }", "kebuntuan: semua goroutine sedang menunggu channel", "kebuntuan: semua goroutine sedang menunggu channel"),
@@ -235,6 +243,14 @@ const DITOLAK_DUA_BACKEND: &[(&str, &str, &str, &str)] = &[
     // Fase AMAN-8 (#871): sarang 300 kurung dulu SIGABRT di pengurai, tanpa pesan.
     ("sarang terlalu dalam ditolak, bukan crash",
      "package main\npub fn main() { wok(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) }",
+     "sarang terlalu dalam — lebih dari 256 tingkat", "sarang terlalu dalam — lebih dari 256 tingkat"),
+    // #1063 (AGI-20261118-06): sarang di ANOTASI TIPE, POLA, dan generik dulu memutari batas 256 dan SIGABRT —
+    // `parse_type`/`parse_pattern` tidak memanggil `masuk_sarang`. Sekarang ditolak rapi, sama di semua mesin.
+    ("sarang tipe dalam ditolak, bukan crash",
+     "package main\npub fn main() { let x: [][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][]int = 1 }",
+     "sarang terlalu dalam — lebih dari 256 tingkat", "sarang terlalu dalam — lebih dari 256 tingkat"),
+    ("sarang pola dalam ditolak, bukan crash",
+     "package main\npub fn main() { match 1 { ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) => 1, _ => 0 } }",
      "sarang terlalu dalam — lebih dari 256 tingkat", "sarang terlalu dalam — lebih dari 256 tingkat"),
     // Fase AMAN-12 (#879): `pаypal` dengan `а` Kiril dan `admin` adalah dua nama yang tampak sama.
     ("homoglyph: nama mencampur Latin dan Kiril",
@@ -7591,6 +7607,11 @@ fn penjaga_bentuk_asing_tidak_menolak_yang_sah() {
         ("for x in [1, 2] { wok_(x) }", "01"),
         ("let f = 2\n wok(f)", "2"),
         ("wok(\"\"\"x ${1}\"\"\")", "x 1"),
+        // `class`/`public`/`interface` sebagai NAMA biasa tetap sah — penjaga bentuk asing tidak boleh menyitanya.
+        ("let class = 5\n wok(class)", "5"),
+        ("var public = 3\n wok(public)", "3"),
+        ("fn interface() { return 7 }\n wok(interface())", "7"),
+        ("let a = 1\n let b = 1\n wok(a == b)", "true"),
     ];
     let mut salah = Vec::new();
     for (badan, harap) in sah {
