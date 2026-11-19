@@ -38,6 +38,17 @@ impl Parser {
         self.dalam += 1;
         Ok(())
     }
+
+    /// Jalankan `f` satu tingkat sarang lebih dalam, selalu turun lagi sesudahnya (juga saat galat) supaya
+    /// kedalaman tidak bocor antar-saudara. Dipakai di tiap pintu pengurai rekursif: ekspresi, tipe, pola.
+    pub(crate) fn dengan_sarang<T>(
+        &mut self, f: impl FnOnce(&mut Self) -> Result<T, ParseError>,
+    ) -> Result<T, ParseError> {
+        self.masuk_sarang()?;
+        let r = f(self);
+        self.dalam -= 1;
+        r
+    }
 }
 
 pub struct Parser {
@@ -157,6 +168,12 @@ impl Parser {
                  maksudnya hampir pasti `==`. (JRG memang tidak mengizinkan penugasan \
                  di dalam syarat, justru supaya salah ketik ini tidak pernah diam.)"
                     .to_string()));
+        }
+        // Badan bergaya titik dua `:` (Python): `def f():`, `if x:`, `fn f() -> int: ...`. Di JRG badan selalu `{ .. }`.
+        if matches!(self.current().kind, TokenKind::Colon) && matches!(kind, TokenKind::LBrace) {
+            return Err(self.error(
+                "badan di JRG selalu dibuka kurung kurawal `{ .. }`, bukan titik dua `:` seperti Python — \
+                 `if syarat { .. }`, `fn f() { .. }`, `for i in 0..n { .. }`".to_string()));
         }
         Err(self.error(format!(
             "harusnya ada {} di sini, yang ketemu malah {}",

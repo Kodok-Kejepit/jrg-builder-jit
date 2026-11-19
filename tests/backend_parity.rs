@@ -175,6 +175,23 @@ fn konformans_semantik_nilai_jalan_di_dua_backend() {
 
 /// Program yang WAJIB ditolak oleh KEDUA backend, dengan alasan yang sama.
 const DITOLAK_DUA_BACKEND: &[(&str, &str, &str, &str)] = &[
+    // 2026-11-19 (AGI-20261119-05): `json::get`/`has`/`keys`/`values`/`merge` melihat handle pustaka, enum dan field privat
+    // sebagai dict biasa — memalsukan id handle orang lain, menimpa field privat, merusak tipe enum.
+    ("json::merge memalsukan handle pustaka", "package main\npub fn main() { let mine = ptr::new(\"a\")\n let forged = json::merge(mine, {\"id\": 1})\n wok(ptr::get(forged)) }", "adalah pegangan pustaka `Ptr`", "is a library handle `Ptr`"),
+    ("json::get membaca id handle pustaka", "package main\npub fn main() { let mine = ptr::new(\"a\")\n wok(json::get(mine, \"id\")) }", "adalah pegangan pustaka `Ptr`", "is a library handle `Ptr`"),
+    ("json::keys atas enum", "package main\npub fn main() { wok(json::keys(Option::Some(42))) }", "harus dict atau struct", "must be a dict or a struct"),
+    ("json::merge merusak enum", "package main\npub fn main() { wok(json::merge(Option::Some(42), {\"x\": 1})) }", "harus dict atau struct", "must be a dict or a struct"),
+    ("json::get membaca field privat", "package main\nstruct Akun { pub nama: string, _saldo: int }\nfn buat(n: string, s: int) -> Akun { return Akun { nama: n, _saldo: s } }\npub fn main() { let a = buat(\"budi\", 100)\n wok(json::get(a, \"_saldo\")) }", "bersifat private", "is private"),
+    ("json::has atas field privat", "package main\nstruct Akun { pub nama: string, _saldo: int }\nfn buat(n: string, s: int) -> Akun { return Akun { nama: n, _saldo: s } }\npub fn main() { let a = buat(\"budi\", 100)\n wok(json::has(a, \"_saldo\")) }", "bersifat private", "is private"),
+    ("json::merge menimpa field privat", "package main\nstruct Akun { pub nama: string, _saldo: int }\nfn buat(n: string, s: int) -> Akun { return Akun { nama: n, _saldo: s } }\npub fn main() { let a = buat(\"budi\", 100)\n wok(json::merge(a, {\"_saldo\": 999999})) }", "bersifat private", "is private"),
+    // 2026-11-18 (Bayu, parser pintar): bentuk dari bahasa lain dijawab padanan JRG-nya, bukan galat generik.
+    ("class jadi struct/enum/trait", "package main\nclass Foo { }\n", "`class` bukan bentuk JRG", "`class` bukan bentuk JRG"),
+    ("interface jadi trait", "package main\ninterface X { }\n", "`interface` bukan bentuk JRG", "`interface` bukan bentuk JRG"),
+    ("public jadi pub", "package main\npublic fn f() { }\n", "bukan pengubah di JRG", "bukan pengubah di JRG"),
+    ("=== jadi ==", "package main\npub fn main() { let a = 1\n let b = 2\n wok(a === b) }\n", "`===` bukan bentuk JRG", "`===` bukan bentuk JRG"),
+    ("!== jadi !=", "package main\npub fn main() { let a = 1\n let b = 2\n wok(a !== b) }\n", "`!==` bukan bentuk JRG", "`!==` bukan bentuk JRG"),
+    ("badan titik dua Python", "package main\nfn f() -> int: return 5\n", "dibuka kurung kurawal", "dibuka kurung kurawal"),
+    ("if titik dua Python", "package main\npub fn main() { if true: wok(1) }\n", "dibuka kurung kurawal", "dibuka kurung kurawal"),
     // 2026-11-18 (surat Bayu–Agus): kebuntuan yang terlihat dilaporkan di dua mesin (`antrean::buntu`), seperti LLVM
     // — dulu menggantung selamanya tanpa pesan.
     ("kebuntuan: main menerima dari channel tanpa pengirim", "package main\npub fn main() { let c = make_chan(int)\n wok(<-c) }", "kebuntuan: semua goroutine sedang menunggu channel", "kebuntuan: semua goroutine sedang menunggu channel"),
@@ -235,6 +252,14 @@ const DITOLAK_DUA_BACKEND: &[(&str, &str, &str, &str)] = &[
     // Fase AMAN-8 (#871): sarang 300 kurung dulu SIGABRT di pengurai, tanpa pesan.
     ("sarang terlalu dalam ditolak, bukan crash",
      "package main\npub fn main() { wok(((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) }",
+     "sarang terlalu dalam — lebih dari 256 tingkat", "sarang terlalu dalam — lebih dari 256 tingkat"),
+    // #1063 (AGI-20261118-06): sarang di ANOTASI TIPE, POLA, dan generik dulu memutari batas 256 dan SIGABRT —
+    // `parse_type`/`parse_pattern` tidak memanggil `masuk_sarang`. Sekarang ditolak rapi, sama di semua mesin.
+    ("sarang tipe dalam ditolak, bukan crash",
+     "package main\npub fn main() { let x: [][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][][]int = 1 }",
+     "sarang terlalu dalam — lebih dari 256 tingkat", "sarang terlalu dalam — lebih dari 256 tingkat"),
+    ("sarang pola dalam ditolak, bukan crash",
+     "package main\npub fn main() { match 1 { ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((1)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) => 1, _ => 0 } }",
      "sarang terlalu dalam — lebih dari 256 tingkat", "sarang terlalu dalam — lebih dari 256 tingkat"),
     // Fase AMAN-12 (#879): `pаypal` dengan `а` Kiril dan `admin` adalah dua nama yang tampak sama.
     ("homoglyph: nama mencampur Latin dan Kiril",
@@ -2403,6 +2428,23 @@ fn divergensi_yang_diketahui_masih_akurat() {
         kabar_baik.len(),
         kabar_baik.join("\n")
     );
+}
+
+/// AGI-20261119-05: `json::*` atas struct menyembunyikan field privat dan tetap melayani yang sah — `merge` struct dengan
+/// dict dua arah, field privat tetap milik struct-nya (dibaca method-nya) — sama di interpreter dan `--vm`.
+#[test]
+fn json_atas_struct_menyembunyikan_field_privat_di_dua_mesin() {
+    let src = "package main\nstruct Akun { pub nama: string, _saldo: int }\nimpl Akun { fn saldo(self) -> int { return self._saldo } }\n\
+        fn buat(n: string, s: int) -> Akun { return Akun { nama: n, _saldo: s } }\n\
+        pub fn main() {\n let a = buat(\"budi\", 100)\n wok(json::keys(a), json::values(a), json::has(a, \"nama\"))\n\
+        let b = json::merge(a, {\"nama\": \"ani\", \"baru\": 1})\n wok(b.nama, b.saldo(), json::keys(b))\n\
+        let c = json::merge({\"k\": 1}, a)\n wok(json::keys(c), typeof(c), c.saldo())\n}\n";
+    let i = jalankan_keluaran_penuh(src, false);
+    let v = jalankan_keluaran_penuh(src, true);
+    assert_eq!(i, v, "dua mesin harus sama");
+    assert!(!i.contains("_saldo"), "field privat bocor lewat keys/values:\n{i}");
+    assert!(i.contains("ani 100"), "merge struct+dict kehilangan field privat atau nilai baru:\n{i}");
+    assert!(i.contains("Akun 100"), "merge dict+struct harus bertipe struct dan menjaga field privatnya:\n{i}");
 }
 
 /// Inti suite ini: program di `PARITAS` harus berjalan di DUA backend dan
@@ -7591,6 +7633,11 @@ fn penjaga_bentuk_asing_tidak_menolak_yang_sah() {
         ("for x in [1, 2] { wok_(x) }", "01"),
         ("let f = 2\n wok(f)", "2"),
         ("wok(\"\"\"x ${1}\"\"\")", "x 1"),
+        // `class`/`public`/`interface` sebagai NAMA biasa tetap sah — penjaga bentuk asing tidak boleh menyitanya.
+        ("let class = 5\n wok(class)", "5"),
+        ("var public = 3\n wok(public)", "3"),
+        ("fn interface() { return 7 }\n wok(interface())", "7"),
+        ("let a = 1\n let b = 1\n wok(a == b)", "true"),
     ];
     let mut salah = Vec::new();
     for (badan, harap) in sah {
