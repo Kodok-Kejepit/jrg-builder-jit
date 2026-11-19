@@ -792,8 +792,8 @@ impl Pembangun<'_> {
         if !tulis { return Some(rm.hasil.and_then(|v| nilai[v])); }
         let bit = 1u64 << tag;
         let mut muatan = x.muatan.clone();
-        for &(q, v) in &rm.tulis { muatan[q] = (Jenis::Pecahan, nilai[v]?, bit); }
-        self.bayang.insert(pos, Bayang { muatan, basi: x.basi, ..x });
+        for &(q, v) in &rm.tulis { let q2 = (q + 1) % muatan.len(); muatan[q2] = (Jenis::Pecahan, nilai[v]?, bit); }
+        self.bayang.insert(pos, Bayang { muatan, basi: x.basi | bit, ..x });
         Some(None)
     }
 
