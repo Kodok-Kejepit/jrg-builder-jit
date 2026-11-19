@@ -534,6 +534,12 @@ impl Pembangun<'_> {
                     }
                     crate::jit::layak::Sumber::Konst(_) => Ok(None),
                 }).collect::<Result<Vec<_>, String>>()?;
+                // Penerima berbayangan struct: rumusnya dihitung dari isi bayangannya, struct VM-nya tidak disentuh.
+                if let Some(h) = self.lipat_rumus(b, a, rumus, &args, tulis) {
+                    if let Some(h) = h { isi.push(Some(h)); }
+                    let (ke, args) = self.tepi(b, ip, ip + lebar, isi)?;
+                    return Ok(Some(Akhir::Lompat { ke, args }));
+                }
                 let hasil = (!tulis).then(|| self.j.nilai_baru(Tipe::F));
                 let jaga = Jaga { keadaan: self.keadaan_di(ip, isi), spek: true, puncak_vm: false };
                 self.dorong(b, Inst::Rumus { rumus, lokal: a, args, tulis, hasil, jaga });

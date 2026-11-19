@@ -692,6 +692,89 @@ impl Pembangun<'_> {
         self.tag_struktur(situs, k0.isi.len(), k0.apung).map(|i| (k0.situs, k0.apung, k0.isi.len(), i))
     }
 
+    /// Penanda struct `tag` dibangun dari bentuk `b`.
+    fn bentuk_sama(&self, tag: usize, b: &std::sync::Arc<crate::vm::peta::Bentuk>) -> bool {
+        let alamat = self.tabel.0.read().unwrap_or_else(|p| p.into_inner()).get(tag).map_or(0, |e| e.4);
+        alamat != 0 && matches!(unsafe { &*(alamat as *const SitusBangun) },
+            SitusBangun::Struktur(_, x) | SitusBangun::StrukturUlang(_, x) if std::sync::Arc::ptr_eq(x, b))
+    }
+
+    /// Rumus method (`Cara::RumusLokal`/`UbahLokal`) atas penerima berbayangan struct: dihitung dari isi bayangannya tanpa
+    /// menyentuh struct VM. Rumus nilai menjawab hasilnya; rumus pembaruan menulis isi bayangannya (struct VM-nya jadi
+    /// basi). `None` = tidak bisa (bentuk, label, atau jenis field tidak cocok): instruksi aslinya dipakai.
+    pub(super) fn lipat_rumus(&mut self, b: Blok, pos: usize, rumus: usize, args: &[Option<Nilai>], tulis: bool) -> Option<Option<Nilai>> {
+        use crate::jit::layak::{Simpul, Sumber};
+        use crate::vm::opcode::OpCode;
+        let rm = self.r.ubah[rumus].clone();
+        let x = self.bayang.get(&pos).cloned()?;
+        if x.mungkin.count_ones() != 1 || !self.struktur_bernama(&x, &rm.label) { return None; }
+        let tag = x.mungkin.trailing_zeros() as usize;
+        if tulis {
+            let bentuk = rm.prototipe.as_ref()?.bentuk()?;
+            if !self.bentuk_sama(tag, &bentuk) { return None; }
+            // Field yang ditulis tetap pecahan: jenis isi bayangannya (penanda) tidak berubah.
+            if !rm.tulis.iter().all(|&(q, _)| x.muatan.get(q).is_some_and(|m| m.0 == Jenis::Pecahan && m.2 >> tag & 1 == 1)) { return None; }
+        } else if rm.hasil.is_none() { return None; }
+        let mut field = Vec::with_capacity(rm.baca.len());
+        for (nama, kode) in &rm.baca {
+            field.push(self.field_bayang(&x, nama, if *kode == 5 { Jenis::Pecahan } else { Jenis::Bulat })?);
+        }
+        let n = rm.simpul.len();
+        let mut perlu = vec![false; n];
+        for &(_, v) in &rm.tulis { perlu[v] = true; }
+        if let Some(v) = rm.hasil { perlu[v] = true; }
+        for v in (0..n).rev() {
+            if !perlu[v] { continue; }
+            match rm.simpul[v] {
+                Simpul::Biner(_, l, r) => { perlu[l] = true; perlu[r] = true; }
+                Simpul::Neg(y) | Simpul::KeF64(y) => perlu[y] = true,
+                _ => {}
+            }
+        }
+        // Argumen yang dibutuhkan harus ada (native atau konstanta) sebelum ada instruksi yang dikeluarkan.
+        for v in 0..n {
+            if let (true, Simpul::Arg(j)) = (perlu[v], &rm.simpul[v]) {
+                match (args.get(j - 1)?, rm.sumber.get(j - 1)?) { (Some(_), _) | (None, Sumber::Konst(_)) => {}, _ => return None }
+            }
+        }
+        let mut nilai: Vec<Option<Nilai>> = vec![None; n];
+        for v in 0..n {
+            if !perlu[v] { continue; }
+            let h = match rm.simpul[v] {
+                Simpul::Field(i) => field[i],
+                Simpul::KeF64(y) => {
+                    let h = self.j.nilai_baru(Tipe::F);
+                    self.dorong(b, Inst::Unar { hasil: h, op: super::Unar::KeF, a: nilai[y]?, jaga: None });
+                    h
+                }
+                Simpul::Arg(j) => match (args[j - 1], rm.sumber[j - 1]) {
+                    (Some(a), _) => a,
+                    (None, Sumber::Konst(c)) => { let h = self.j.nilai_baru(Tipe::F); self.dorong(b, Inst::KonstF { hasil: h, nilai: c }); h }
+                    _ => return None,
+                },
+                Simpul::Konst(c) => { let h = self.j.nilai_baru(Tipe::F); self.dorong(b, Inst::KonstF { hasil: h, nilai: c }); h }
+                Simpul::Neg(y) => {
+                    let h = self.j.nilai_baru(Tipe::F);
+                    self.dorong(b, Inst::Unar { hasil: h, op: super::Unar::FNeg, a: nilai[y]?, jaga: None });
+                    h
+                }
+                Simpul::Biner(op, l, r) => {
+                    let h = self.j.nilai_baru(Tipe::F);
+                    let op = match op { OpCode::Add => Biner::FTambah, OpCode::Sub => Biner::FKurang, OpCode::Mul => Biner::FKali, _ => Biner::FBagi };
+                    self.dorong(b, Inst::Biner { hasil: h, op, a: nilai[l]?, b: nilai[r]?, jaga: None });
+                    h
+                }
+            };
+            nilai[v] = Some(h);
+        }
+        if !tulis { return Some(rm.hasil.and_then(|v| nilai[v])); }
+        let bit = 1u64 << tag;
+        let mut muatan = x.muatan.clone();
+        for &(q, v) in &rm.tulis { muatan[q] = (Jenis::Pecahan, nilai[v]?, bit); }
+        self.bayang.insert(pos, Bayang { muatan, basi: x.basi | bit, ..x });
+        Some(None)
+    }
+
     /// Petunjuk dari bayangan struct `e` di `pos` yang basi di tepi yang datang belakangan.
     fn hint_dari(&self, pos: usize, e: &Bayang) -> Option<Hint> {
         if e.basi == 0 || e.mungkin.count_ones() != 1 { return None; }

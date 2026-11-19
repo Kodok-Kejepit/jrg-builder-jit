@@ -1113,7 +1113,19 @@ pub extern "C" fn wujud_varian(pos: i64, tabel: *const TabelVarian, tag: i64, ba
         // Struct berbayangan: dibangun dari isi field-nya, urut bentuknya (`SitusBangun::Struktur`).
         let (SitusBangun::Struktur(label, bentuk) | SitusBangun::StrukturUlang(label, bentuk)) = (unsafe { &*(struktur as *const SitusBangun) })
             else { unreachable!("tabel menyimpan alamat situs struct") };
-        let isi: Vec<VmValue> = (0..payload.unwrap_or(0)).map(skalar).collect();
+        let n = payload.unwrap_or(0);
+        // Struct basi dari wujud sebelumnya masih di slot dan tak dibagi: isinya ditimpa di tempat, tanpa alokasi.
+        let (vm, basis) = konteks();
+        if let Some(VmValue::Map(m)) = vm.stack.get_mut(basis + pos as usize) {
+            let sama = matches!((&m.label, label), (crate::vm::value::Label::Struct(a), crate::vm::value::Label::Struct(b)) if Arc::ptr_eq(a, b) || a == b);
+            if let (true, Some(crate::vm::peta::IsiPeta::Rapat { bentuk: b, nilai })) = (sama, crate::vm::value::Peta::isi_tunggal(m)) {
+                if Arc::ptr_eq(b, bentuk) && nilai.len() == n {
+                    for (k, x) in nilai.iter_mut().enumerate() { *x = skalar(k); }
+                    return;
+                }
+            }
+        }
+        let isi: Vec<VmValue> = (0..n).map(skalar).collect();
         VmValue::Map(crate::vm::value::Peta::struktur_arc(label.clone(), Arc::clone(bentuk), isi))
     } else if konst != 0 { unsafe { &*(konst as *const VmValue) }.clone() } else {
         VmValue::varian_nama(nama, match payload {
