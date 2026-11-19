@@ -684,7 +684,7 @@ impl Pembangun<'_> {
         };
         if alamat == 0 || x.basi >> tag & 1 == 0 || self.lengkap(x) >> tag & 1 == 0 || x.muatan.len() < n { return None; }
         let jenis_sah = x.muatan[..n].iter().enumerate().all(|(k, m)| m.0 == if apung >> k & 1 == 1 { Jenis::Pecahan } else { Jenis::Bulat });
-        jenis_sah.then(|| Box::new(crate::jit::jir::BayangKembali { situs: alamat as i64, apung, isi: x.muatan[..n].iter().map(|m| m.1).collect() }))
+        jenis_sah.then(|| Box::new(crate::jit::jir::BayangKembali { situs: alamat as i64, apung, isi: x.muatan[..n].iter().rev().map(|m| m.1).collect() }))
     }
 
     /// `x` struct (satu penanda) yang labelnya `nama`: pemilik method `nama`, terbukti saat kompilasi.
@@ -792,7 +792,7 @@ impl Pembangun<'_> {
         if !tulis { return Some(rm.hasil.and_then(|v| nilai[v])); }
         let bit = 1u64 << tag;
         let mut muatan = x.muatan.clone();
-        for &(q, v) in &rm.tulis { let q2 = (q + 1) % muatan.len(); muatan[q2] = (Jenis::Pecahan, nilai[v]?, bit); }
+        for &(q, v) in &rm.tulis { muatan[q] = (Jenis::Pecahan, nilai[v]?, bit); }
         self.bayang.insert(pos, Bayang { muatan, basi: x.basi | bit, ..x });
         Some(None)
     }
