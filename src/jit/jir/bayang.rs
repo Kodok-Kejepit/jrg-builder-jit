@@ -4,8 +4,9 @@
 
 use std::collections::HashMap;
 
-use super::{Akhir, Arg, Banding, Biner, Blok, Inst, Jenis, Nilai, Pb, Pembangun, Tipe};
+use super::{Akhir, Arg, Banding, Biner, Blok, Inst, Jaga, Jenis, Nilai, Pb, Pembangun, Tipe, Uji};
 use crate::jit::jir::Maya;
+use crate::jit::lambat::SitusBangun;
 use crate::vm::value::{Label, NamaVarian, VmValue};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -44,7 +45,7 @@ pub(super) fn ditulis(i: &Inst) -> Option<Vec<usize>> {
         Inst::Pembantu { pb, args, .. } => {
             let pos = |k: usize| match args.get(k) { Some(Arg::I64(p)) => Some(*p as usize), _ => None };
             match pb {
-                Pb::PolaLokal | Pb::PayloadJenisSama | Pb::PayloadPanjang | Pb::KarakterLokal => vec![],
+                Pb::PolaLokal | Pb::PayloadJenisSama | Pb::PayloadPanjang | Pb::KarakterLokal | Pb::BukaStruktur => vec![],
                 Pb::PayloadLokal | Pb::PayloadAngkaLokal => pos(1).into_iter().collect(),
                 Pb::FieldLokal => pos(3).into_iter().collect(),
                 pb => super::posisi_pb(*pb).iter().filter_map(|k| pos(*k)).collect(),
@@ -84,7 +85,7 @@ impl Pembangun<'_> {
             Some(i) => i,
             None => {
                 self.varian.push((nama, payload));
-                self.tabel.0.write().unwrap_or_else(|p| p.into_inner()).push((nama, payload, konst, apung));
+                self.tabel.0.write().unwrap_or_else(|p| p.into_inner()).push((nama, payload, konst, apung, 0));
                 self.varian.len() - 1
             }
         };
@@ -138,9 +139,9 @@ impl Pembangun<'_> {
     pub(super) fn lengkap(&self, x: &Bayang) -> u64 {
         let t = self.tabel.0.read().unwrap_or_else(|p| p.into_inner());
         (0..64).filter(|i| x.mungkin >> i & 1 == 1).filter(|&i| match t[i] {
-            (_, _, k, _) if k != 0 => true,
-            (_, None, _, _) => true,
-            (_, Some(n), _, _) => x.muatan.len() >= n && x.muatan[..n].iter().all(|m| m.2 >> i & 1 == 1),
+            (_, _, k, _, _) if k != 0 => true,
+            (_, None, _, _, _) => true,
+            (_, Some(n), _, _, _) => x.muatan.len() >= n && x.muatan[..n].iter().all(|m| m.2 >> i & 1 == 1),
         }).fold(0, |m, i| m | 1 << i)
     }
 
@@ -247,6 +248,16 @@ impl Pembangun<'_> {
             self.sisi.entry(ke).or_default().push((asal, sasaran, potret));
             return Ok(Vec::new());
         };
+        // Struct berbayangan basi yang kepala loopnya tidak membawanya: tepi ini harus membangunnya tiap putaran. Bangun
+        // ulang dengan petunjuk, supaya tepi masuk membuka struct VM-nya jadi bayangan dan kepala loop membawanya.
+        let baru: Vec<Hint> = potret.iter().filter(|(p, _)| !params.iter().any(|(q, _)| q == p))
+            .filter_map(|(p, e)| self.hint_dari(*p, e))
+            .filter(|h| !self.hint.get(&ke).is_some_and(|v| v.contains(h))).collect();
+        if !baru.is_empty() && !self.larang.contains(&ke) {
+            self.hint_baru.entry(ke).or_default().extend(baru);
+            self.ulang = Some(ke);
+            return Err(format!("struct berbayangan di tepi belakangan ke ip {ke}: bangun ulang dengan petunjuk"));
+        }
         match self.args_bayang(asal, &params, &potret) {
             Some(args) => Ok(args),
             None => {
@@ -387,6 +398,8 @@ impl Pembangun<'_> {
     /// Lengan `urutan` rantai `match` di alamat `situs` atas posisi berbayangan `x`: cocok tidaknya, kalau tiap
     /// varian yang mungkin terjawab tanpa galat saat kompilasi.
     pub(super) fn lipat_rantai(&mut self, keluar: &mut Vec<Inst>, x: &Bayang, situs: i64, urutan: usize) -> Option<Nilai> {
+        // Struct berbayangan bukan varian enum: pola dan payload enum tidak dijawab dari bayangannya.
+        if x.mungkin & self.struktur_topeng() != 0 { return None; }
         let rantai = unsafe { &*(situs as *const crate::jit::lambat::RantaiPola) };
         let mut lengan = HashMap::new();
         for t in (0..64u32).filter(|t| x.mungkin >> t & 1 == 1) {
@@ -399,6 +412,8 @@ impl Pembangun<'_> {
     /// `pola_lokal` (situs `SitusPola` di alamat `situs`) atas posisi berbayangan `x`: 0/1, kalau tiap varian yang
     /// mungkin terjawab tanpa galat saat kompilasi.
     pub(super) fn lipat_pola(&mut self, keluar: &mut Vec<Inst>, x: &Bayang, situs: i64) -> Option<Nilai> {
+        // Struct berbayangan bukan varian enum: pola dan payload enum tidak dijawab dari bayangannya.
+        if x.mungkin & self.struktur_topeng() != 0 { return None; }
         let situs = unsafe { &*(situs as *const crate::jit::lambat::SitusPola) };
         let mut cocok = 0u64;
         for t in (0..64u32).filter(|t| x.mungkin >> t & 1 == 1) {
@@ -411,6 +426,8 @@ impl Pembangun<'_> {
     /// `payload_angka_lokal` atas posisi berbayangan `x` dengan spekulasi `j`: (status 0/1 seperti pembantunya —
     /// 1 = bukan varian yang payload-nya isi ini, deopt — dan isinya).
     pub(super) fn lipat_payload(&mut self, keluar: &mut Vec<Inst>, x: &Bayang, j: Jenis) -> Option<(Nilai, Nilai)> {
+        // Struct berbayangan bukan varian enum: pola dan payload enum tidak dijawab dari bayangannya.
+        if x.mungkin & self.struktur_topeng() != 0 { return None; }
         let (jm, v, sah) = *x.muatan.first()?;
         let satu: u64 = (0..self.varian.len().min(64)).filter(|t| self.varian[*t].1 == Some(1)).fold(0, |m, t| m | 1 << t);
         let baik = sah & satu & x.mungkin & self.slot_berjenis(0, j);
@@ -422,6 +439,8 @@ impl Pembangun<'_> {
     /// `PayloadJenisSama` (nama jenis di alamat `nama`) atau `PayloadPanjang` (`nama` = `None`) atas posisi berbayangan
     /// `x`: (gagal 0/1 — varian yang pembantunya menjawab VM, deopt — dan jawabannya).
     pub(super) fn lipat_payload_bentuk(&mut self, keluar: &mut Vec<Inst>, x: &Bayang, nama: Option<i64>) -> Option<(Nilai, Nilai)> {
+        // Struct berbayangan bukan varian enum: pola dan payload enum tidak dijawab dari bayangannya.
+        if x.mungkin & self.struktur_topeng() != 0 { return None; }
         let nama = match nama {
             Some(a) => match unsafe { &*(a as *const VmValue) } { VmValue::Str(s) => Some(s.as_str().to_string()), _ => return None },
             None => None,
@@ -525,7 +544,7 @@ pub(super) fn tuple_tak_bocor(c: &super::Fungsi, bi: usize, ke: usize) -> Option
         }
         match &c.blok[b].akhir {
             Some(Akhir::Keluar { keadaan }) if hidup(keadaan) => ada = true,
-            Some(Akhir::KembaliNilai { pos }) if *pos == ke => return None,
+            Some(Akhir::KembaliNilai { pos, .. }) if *pos == ke => return None,
             _ => {}
         }
         if ada { if dom[b] { butuh.push(b); } else { return None; } }
@@ -538,7 +557,7 @@ impl Pembangun<'_> {
     pub(super) fn tuple_baik(&self, x: &Bayang) -> u64 {
         let t = self.tabel.0.read().unwrap_or_else(|p| p.into_inner());
         (0..64).filter(|i| x.mungkin >> i & 1 == 1).filter(|&i| match t[i] {
-            (_, Some(n), 0, _) if n >= 2 => x.muatan.len() >= n && x.muatan[..n].iter().all(|m| m.2 >> i & 1 == 1),
+            (_, Some(n), 0, _, 0) if n >= 2 => x.muatan.len() >= n && x.muatan[..n].iter().all(|m| m.2 >> i & 1 == 1),
             _ => false,
         }).fold(0, |m, i| m | 1 << i)
     }
@@ -560,5 +579,164 @@ impl Pembangun<'_> {
     /// Jumlah isi payload varian `t` (tabel).
     pub(super) fn jumlah_payload(&self, t: u32) -> usize {
         self.tabel.0.read().unwrap_or_else(|p| p.into_inner()).get(t as usize).and_then(|e| e.1).unwrap_or(0)
+    }
+}
+
+/// Petunjuk dari tepi yang datang belakangan: posisi `pos` di kepala loop sebaiknya berbayangan struct `situs`
+/// (alamat `SitusBangun`), slot pecahan `apung`, `n` field. Tepi masuk yang tidak membawanya membuka struct VM-nya.
+pub(super) type Hint = (usize, i64, u64, usize);
+
+impl Pembangun<'_> {
+    /// Bit penanda yang STRUCT (entri tabel yang punya alamat situs).
+    pub(super) fn struktur_topeng(&self) -> u64 {
+        let t = self.tabel.0.read().unwrap_or_else(|p| p.into_inner());
+        t.iter().enumerate().take(64).filter(|(_, e)| e.4 != 0).fold(0, |m, (i, _)| m | 1 << i)
+    }
+
+    /// Penanda struct `situs` (`SitusBangun::Struktur`/`StrukturUlang`) berisi `n` field dengan slot pecahan `apung`.
+    pub(super) fn tag_struktur(&mut self, situs: &'static SitusBangun, n: usize, apung: u64) -> Option<u32> {
+        let (SitusBangun::Struktur(label, bentuk) | SitusBangun::StrukturUlang(label, bentuk)) = situs else { return None };
+        let Label::Struct(nm) = label else { return None };
+        let nama = NamaVarian::intern("<struct>", nm);
+        let tabel = self.tabel;
+        let sama = |alamat: usize| match unsafe { &*(alamat as *const SitusBangun) } {
+            SitusBangun::Struktur(l, b) | SitusBangun::StrukturUlang(l, b) => std::sync::Arc::ptr_eq(b, bentuk)
+                && matches!((l, label), (Label::Struct(x), Label::Struct(y)) if std::sync::Arc::ptr_eq(x, y) || x == y),
+            _ => false,
+        };
+        let ada = {
+            let t = tabel.0.read().unwrap_or_else(|p| p.into_inner());
+            self.varian.iter().enumerate().position(|(k, (nv, p))| std::ptr::eq(*nv, nama) && *p == Some(n)
+                && t[k].3 == apung && t[k].4 != 0 && sama(t[k].4))
+        };
+        let i = match ada {
+            Some(i) => i,
+            None => {
+                self.varian.push((nama, Some(n)));
+                self.tabel.0.write().unwrap_or_else(|p| p.into_inner()).push((nama, Some(n), 0, apung, situs as *const SitusBangun as usize));
+                self.varian.len() - 1
+            }
+        };
+        (i < 64).then_some(i as u32)
+    }
+
+    /// Posisi `pos` kini struct baru `situs` berisi `muatan` (angka native, urut bentuknya): belum dibangun (`basi`).
+    pub(super) fn lahir_struktur(&mut self, b: Blok, pos: usize, situs: &'static SitusBangun, muatan: Vec<(Jenis, Nilai)>) -> bool {
+        let apung = muatan.iter().enumerate().filter(|(_, m)| m.0 == Jenis::Pecahan).fold(0u64, |a, (k, _)| a | 1 << k);
+        let Some(i) = self.tag_struktur(situs, muatan.len(), apung) else { return false };
+        let tag = self.konst_i(b, i as i64);
+        let bit = 1u64 << i;
+        self.bayang.insert(pos, Bayang { tag, mungkin: bit, muatan: muatan.into_iter().map(|(j, v)| (j, v, bit)).collect(), basi: bit });
+        self.lahir.push(pos);
+        true
+    }
+
+    /// Indeks field `nama` di struct berpenanda `tag` (urut bentuknya); `None` kalau penandanya bukan struct.
+    fn indeks_field(&self, tag: usize, nama: &str) -> Option<usize> {
+        let alamat = self.tabel.0.read().unwrap_or_else(|p| p.into_inner()).get(tag)?.4;
+        if alamat == 0 { return None; }
+        match unsafe { &*(alamat as *const SitusBangun) } {
+            SitusBangun::Struktur(_, b) | SitusBangun::StrukturUlang(_, b) => b.nama.iter().position(|x| x.as_str() == nama),
+            _ => None,
+        }
+    }
+
+    /// Field `nama` berjenis `j` dari bayangan `x`, kalau `x` struct dengan SATU penanda dan field itu ada di bayangannya.
+    pub(super) fn field_bayang(&self, x: &Bayang, nama: &str, j: Jenis) -> Option<Nilai> {
+        if x.mungkin.count_ones() != 1 { return None; }
+        let tag = x.mungkin.trailing_zeros() as usize;
+        let k = self.indeks_field(tag, nama)?;
+        let (jm, v, sah) = *x.muatan.get(k)?;
+        (sah >> tag & 1 == 1 && jm == j).then_some(v)
+    }
+
+    /// Struct berbayangan di `pos` yang bisa diteruskan sebagai hasil callee tanpa dibangun.
+    pub(super) fn bayang_kembali(&self, pos: usize) -> Option<Box<crate::jit::jir::BayangKembali>> {
+        let x = self.bayang.get(&pos)?;
+        if x.mungkin.count_ones() != 1 { return None; }
+        let tag = x.mungkin.trailing_zeros() as usize;
+        let (apung, alamat, n) = {
+            let t = self.tabel.0.read().unwrap_or_else(|p| p.into_inner());
+            let e = t.get(tag)?;
+            (e.3, e.4, e.1?)
+        };
+        if alamat == 0 || x.basi >> tag & 1 == 0 || self.lengkap(x) >> tag & 1 == 0 || x.muatan.len() < n { return None; }
+        let jenis_sah = x.muatan[..n].iter().enumerate().all(|(k, m)| m.0 == if apung >> k & 1 == 1 { Jenis::Pecahan } else { Jenis::Bulat });
+        jenis_sah.then(|| Box::new(crate::jit::jir::BayangKembali { situs: alamat as i64, apung, isi: x.muatan[..n].iter().map(|m| m.1).collect() }))
+    }
+
+    /// `x` struct (satu penanda) yang labelnya `nama`: pemilik method `nama`, terbukti saat kompilasi.
+    pub(super) fn struktur_bernama(&self, x: &Bayang, nama: &str) -> bool {
+        if x.mungkin.count_ones() != 1 { return false; }
+        let tag = x.mungkin.trailing_zeros() as usize;
+        let alamat = self.tabel.0.read().unwrap_or_else(|p| p.into_inner()).get(tag).map_or(0, |e| e.4);
+        if alamat == 0 { return false; }
+        match unsafe { &*(alamat as *const SitusBangun) } {
+            SitusBangun::Struktur(Label::Struct(l), _) | SitusBangun::StrukturUlang(Label::Struct(l), _) => &**l == nama,
+            _ => false,
+        }
+    }
+
+    /// Struct berbayangan yang SEMUA kembalian `c` teruskan dengan situs, jumlah dan jenis isi yang sama: (alamat situs,
+    /// slot pecahan, jumlah field, penandanya di tabel ini). Pemanggil menerimanya sebagai bayangan, tanpa membangunnya.
+    pub(super) fn kembalian_struktur(&mut self, c: &super::Fungsi) -> Option<(i64, u64, usize, u32)> {
+        let semua: Vec<&Akhir> = c.blok.iter().filter_map(|b| b.akhir.as_ref()).filter(|a| matches!(a, Akhir::KembaliNilai { .. })).collect();
+        let ks: Vec<&crate::jit::jir::BayangKembali> = semua.iter().filter_map(|a| match a {
+            Akhir::KembaliNilai { bayang: Some(x), .. } => Some(&**x),
+            _ => None,
+        }).collect();
+        if semua.is_empty() || ks.len() != semua.len() { return None; }
+        let k0 = ks[0];
+        if !ks.iter().all(|k| k.apung == k0.apung && k.isi.len() == k0.isi.len() && sama_situs(k.situs, k0.situs)) { return None; }
+        let situs: &'static SitusBangun = unsafe { &*(k0.situs as *const SitusBangun) };
+        self.tag_struktur(situs, k0.isi.len(), k0.apung).map(|i| (k0.situs, k0.apung, k0.isi.len(), i))
+    }
+
+    /// Petunjuk dari bayangan struct `e` di `pos` yang basi di tepi yang datang belakangan.
+    fn hint_dari(&self, pos: usize, e: &Bayang) -> Option<Hint> {
+        if e.basi == 0 || e.mungkin.count_ones() != 1 { return None; }
+        let tag = e.mungkin.trailing_zeros() as usize;
+        let t = self.tabel.0.read().unwrap_or_else(|p| p.into_inner());
+        let x = t.get(tag)?;
+        (x.4 != 0).then(|| (pos, x.4 as i64, x.3, x.1.unwrap_or(0)))
+    }
+
+    /// Tepi ke `ke` dari blok `asal` (stack `isi`): posisi yang kepala loopnya diharapkan berbayangan struct (hint) tapi
+    /// di sini masih nilai VM dibuka — field-nya dibaca (berjaga bentuk dan jenis; gagal = deopt di `ke`) jadi bayangan.
+    pub(super) fn buka_untuk_tepi(&mut self, asal: Blok, ke: usize, isi: &[Option<Nilai>]) {
+        if !self.bayang_aktif || self.larang.contains(&ke) { return; }
+        let Some(hint) = self.hint.get(&ke).cloned() else { return };
+        for (pos, alamat, apung, n) in hint {
+            if self.bayang.contains_key(&pos) || isi.get(pos).is_none_or(|v| v.is_some()) { continue; }
+            if self.keadaan(ke).get(pos) != Some(&Jenis::Nilai) { continue; }
+            let situs: &'static SitusBangun = unsafe { &*(alamat as *const SitusBangun) };
+            let Some(i) = self.tag_struktur(situs, n, apung) else { continue };
+            let keadaan = self.keadaan_di(ke, isi);
+            let mut muatan = Vec::with_capacity(n);
+            for k in 0..n {
+                let peca = apung >> k & 1 == 1;
+                let v = self.j.nilai_baru(if peca { Tipe::F } else { Tipe::I });
+                let jaga = Jaga { keadaan: keadaan.clone(), spek: false, puncak_vm: false };
+                self.dorong(asal, Inst::Pembantu {
+                    pb: Pb::BukaStruktur,
+                    args: vec![Arg::I64(pos as i64), Arg::I64(alamat), Arg::I64(k as i64), Arg::I64(peca as i64), Arg::Wadah],
+                    hasil: None, gagal: Some((Uji::BukanNol, jaga)), keluar: Some(v),
+                });
+                muatan.push((if peca { Jenis::Pecahan } else { Jenis::Bulat }, v));
+            }
+            let tag = self.konst_i(asal, i as i64);
+            let bit = 1u64 << i;
+            self.bayang.insert(pos, Bayang { tag, mungkin: bit, muatan: muatan.into_iter().map(|(j, v)| (j, v, bit)).collect(), basi: 0 });
+        }
+    }
+}
+
+/// Dua situs `SitusBangun` (alamat) membangun struct yang sama: bentuk yang sama dan label yang sama.
+pub(super) fn sama_situs(a: i64, b: i64) -> bool {
+    match unsafe { (&*(a as *const SitusBangun), &*(b as *const SitusBangun)) } {
+        (SitusBangun::Struktur(l1, b1) | SitusBangun::StrukturUlang(l1, b1), SitusBangun::Struktur(l2, b2) | SitusBangun::StrukturUlang(l2, b2)) =>
+            std::sync::Arc::ptr_eq(b1, b2)
+                && matches!((l1, l2), (Label::Struct(x), Label::Struct(y)) if std::sync::Arc::ptr_eq(x, y) || x == y),
+        _ => false,
     }
 }
