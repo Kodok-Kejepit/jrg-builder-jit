@@ -1204,7 +1204,7 @@ impl Vm {
                     // Aturan `Chan::new`: negatif, bukan bulat dan kebesaran ditolak (AGI-20261119-53).
                     let v = self.pop(sp)?;
                     let cap = crate::interpreter::kapasitas_chan(
-                        if let VmValue::Int(n) = &v { Some(*n) } else { None }, &v.type_name_penuh())
+                        if let VmValue::Int(n) = &v { Some(*n) } else { None }, &v.type_name_penuh(), false)
                         .map_err(|e| VmError::at(e, sp))?;
                     self.push(VmValue::Channel(VmChannel::new(cap)));
                 }

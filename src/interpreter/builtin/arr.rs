@@ -48,7 +48,7 @@ impl Interpreter {
                 let kapasitas = match args.first() {
                     None => 0,
                     Some(v) => crate::interpreter::kapasitas_chan(
-                        if let Value::Int(n) = v { Some(*n) } else { None }, &v.type_name())
+                        if let Value::Int(n) = v { Some(*n) } else { None }, &v.type_name(), true)
                         .map_err(|e| Signal::RuntimeError(RuntimeError::new(e)))?,
                 };
                 Ok(Value::Channel(crate::interpreter::value::channel_new(kapasitas)))

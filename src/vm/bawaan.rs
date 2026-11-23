@@ -499,7 +499,7 @@ impl Vm {
             let cap = match a.get(0) {
                 None => 0,
                 Some(v) => crate::interpreter::kapasitas_chan(
-                    if let Int(n) = v { Some(*n) } else { None }, &v.type_name_penuh())?,
+                    if let Int(n) = v { Some(*n) } else { None }, &v.type_name_penuh(), true)?,
             };
             Ok(Channel(VmChannel::new(cap)))
         });
