@@ -187,6 +187,39 @@ fn stack_dalam_lewat_wasm() {
     assert_eq!((w.kode, w.stdout.as_str()), (0, "false 20000\n"), "{}", w.stderr);
 }
 
+/// Stack goroutine wasm dari heap tanpa halaman penjaga: luapannya dulu menimpa blok heap lain tanpa suara (terukur
+/// 2026-11-24). Sekarang `--stack-check` menghentikan program dengan kalimat native, keluaran sebelumnya tetap ada.
+const STACK_LUAP: &str = r#"fn dalam(n: int) -> int {
+    var a: [512]int = [0; 512]
+    a[n % 512] = n
+    if n == 0 { return 0 }
+    return a[n % 512] - n + 1 + dalam(n - 1)
+}
+fn main() {
+    wok("awal")
+    if DI_MAIN {
+        wok(dalam(1000000))
+    } else {
+        let ch = make_chan(int, 1)
+        spawn |ch: chan int| { ch <- dalam(1000000) }
+        wok(<- ch)
+    }
+}
+"#;
+
+#[test]
+fn stack_luap_lewat_wasm_berhenti_keras() {
+    let kerja = folder("luap");
+    for di in ["goroutine", "main"] {
+        let p = tulis(&kerja, &format!("luap_{di}.jrg"), &STACK_LUAP.replace("DI_MAIN", &(di == "main").to_string()));
+        if wasm(&p, &kerja).is_none() { return }
+        let w = jalan(&[p.to_str().unwrap(), "--emit-wasm"], &kerja);
+        assert!(w.kode != 0 && w.stdout == "awal\n" && w.stderr.contains("rekursi terlalu dalam"),
+            "luapan stack di {di} harus berhenti keras berkalimat stack habis:\nkode {}\n{}{}", w.kode, w.stdout, w.stderr);
+    }
+    let _ = std::fs::remove_dir_all(&kerja);
+}
+
 /// `JRG_EKSPOR_PARITAS=<dir> cargo test --test wasm_parity -- --ignored ekspor_paritas_llvm`: program `PARITAS_LLVM`
 /// ke berkas, untuk sapuan wasm di luar suite (tiap kasus ±8 detik penyusunan).
 #[test]

@@ -41,6 +41,27 @@ static void jrg_sp_tulis(void *p) {
     __asm__ volatile(".globaltype __stack_pointer, i32\n local.get %0\n global.set __stack_pointer" :: "r"(p));
 }
 
+// Batas stack bayangan korutin yang sedang jalan (`wasm-opt --stack-check`, `wasm::kompilasi`). Stack goroutine dari
+// heap tidak berhalaman penjaga, jadi luapannya dulu menimpa blok heap lain tanpa suara. Pemuat node meneruskan
+// batasnya ke `__set_stack_limits`; luapan memanggil `jrg_wasm_stack_habis`.
+__attribute__((import_module("jrg"), import_name("batas_stack"))) void jrg_wasm_batas(uint32_t atas, uint32_t bawah);
+extern char __stack_low, __stack_high;
+static void jrg_wasm_batas_bebas(void) { jrg_wasm_batas(UINT32_MAX, 0); }
+static void jrg_wasm_batas_untuk(JrgKo *k) {
+    if (k == &jrg_ko_utama) jrg_wasm_batas((uint32_t)(uintptr_t)&__stack_high, (uint32_t)(uintptr_t)&__stack_low);
+    else jrg_wasm_batas((uint32_t)(((uintptr_t)k->stack + JRG_KO_STACK) & ~(uintptr_t)15), (uint32_t)(uintptr_t)k->stack);
+}
+
+// Stack habis: dilaporkan dari stack cadangan dengan kalimat native (`jaga_stack.c`), keluaran sebelumnya tetap
+// keluar. Seluruh program berhenti; stack-nya tidak bisa dilanjutkan, jadi goroutine tidak berhenti sendirian.
+__attribute__((export_name("jrg_wasm_stack_habis"))) void jrg_wasm_stack_habis(void) {
+    static char cadangan[64 << 10] __attribute__((aligned(16)));
+    jrg_sp_tulis(cadangan + sizeof cadangan);
+    jrg_ko_fatal = 1;
+    jrg_situs = 0;
+    jrg_panic((const unsigned char *)JRG_PESAN_STACK, (int64_t)(sizeof JRG_PESAN_STACK - 1));
+}
+
 // Data Asyncify per korutin: lokal tiap bingkai yang sedang dibuka (bukan stack-nya, yang tinggal di `stack`).
 #define JRG_WASM_SIMPAN ((size_t)256 << 10)
 static int jrg_wasm_dibuka;
@@ -106,6 +127,8 @@ int __main_void(void) {
     for (;;) {
         JrgKo *k = jrg_ko_kini;
         jrg_wasm_dibuka = 0;
+        // Batas dilepas selama stack pointer dipindah, lalu dipasang untuk korutin tujuan.
+        jrg_wasm_batas_bebas();
         if (k->ctx.mulai) {
             jrg_sp_tulis(k->ctx.sp);
             jrg_asy_mulai_gulung(k->ctx.data);
@@ -113,7 +136,9 @@ int __main_void(void) {
             k->ctx.mulai = 1;
             if (k != &jrg_ko_utama) jrg_sp_tulis(k->ctx.sp);
         }
+        jrg_wasm_batas_untuk(k);
         if (k == &jrg_ko_utama) jrg_wasm_hasil = jrg_main_program(); else jrg_wasm_masuk();
+        jrg_wasm_batas_bebas();
         jrg_sp_tulis(jrg_wasm_dasar);
         if (jrg_wasm_dibuka) { jrg_asy_henti_buka(); continue; }
         // Kembali biasa cuma `main`: goroutine yang selesai menyerahkan giliran (`jrg_ko_tamat`) dan tidak kembali.
