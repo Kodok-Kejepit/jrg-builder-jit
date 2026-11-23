@@ -325,7 +325,14 @@ const inst = await WebAssembly.instantiate(mod, { wasi_snapshot_preview1: wasi.w
   env: { jrg_stack_luap: () => { ex.__set_stack_limits(0xffffffff, 0); ex.jrg_wasm_stack_habis(); } } });
 ex = inst.exports;
 ex.__set_stack_limits(0xffffffff, 0);
-process.exitCode = wasi.start(inst);
+let kode;
+try { kode = wasi.start(inst); } catch (e) {
+  // Stack V8 habis lebih dulu: dilaporkan lewat jalur yang sama dengan stack bayangan yang habis.
+  if (!(e instanceof RangeError)) throw e;
+  kode = 1;
+  try { ex.__set_stack_limits(0xffffffff, 0); ex.jrg_wasm_stack_habis(); } catch (k) { if (typeof k !== 'symbol') throw e; }
+}
+process.exitCode = kode;
 "#;
 
 /// Menjalankan `wasm` lewat node; kode keluarnya kode keluar program.

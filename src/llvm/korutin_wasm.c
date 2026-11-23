@@ -52,8 +52,8 @@ static void jrg_wasm_batas_untuk(JrgKo *k) {
     else jrg_wasm_batas((uint32_t)(((uintptr_t)k->stack + JRG_KO_STACK) & ~(uintptr_t)15), (uint32_t)(uintptr_t)k->stack);
 }
 
-// Stack habis: dilaporkan dari stack cadangan dengan kalimat native (`jaga_stack.c`), keluaran sebelumnya tetap
-// keluar. Seluruh program berhenti; stack-nya tidak bisa dilanjutkan, jadi goroutine tidak berhenti sendirian.
+// Stack habis (bayangan, atau stack V8 lewat pemuat): dilaporkan dari stack cadangan dengan kalimat native
+// (`jaga_stack.c`), keluaran sebelumnya tetap keluar. Seluruh program berhenti, bukan goroutine-nya saja.
 __attribute__((export_name("jrg_wasm_stack_habis"))) void jrg_wasm_stack_habis(void) {
     static char cadangan[64 << 10] __attribute__((aligned(16)));
     jrg_sp_tulis(cadangan + sizeof cadangan);

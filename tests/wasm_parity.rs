@@ -187,8 +187,8 @@ fn stack_dalam_lewat_wasm() {
     assert_eq!((w.kode, w.stdout.as_str()), (0, "false 20000\n"), "{}", w.stderr);
 }
 
-/// Stack goroutine wasm dari heap tanpa halaman penjaga: luapannya dulu menimpa blok heap lain tanpa suara (terukur
-/// 2026-11-24). Sekarang `--stack-check` menghentikan program dengan kalimat native, keluaran sebelumnya tetap ada.
+/// Stack goroutine wasm dari heap tanpa halaman penjaga dulu menimpa blok heap lain tanpa suara (terukur 2026-11-24).
+/// Luapan stack bayangan (`--stack-check`) dan stack V8 sekarang berhenti dengan kalimat native, keluaran tetap ada.
 const STACK_LUAP: &str = r#"fn dalam(n: int) -> int {
     var a: [512]int = [0; 512]
     a[n % 512] = n
@@ -210,8 +210,12 @@ fn main() {
 #[test]
 fn stack_luap_lewat_wasm_berhenti_keras() {
     let kerja = folder("luap");
-    for di in ["goroutine", "main"] {
-        let p = tulis(&kerja, &format!("luap_{di}.jrg"), &STACK_LUAP.replace("DI_MAIN", &(di == "main").to_string()));
+    // Celah 8 000 tingkat (LEWAT_JEMBATAN): bingkai Rust jembatan di stack goroutine, jalur stack bayangan.
+    let json = PARITAS_LLVM.iter().find(|(n, _)| n.starts_with("JSON dan jembatan atas nilai bersarang 8 ribu")).unwrap().1;
+    for di in ["goroutine", "main", "jembatan"] {
+        let src = if di == "jembatan" { json.replacen("    let ch", "    wok(\"awal\")\n    let ch", 1) }
+            else { STACK_LUAP.replace("DI_MAIN", &(di == "main").to_string()) };
+        let p = tulis(&kerja, &format!("luap_{di}.jrg"), &src);
         if wasm(&p, &kerja).is_none() { return }
         let w = jalan(&[p.to_str().unwrap(), "--emit-wasm"], &kerja);
         assert!(w.kode != 0 && w.stdout == "awal\n" && w.stderr.contains("rekursi terlalu dalam"),
