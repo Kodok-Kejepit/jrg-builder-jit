@@ -272,16 +272,21 @@ pub fn kompilasi(ir: &str, keluar: &Path, verbose: bool) -> Result<PathBuf, Stri
         let asy = dir.join("asyncify.wasm");
         jalankan_alat(Command::new(&alat.wasm_opt).arg(&taut_wasm).arg("--asyncify")
             .arg(format!("--pass-arg=asyncify-removelist@@{}", daftar.display())).arg("-O2")
-            .args(nama.then_some("-g")).arg("-o").arg(&asy), "wasm-opt (Asyncify)")?;
-        // Batas stack bayangan tiap korutin (`korutin_wasm.c`), SESUDAH Asyncify supaya impor penangannya tidak
-        // membuat tiap fungsi dianggap bisa berganti korutin. binaryen 133 memberi panggilan penangan tipe hasil
-        // yang salah (cuma di memori; biner yang ditulis benar), jadi dipasang tanpa validasi lalu divalidasi ulang.
+            .arg("-g").arg("-o").arg(&asy), "wasm-opt (Asyncify)")?;
+        // Batas stack tiap korutin (`korutin_wasm.c`) SESUDAH Asyncify, supaya impor penangannya tidak membuat tiap
+        // fungsi dianggap bisa berganti korutin. Nama wajib ada (`-g`), atau `__stack_pointer` tak ditemukan dan
+        // pass-nya diam. binaryen 133 salah memberi tipe panggilan penangan, jadi tanpa validasi lalu divalidasi.
         let cek = dir.join("cek.wasm");
         jalankan_alat(Command::new(&alat.wasm_opt).arg(&asy).arg("--no-validation").arg("--stack-check")
-            .arg(format!("--pass-arg=stack-check-handler@{PENANGAN_LUAP}"))
-            .args(nama.then_some("-g")).arg("-o").arg(&cek), "wasm-opt (batas stack)")?;
+            .arg(format!("--pass-arg=stack-check-handler@{PENANGAN_LUAP}")).arg("-g").arg("-o").arg(&cek),
+            "wasm-opt (batas stack)")?;
         jalankan_alat(Command::new(&alat.wasm_opt).arg(&cek).args(nama.then_some("-g")).arg("-o").arg(keluar),
-            "wasm-opt (validasi batas stack)")
+            "wasm-opt (validasi batas stack)")?;
+        let isi = std::fs::read(keluar).map_err(|e| format!("gagal membaca {}: {}", keluar.display(), crate::host::galat_io(&e)))?;
+        if !isi.windows(18).any(|w| w == b"__set_stack_limits") {
+            return Err("wasm-opt tidak memasang batas stack korutin (`__set_stack_limits` tidak ada)".into());
+        }
+        Ok(())
     });
     if std::env::var_os("JRG_WASM_NAMA").is_some_and(|v| v == "1") { let _ = std::fs::copy(&ll, keluar.with_extension("ll")); }
     let _ = std::fs::remove_dir_all(&dir);
@@ -302,10 +307,9 @@ pub fn pemuat_untuk(wasm: &Path) -> PathBuf {
 /// Penangan luapan stack korutin yang diimpor `wasm-opt --stack-check` dari modul `env` (pemuat menyediakannya).
 const PENANGAN_LUAP: &str = "jrg_stack_luap";
 
-/// Pemuat node: WASI bawaan node, argumen sesudah nama berkas wasm, kode keluar dari `proc_exit`. Stack V8 bawaan
-/// (±1 MiB) menolak rekursi yang jalan di native, jadi `jalankan` memberi `--stack-size` (jauh di bawah stack OS).
-/// `jrg.batas_stack`/`env.jrg_stack_luap`: batas stack bayangan tiap korutin (`korutin_wasm.c`), dibuka penuh
-/// sebelum `_start` (global batas `--stack-check` mulai 0, jadi tanpa itu setiap fungsi terbaca meluap).
+/// Pemuat node: WASI bawaan node, kode keluar dari `proc_exit`; `jalankan` memberi `--stack-size` (stack V8 bawaan
+/// ±1 MiB). `jrg.batas_stack`/`env.jrg_stack_luap`: batas stack korutin (`korutin_wasm.c`), dibuka penuh sebelum
+/// `_start`, karena global batas `--stack-check` mulai 0 dan tanpa itu setiap fungsi terbaca meluap.
 const PEMUAT_NODE: &str = r#"// Dibuat jrgc --emit-wasm. Pakai: node --stack-size=3000 <program>.wasm.mjs [argumen...]
 import fs from 'node:fs';
 import process from 'node:process';
