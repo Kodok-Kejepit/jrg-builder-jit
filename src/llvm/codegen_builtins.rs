@@ -46,12 +46,8 @@ impl Codegen {
                 Ok(Val { text: r, ty: JrgType::I64 })
             }
             "range" => self.builtin_range(args, span),
-            // `range_inclusive(a, b)` adalah `range(a, b + 1)`; luapan di `b + 1` diperiksa seperti `+`.
-            "range_inclusive" if args.len() == 2 => {
-                let satu = Expr::Literal(crate::parser::LitKind::Int(1), span);
-                let ujung = Expr::Binary { op: BinaryOp::Add, lhs: Box::new(args[1].clone()), rhs: Box::new(satu), span };
-                self.builtin_range_bernama("range_inclusive", &[args[0].clone(), ujung], span)
-            }
+            // `range_inclusive(a, b)`: ujungnya ditambah satu di 128 bit, jadi `b = MAX` tetap sah (AGI-20261120-05).
+            "range_inclusive" if args.len() == 2 => self.builtin_range_bernama("range_inclusive", args, true, span),
             "enumerate" | "zip" if self.kunci_lapis("arr", name).is_some() => {
                 let kunci = self.kunci_lapis("arr", name).unwrap_or_default();
                 self.call_named_function(&kunci, args, expected, span)
@@ -66,6 +62,17 @@ impl Codegen {
                         self.codegen_path_call(&["str".to_string(), "chars".to_string()], &[isi], expected, span)
                     }
                     JrgType::Array(..) | JrgType::Slice(_) => Ok(v),
+                    // Tuple: literal array atas elemennya, jadi elemen campur jadi array bertag seperti `[t[0], t[1]]`.
+                    JrgType::Tuple(ts) => {
+                        let n = ts.len();
+                        let slot = self.spill_to_place(&v);
+                        let isi = self.lokal_sementara(slot, v.ty.clone(), span);
+                        let elems = (0..n).map(|i| Expr::Index {
+                            obj: Box::new(isi.clone()),
+                            idx: Box::new(Expr::Literal(crate::parser::LitKind::Int(i as u128), span)), span,
+                        }).collect();
+                        self.codegen_expr(&Expr::Array { elems, span }, expected)
+                    }
                     lain => Err(super::galat::tandai(span, format!(
                         "`list` butuh teks atau array, dapat `{}`", lain.nama_typeof()))),
                 }
@@ -653,7 +660,7 @@ impl Codegen {
                 Ok(self.load_place(&lf, &JrgType::I64))
             }
             JrgType::Tuple(ts) => Ok(Val { text: ts.len().to_string(), ty: JrgType::I64 }),
-            JrgType::Dict(_) => { let (_, n) = self.bagian_dict_mentah(v); Ok(Val { text: n, ty: JrgType::I64 }) }
+            JrgType::Dict(_) | JrgType::DictCampur(_) => { let (_, n) = self.bagian_dict_mentah(v); Ok(Val { text: n, ty: JrgType::I64 }) }
             // Channel: isi yang menunggu diterima, sama dengan `chan::len`.
             JrgType::Chan(_) => {
                 self.ensure_extern("declare i64 @jrg_chan_info(ptr, i32)", "jrg_chan_info");
@@ -707,10 +714,10 @@ impl Codegen {
 
     /// `range(n)`, `range(a, b)`, `range(a, b, langkah)`.
     fn builtin_range(&mut self, args: &[Expr], span: Span) -> Result<Val, String> {
-        self.builtin_range_bernama("range", args, span)
+        self.builtin_range_bernama("range", args, false, span)
     }
 
-    fn builtin_range_bernama(&mut self, nama: &str, args: &[Expr], span: Span) -> Result<Val, String> {
+    fn builtin_range_bernama(&mut self, nama: &str, args: &[Expr], inklusif: bool, span: Span) -> Result<Val, String> {
         if args.is_empty() || args.len() > 3 {
             return Err(super::galat::tandai(span, format!(
                 "`range` butuh 1..3 argumen, diberi {}", args.len())));
@@ -738,6 +745,7 @@ impl Codegen {
         self.start_block(lanjut);
         let lebar = |cg: &mut Self, v: &str| { let r = cg.fresh("rgw."); cg.emit(format!("{} = sext i64 {} to i128", r, v)); r };
         let (a, b, st) = (lebar(self, &awal), lebar(self, &akhir), lebar(self, &langkah));
+        let b = if inklusif { let r = self.fresh("rgw."); self.emit(format!("{} = add i128 {}, 1", r, b)); r } else { b };
         let ins = |cg: &mut Self, f: String| { let r = cg.fresh("rg."); cg.emit(f.replace("{}", &r)); r };
         let maju = ins(self, format!("{{}} = icmp sgt i128 {}, 0", st));
         let lt = ins(self, format!("{{}} = icmp slt i128 {}, {}", a, b));
@@ -901,6 +909,15 @@ impl Codegen {
             (Some(a), Some(b)) if a == b && lv.ty != rv0.ty => (self.coerce(&lv, &a), self.coerce(&rv0, &b)),
             _ => (lv.clone(), self.coerce(&rv0, &lv.ty)),
         };
+        // Argumen ketiga dievaluasi sebelum membandingkan, seperti argumen lain di acuan (AGI-20261120-05).
+        let (tp, tl) = match args.get(2) {
+            Some(e) => {
+                let t = self.codegen_expr(e, Some(&JrgType::Str))?;
+                let t = if t.ty != JrgType::Str { self.val_to_str(&t)? } else { t };
+                self.split_str(&t)
+            }
+            None => ("null".to_string(), "-1".to_string()),
+        };
         let eqv = self.cmp_binop_pub_entry(&BinaryOp::Eq, &lv_b, &rv, span)?;
         let i1 = self.to_i1(&eqv);
         let fail_lbl = self.fresh_label("aefail.");
@@ -912,14 +929,6 @@ impl Codegen {
         let lt = self.nama_typeof_val(&lv)?;
         let rs = self.val_to_str(&rv0)?;
         let rt = self.nama_typeof_val(&rv0)?;
-        let (tp, tl) = match args.get(2) {
-            Some(e) => {
-                let t = self.codegen_expr(e, Some(&JrgType::Str))?;
-                let t = if t.ty != JrgType::Str { self.val_to_str(&t)? } else { t };
-                self.split_str(&t)
-            }
-            None => ("null".to_string(), "-1".to_string()),
-        };
         self.ensure_extern(
             "declare void @jrg_panic_assert_eq(ptr, i64, ptr, i64, ptr, i64, ptr, i64, ptr, i64) cold nounwind noreturn",
             "jrg_panic_assert_eq",
@@ -1202,8 +1211,34 @@ impl Codegen {
         let lo = self.coerce(&lo0, &v.ty);
         let hi0 = self.codegen_expr(&args[2], Some(&v.ty))?;
         let hi = self.coerce(&hi0, &v.ty);
-        let lowered = self.builtin_minmax_vals(&v, &lo, false)?; // max(v, lo)
-        self.builtin_minmax_vals(&lowered, &hi, true) // min(that, hi)
+        // Seperti acuan (AGI-20261120-05): `lo > hi` ditolak menyebut keduanya, lalu `x < lo` → lo, `x > hi` → hi,
+        // selain itu `x` apa adanya — NaN tetap NaN (`minnum`/`maxnum` dulu membuangnya).
+        if !v.ty.is_float() && !v.ty.is_int() { return Err("`clamp` butuh tipe numerik".into()); }
+        let (lebih, kurang) = if v.ty.is_float() { (("fcmp", "ogt"), ("fcmp", "olt")) }
+            else if v.ty.is_signed_int() { (("icmp", "sgt"), ("icmp", "slt")) } else { (("icmp", "ugt"), ("icmp", "ult")) };
+        let t = v.ty.llvm_ty();
+        let terbalik = self.fresh("clb.");
+        self.emit(format!("{} = {} {} {} {}, {}", terbalik, lebih.0, lebih.1, t, lo.text, hi.text));
+        let (lo_c, hi_c) = (lo.clone(), hi.clone());
+        self.gagal_bila(&terbalik, |cg| {
+            let (Ok(a), Ok(b)) = (cg.do_cast(&lo_c, &JrgType::Str, span), cg.do_cast(&hi_c, &JrgType::Str, span)) else {
+                return cg.panik("math::clamp: batas terbalik");
+            };
+            let tengah = cg.intern_string("`) lebih besar dari hi (`");
+            let isi = cg.str_concat(&a, &tengah).and_then(|x| cg.str_concat(&x, &b));
+            match isi {
+                Ok(isi) => cg.panik_sisip(&format!("math::clamp: batas terbalik — lo (`{}`); cek lagi urutan argumennya, \
+                    harusnya `clamp(x, lo, hi)` dengan lo <= hi", super::codegen_konversi::PENANDA),
+                    &super::codegen_konversi::Cetak::Teks(isi)),
+                Err(_) => cg.panik("math::clamp: batas terbalik"),
+            }
+        });
+        let (bawah, atas, r1, r2) = (self.fresh("clk."), self.fresh("cla."), self.fresh("clr."), self.fresh("clr."));
+        self.emit(format!("{} = {} {} {} {}, {}", bawah, kurang.0, kurang.1, t, v.text, lo.text));
+        self.emit(format!("{} = {} {} {} {}, {}", atas, lebih.0, lebih.1, t, v.text, hi.text));
+        self.emit(format!("{} = select i1 {}, {} {}, {} {}", r1, atas, t, hi.text, t, v.text));
+        self.emit(format!("{} = select i1 {}, {} {}, {} {}", r2, bawah, t, lo.text, t, r1));
+        Ok(Val { text: r2, ty: v.ty.clone() })
     }
 
     fn builtin_minmax_vals(&mut self, a: &Val, b: &Val, want_min: bool) -> Result<Val, String> {
@@ -1274,6 +1309,17 @@ impl Codegen {
             // Tanpa bendera fast-math: NaN harus sampai ke runtime apa adanya.
             self.emit(format!("{} = call double @jrg_sign_f64(double {})", r, v64.text));
             Ok(Val { text: r, ty: JrgType::F64 })
+        } else if v.ty.is_int() {
+            // Di tipenya sendiri, tanpa lewat `i64`: `u64::MAX` dulu dibaca -1, `2^64` dibaca 0 (AGI-20261120-05).
+            let t = v.ty.llvm_ty();
+            let (pos, neg, p, n, r) = (self.fresh("sg."), self.fresh("sg."), self.fresh("sg."), self.fresh("sg."), self.fresh("signi."));
+            self.emit(format!("{} = icmp {} {} {}, 0", pos, if v.ty.is_signed_int() { "sgt" } else { "ugt" }, t, v.text));
+            if v.ty.is_signed_int() { self.emit(format!("{} = icmp slt {} {}, 0", neg, t, v.text)); }
+            else { self.emit(format!("{} = or i1 false, false", neg)); }
+            self.emit(format!("{} = zext i1 {} to {}", p, pos, t));
+            self.emit(format!("{} = zext i1 {} to {}", n, neg, t));
+            self.emit(format!("{} = sub {} {}, {}", r, t, p, n));
+            Ok(Val { text: r, ty: v.ty.clone() })
         } else {
             let v64 = self.coerce_longgar(&v, &JrgType::I64);
             self.ensure_extern("declare i64 @jrg_sign_i64(i64)", "jrg_sign_i64");
@@ -1388,13 +1434,16 @@ impl Codegen {
         let v = super::codegen_any::samakan_dict(&v);
         // Struct/enum/tuple milik program (juga di dalam wadah): penyandi `jrgc` lewat jembatan, yang
         // sama dengan acuan — dulu ditolak saat kompilasi.
+        let cadangan = !matches!(v.ty, JrgType::Struct(_) | JrgType::Enum(_) | JrgType::Tuple(_))
+            && super::codegen_jembatan::mengandung_buram(&v.ty) && !super::codegen_jembatan::buram_pasti(&v.ty);
+        if cadangan { return self.json_tulis_cadangan(&v, indent, span); }
+        // Struct/enum/tuple milik program (juga di dalam wadah): penyandi native, nilai buramnya lewat kait
+        // `@jrg_buram_ke_json` (`pancarkan_buram_json`) — dulu lewat jembatan, jadi tidak ada di kernel `--bebas`.
         if matches!(v.ty, JrgType::Struct(_) | JrgType::Enum(_) | JrgType::Tuple(_))
             || super::codegen_jembatan::mengandung_buram(&v.ty) {
-            let tempat = self.spill_to_place(&v);
-            let mut args = vec![self.lokal_sementara(tempat, v.ty.clone(), span)];
-            if let Some(Some(x)) = indent { args.push(x.clone()); }
-            let nama = if indent.is_some() { "json::pretty" } else { "json::stringify" };
-            return self.panggil_jembatan(nama, None, None, &args, span);
+            self.pakai_json_buram = true;
+            let kotak = self.kotak_any(&v, span)?;
+            return self.json_tulis_kotak(&kotak, indent, span);
         }
         let buram = super::codegen_any::tag_untuk(&v.ty) == Some(super::codegen_any::TAG_BURAM);
         let kotak = if buram { Err(String::new()) } else { self.kotak_any(&v, span) };
@@ -1411,6 +1460,11 @@ impl Codegen {
         let kotak = kotak.map_err(|_| super::galat::tandai(span, format!(
             "nilai bertipe `{}` belum bisa disandikan jadi JSON di backend `--emit-llvm` — baru nil, bool, \
              angka, teks, array dan dict", v.ty.display_name())))?;
+        self.json_tulis_kotak(&kotak, indent, span)
+    }
+
+    /// Penyandi JSON native (`jrg_json_tulis`) atas kotak bertag.
+    fn json_tulis_kotak(&mut self, kotak: &Val, indent: Option<Option<&Expr>>, span: Span) -> Result<Val, String> {
         let rapi = if indent.is_some() { 1 } else { 0 };
         let lebar = match indent {
             None | Some(None) => "2".to_string(),
@@ -1423,12 +1477,45 @@ impl Codegen {
                 n.text
             }
         };
-        self.ensure_extern("declare void @jrg_json_tulis(ptr, i32, i64, ptr, ptr)", "jrg_json_tulis");
-        let tempat = self.spill_to_place(&kotak);
+        self.ensure_extern("declare void @jrg_json_tulis(ptr, i32, i64, ptr, ptr, ptr)", "jrg_json_tulis");
+        let tempat = self.spill_to_place(kotak);
         let outp = self.alloca_raw("jtp.", "ptr", None);
         let outl = self.alloca_raw("jtl.", "i64", None);
-        self.emit(format!("call void @jrg_json_tulis(ptr {}, i32 {}, i64 {}, ptr {}, ptr {})", tempat, rapi, lebar, outp, outl));
+        let kait = if self.pakai_json_buram { "@jrg_buram_ke_json" } else { "null" };
+        self.emit(format!("call void @jrg_json_tulis(ptr {}, i32 {}, i64 {}, ptr {}, ptr {}, ptr {})", tempat, rapi, lebar, outp, outl, kait));
         self.join_str(&outp, &outl)
+    }
+
+    /// Wadah berisi `any`: penyandi native kalau isinya memang punya padanan JSON (diperiksa saat jalan,
+    /// `jrg_json_ada_buram`), selain itu penyandi `jrgc` lewat jembatan sebagai cadangan.
+    fn json_tulis_cadangan(&mut self, v: &Val, indent: Option<Option<&Expr>>, span: Span) -> Result<Val, String> {
+        let slot = self.alloca_typed("jcs.", &JrgType::Str);
+        let kotak = self.kotak_any(v, span)?;
+        let tk = self.spill_to_place(&kotak);
+        self.ensure_extern("declare i32 @jrg_json_ada_buram(ptr)", "jrg_json_ada_buram");
+        let (r, c) = (self.fresh("jcs."), self.fresh("jcs."));
+        self.emit(format!("{} = call i32 @jrg_json_ada_buram(ptr {})", r, tk));
+        self.emit(format!("{} = icmp ne i32 {}, 0", c, r));
+        let (lj, ln, la) = (self.fresh_label("jcs.jemb."), self.fresh_label("jcs.asli."), self.fresh_label("jcs.akhir."));
+        self.terminate(format!("br i1 {}, label %{}, label %{}", c, lj, ln));
+        self.start_block(lj);
+        let tempat = self.spill_to_place(v);
+        let mut args = vec![self.lokal_sementara(tempat, v.ty.clone(), span)];
+        if let Some(Some(x)) = indent { args.push(x.clone()); }
+        let nama = if indent.is_some() { "json::pretty" } else { "json::stringify" };
+        self.jembatan_cadangan = true;
+        let hasil = self.panggil_jembatan(nama, None, None, &args, span);
+        self.jembatan_cadangan = false;
+        let hj = self.coerce(&hasil?, &JrgType::Str);
+        self.emit(format!("store %JrgStr {}, ptr {}", hj.text, slot));
+        self.terminate(format!("br label %{}", la));
+        self.start_block(ln);
+        self.pakai_json_buram = true;
+        let hn = self.json_tulis_kotak(&kotak, indent, span)?;
+        self.emit(format!("store %JrgStr {}, ptr {}", hn.text, slot));
+        self.terminate(format!("br label %{}", la));
+        self.start_block(la);
+        Ok(self.load_place(&slot, &JrgType::Str))
     }
 
     fn nama_masa(&self, nama: &str, n: usize) -> bool {
@@ -1635,6 +1722,11 @@ impl Codegen {
         if matches!(item, "sub" | "substring" | "slice") && matches!(args.len(), 1 | 2 | 3) {
             return Some((|| {
                 let v = self.codegen_expr(&args[0], Some(&JrgType::Str))?;
+                // Nilai bertag dibuka sebagai teks (yang bukan teks gagal saat jalan) — dulu ditolak menyebut penanda
+                // internal `<any: ..>` (AGI-20261120-24).
+                let v = if v.ty == JrgType::Any {
+                    match self.buka_terperiksa(&v, &JrgType::Str) { Some(b) => b, None => v }
+                } else { v };
                 if v.ty != JrgType::Str {
                     return Err(super::galat::tandai(span, crate::interpreter::pesan_arg_harus_teks(
                         nama, "argumen pertama", &v.ty.nama_typeof())));
@@ -1699,6 +1791,13 @@ impl Codegen {
         if item == "is_empty" && args.len() == 1 {
             return Some((|| {
                 let v = self.codegen_expr(&args[0], Some(&JrgType::Str))?;
+                // Argumen pertama `str::` harus teks, seperti acuan: array/dict dulu dijawab panjangnya (AGI-20261120-05).
+                if !matches!(v.ty, JrgType::Str | JrgType::Rune | JrgType::Any) {
+                    self.panik(&crate::interpreter::pesan_arg_harus_teks("str::is_empty", "argumen pertama", &v.ty.nama_typeof()));
+                    let mati = self.fresh_label("sempty.mati.");
+                    self.start_block(mati);
+                    return Ok(Val { text: "0".to_string(), ty: JrgType::Bool });
+                }
                 let n = self.panjang_koleksi(&v, span)?;
                 let r = self.fresh("sempty.");
                 self.emit(format!("{} = icmp eq i64 {}, 0", r, n.text));

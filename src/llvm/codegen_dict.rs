@@ -317,6 +317,17 @@ impl Codegen {
                 }
             }).collect()
         } else { Vec::new() };
+        // Kunci kembar: yang TERAKHIR menang, seperti `jrg_dict_build` saat jalan; kunci bukan literal bisa menimpa apa
+        // pun, jadi tabelnya tidak dipakai (bacaan lewat tag) — AGI-20261120-14.
+        let semua_literal = pasangan.iter().all(|(ke, _)| matches!(ke,
+            Expr::Literal(crate::parser::LitKind::Str(_), _) | Expr::Literal(crate::parser::LitKind::RawStr(_), _)));
+        let tabel_kunci: Vec<(String, JrgType)> = if !semua_literal { Vec::new() } else {
+            let mut t: Vec<(String, JrgType)> = Vec::new();
+            for (k, ty) in tabel_kunci {
+                match t.iter_mut().find(|(n, _)| *n == k) { Some(x) => x.1 = ty, None => t.push((k, ty)) }
+            }
+            t
+        };
 
         let jumlah = pasangan.len();
         let buf = self.buffer_pasangan(&jumlah.to_string(), &vty);
@@ -629,7 +640,14 @@ impl Codegen {
         self.emit(format!("{} = icmp sge i64 {}, 0", ada, idx));
         let l_ada = self.fresh_label("drada.");
         let l_end = self.fresh_label("drend.");
-        self.terminate(format!("br i1 {}, label %{}, label %{}", ada, l_ada, l_end));
+        // Kunci yang tidak ada: hasilnya tetap dict BARU — dulu penyangga `d` dijawab apa adanya, dan menulis ke
+        // hasilnya mengubah `let d` pemanggil (AGI-20261120-04).
+        let l_tidak = self.fresh_label("drtidak.");
+        self.terminate(format!("br i1 {}, label %{}, label %{}", ada, l_ada, l_tidak));
+        self.start_block(l_tidak);
+        let salinan = self.salin_dalam(&d);
+        self.emit(format!("store %JrgDict {}, ptr {}", salinan.text, slot));
+        self.terminate(format!("br label %{}", l_end));
 
         self.start_block(l_ada);
         self.ensure_extern(

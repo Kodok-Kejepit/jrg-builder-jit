@@ -31,6 +31,84 @@ pub fn main() {
     wok(len(t[a:b]), len(t[a:a]), len(u[a:]), len(t[b:]))
 }
 "#),
+    // AGI-20261118-11 (#1071): badan loop yang menyimpan ke luar putaran dulu dianggap "bersih", arena dipulihkan dan
+    // nilainya tertimpa (SIGSEGV, pesan channel tertimpa). Sekarang batas rentang, default parameter dan method diperiksa.
+    ("arena: batas rentang yang menyimpan ke luar putaran", r#"package main
+
+var log: []string = []
+
+fn bocor(i: int) -> int {
+    let s = "iter_" + str(i) + "_aman"
+    log = arr::push(log, s)
+    return 1
+}
+
+pub fn main() {
+    var n = 0
+    while n < 5 {
+        for _ in 0..bocor(n) {
+            let sampah = "XXXXXXXXXXXX_" + str(n)
+            let _ = len(sampah)
+        }
+        n += 1
+    }
+    for i, s in log {
+        wok(i, s)
+    }
+}
+"#),
+    ("arena: nilai default parameter yang menyimpan ke luar putaran", r#"package main
+
+var log: []string = []
+
+fn catat(k: int) -> int {
+    let s = "def_" + str(k)
+    log = arr::push(log, s)
+    return k
+}
+
+fn f(x: int = catat(99)) -> int {
+    return x
+}
+
+pub fn main() {
+    var n = 0
+    while n < 4 {
+        let r = f()
+        let sampah = "YYYYYYYYYYYY_" + str(n)
+        let _ = len(sampah) + r
+        n += 1
+    }
+    for i, s in log {
+        wok(i, s)
+    }
+}
+"#),
+    ("arena: send ke channel luar lewat alias lokal", r#"pub fn main() {
+    let ch = make_chan(string, 10)
+    var n = 0
+    while n < 5 {
+        let local_ch = ch
+        let s = "chan_" + str(n) + "_msg"
+        local_ch.send(s)
+        let sampah = "ZZZZZZZZZZZZZ_" + str(n)
+        let _ = len(sampah)
+        n += 1
+    }
+    for i in 0..5 {
+        wok(i, <-ch)
+    }
+}
+"#),
+    ("? meneruskan Err sejenis dan lewat map_err", r#"package main
+fn a() -> Result<int, string> { return Err("x") }
+fn b() -> Result<int, string> { let v = a()?
+ return Ok(v + 1) }
+fn n() -> Result<int, int> { return Err(42) }
+fn m() -> Result<int, string> { let v = n().map_err(|e| "kode " + str(e))?
+ return Ok(v) }
+pub fn main() { wok(b(), m()) }
+"#),
     // K6 (2026-11-18): `json::merge` antara struct dan dict yang muat di tata letak struct-nya.
     ("json::merge struct dan dict", r#"package main
 struct P { pub x: int, pub y: int }
@@ -4965,6 +5043,800 @@ pub fn main() {
     let r = [a]
     a = [0]
     wok(a, r)
+}
+"#),
+    ("penugasan banyak sasaran: tempat `[..]`/`.f` dicari sesudah semua sisi kanan (AGI-20261120-21)", r#"
+struct P { pub x: int, pub y: string }
+fn main() {
+    var arr = [1, 2]
+    var i = 0
+    arr[i], arr[i] = { i = 1; 10 }, 20
+    wok(arr, i)
+    var j = 0
+    var b = [0, 0, 0]
+    j, b[j] = 2, 7
+    wok(b, j)
+    var p = P { x: 1, y: "a" }
+    var d = {"k": 1}
+    p.x, p.y, d["k"] = p.x + 5, "b" + p.y, d["k"] * 3
+    wok(p.x, p.y, d)
+    var a = [1, 2, 3]
+    a[0], a[2] = a[2], a[0]
+    wok(a)
+}
+"#),
+    ("JSON dan jembatan atas nilai bersarang 20 ribu tingkat (AGI-20261118-04)", r#"
+pub fn main() {
+    var a = json::parse("1")
+    var i = 0
+    while i < 20000 { a = [a]; i = i + 1 }
+    wok(len(json::stringify(a)), len(json::pretty(a, 0)), len(dok::json_encode(a)))
+    var d = {"x": [1, {"y": "z"}], "k": 2.5}
+    wok(json::pretty(d, 2), json::stringify([d, []]))
+}
+"#),
+    ("JSON dan jembatan atas nilai bersarang 8 ribu tingkat di goroutine (AGI-20261118-04)", r#"
+pub fn main() {
+    let ch = make_chan(int, 1)
+    spawn |ch: chan int| {
+        var b = json::parse("1")
+        var j = 0
+        while j < 8000 { b = [b]; j = j + 1 }
+        ch <- len(json::stringify(b)) + len(dok::json_encode(b))
+    }
+    wok(<- ch)
+}
+"#),
+    ("fs::ls/fs::walk atas nama berkas berbaris baru (AGI-20261119-29)", r#"
+fn main() {
+    let d = fs::join(fs::temp_dir(), "jrg_nl_" + str(rand::int(0, 1000000000)))
+    fs::mkdir(d + "/sub")
+    fs::write(d + "/sub/a\n..", "x")
+    fs::write(d + "/sub/b\nx.txt", "y")
+    fs::write(d + "/sub/biasa.txt", "z")
+    let isi = fs::ls(d + "/sub")
+    wok(len(isi), len(fs::walk(d + "/sub")), arr::contains(isi, "a\n.."))
+    for _, n in isi { fs::delete(d + "/sub/" + n) }
+    fs::rmdir(d + "/sub")
+    fs::rmdir(d)
+}
+"#),
+    ("memo jumlah karakter fungsi dibuang saat arena putaran dipulihkan (AGI-20261119-50)", r#"
+fn test_utf8_lalu_ascii() {
+    var i = 0
+    while i < 2 {
+        let s = if i == 0 { "a" + "日" } else { "ab" + "cd" }
+        wok("utf8_first:", i, "s:", s, "len:", len(s))
+        i = i + 1
+    }
+}
+
+fn test_ascii_lalu_utf8() {
+    var j = 0
+    while j < 2 {
+        let s = if j == 0 { "ab" + "cd" } else { "a" + "日" }
+        let n = len(s)
+        let c1 = int(s[1])
+        let c2 = if n > 2 { int(s[2]) } else { -1 }
+        let c3 = if n > 3 { int(s[3]) } else { -1 }
+        wok("ascii_first:", j, "s:", s, "len:", n, "c1:", c1, "c2:", c2, "c3:", c3)
+        j = j + 1
+    }
+}
+fn main() { test_utf8_lalu_ascii()
+ test_ascii_lalu_utf8() }
+"#),
+    ("indeks hash dict yang lahir di putaran berarena tidak ikut dilepas (AGI-20261119-28)", r#"
+fn main() {
+    let d = {
+        "k0": 0, "k1": 1, "k2": 2, "k3": 3, "k4": 4,
+        "k5": 5, "k6": 6, "k7": 7, "k8": 8, "k9": 9
+    }
+    var sum = 0
+    for i in 0..3 {
+        if i == 1 {
+            let spray = str::repeat("A", 512)
+            sum = sum + str::len(spray)
+        }
+        sum = sum + d["k5"]
+    }
+    wok("sum:", sum)
+}
+"#),
+    ("for ..= sampai batas atas tipe, indeks rentang sempit, konversi atas struct bertag (AGI-20261119-47)", r#"
+struct T { pub a: int }
+fn coba(f) { match tangkap(f) { Ok(v) => wok("ok", v), Err(g) => wok("err", g.pesan) } }
+fn main() {
+    var n = 0
+    for i, v in (250 as u8)..=(255 as u8) { n = n + 1 }
+    wok(n)
+    var m = 0
+    for v in 9223372036854775805..=9223372036854775807 { m = m + 1 }
+    wok(m)
+    var akhir = 0
+    for i, v in (-100 as i8)..(100 as i8) { akhir = i }
+    wok(akhir, typeof(akhir))
+    for i, v in 3..=5 { wok(i, v) }
+    let xs = [T { a: 1 }, 5]
+    coba(|| int(xs[0]))
+    coba(|| float(xs[0]))
+}
+"#),
+    ("i128 MIN / -1, {:.N} atas bulat lebar, geseran tak bertanda yang besar (AGI-20261119-49)", r#"
+fn coba(f) { match tangkap(f) { Ok(v) => wok("ok", v), Err(g) => wok("err", g.pesan) } }
+fn main() {
+    let m: i128 = (-9223372036854775807 as i128) - 1
+    let besar: i128 = (9223372036854775807 as i128) * 16
+    let n1: i128 = -1 as i128
+    coba(|| m / n1)
+    coba(|| (3 as u8) ** (4 as u8))
+    coba(|| str::format("{:.2}", besar))
+    coba(|| str::format("{:.1}", (9223372036854775807 as u64) * 2 + 1))
+    coba(|| (8 as u64) >> ((9223372036854775807 as u64) + 1))
+    coba(|| (8 as u8) >> (200 as u8))
+}
+"#),
+    ("pola menyebut tipenya, batas rentang di luar jangkauan tipe, any/all berhenti di jawaban pasti (AGI-20261120-01)", r#"
+struct A { pub x: int }
+struct B { pub x: int }
+struct C: A { pub y: int = 0 }
+enum EA { Foo(int) }
+enum EB { Foo(int) }
+fn main() {
+    wok(match (A { x: 42 }) { B { x } => "WRONG_B:" + str(x), A { x } => "A:" + str(x) })
+    wok(match EA::Foo(77) { EB::Foo(x) => "WRONG_EB:" + str(x), EA::Foo(x) => "EA:" + str(x) })
+    wok(match (C { x: 1 }) { A { x } => "induk " + str(x), _ => "bukan" })
+    wok(match (250 as u8) { -10..=-1 => "negatif", _ => "lain" })
+    wok(match (5 as u8) { 0..=300 => "dalam", _ => "lain" })
+    wok(match -5.5 { -10..=-1 => "dalam", _ => "lain" })
+    wok(match (-3 as i8) { -5..=-1 => "neg", _ => "lain" })
+    wok([1, 0].any(|x: int| (10 / x) > 0), [0, 1].all(|x: int| if x == 0 { false } else { (10 / (x - 1)) > 0 }))
+}
+"#),
+    ("callback HOF menerima salinan, sort u64 tak bertanda, take di atas 64 bit, get_or eager (AGI-20261120-02)", r#"
+package main
+fn coba(f) { match tangkap(f) { Ok(v) => wok("ok", v), Err(g) => wok("err", g.pesan) } }
+var JEJAK = 0
+fn cadang() { JEJAK = JEJAK + 1; return 0 }
+pub fn main() {
+    let rows = [[1, 2, 3]]
+    rows.each(|mut r: []int| { r[0] = 999 })
+    let rows2 = rows.map(|mut r: []int| { r[1] = 888; return r })
+    wok(rows, rows2)
+    let dicts = [{"a": 1}, {"a": 2}]
+    dicts.each(|mut d| { d["a"] = 777 })
+    wok(dicts)
+    let besar = (9223372036854775807 as u64) * 2 + 1
+    wok(arr::sort([1 as u64, besar, 2 as u64]))
+    let jauh = (9223372036854775807 as i128) * 4
+    coba(|| arr::take([1, 2, 3], jauh))
+    coba(|| arr::take([1, 2, 3], besar))
+    wok(arr::get_or([10, 20], 0, cadang()), JEJAK)
+}
+"#),
+    ("hasil closure/fungsi yang menyebut tangkapan atau var modul disalin, dict::remove kunci tak ada menjawab dict baru (AGI-20261120-04)", r#"
+package main
+var g_dict = {"a": 1}
+fn ambil_g(flag) {
+    let nol = {"a": 0}
+    return if flag { g_dict } else { nol }
+}
+pub fn main() {
+    let cap_d = {"a": 1}
+    let cap_s = [1, 2]
+    let f1 = || cap_d
+    let f_s = || cap_s
+    let fg = || g_dict
+    var d1 = f1()
+    d1["a"] = 111
+    var cs = f_s()
+    cs[0] = 444
+    var gd = fg()
+    gd["a"] = 222
+    let cap_d2 = {"a": 5}
+    let f2 = || { return cap_d2 }
+    var d2 = f2()
+    d2["a"] = 333
+    var g3 = ambil_g(true)
+    g3["a"] = 555
+    let d5 = {"a": 1}
+    var r5 = dict::remove(d5, "tidak")
+    r5["a"] = 666
+    wok(cap_d, cap_s, g_dict, cap_d2, d5)
+    wok(d1, cs, gd, d2, g3, r5)
+}
+"#),
+    ("math::clamp batas terbalik dan NaN, math::sign tak bertanda, str::is_empty atas array, pesan assert_eq eager (AGI-20261120-05)", r#"
+package main
+var JEJAK = 0
+fn pesan() { JEJAK = JEJAK + 1; return "m" }
+fn coba(f) { match tangkap(f) { Ok(v) => wok("ok", v), Err(g) => wok("err", g.pesan) } }
+pub fn main() {
+    coba(|| math::clamp(5, 10, 0))
+    coba(|| math::clamp(2.5, 3.0, 1.0))
+    coba(|| math::is_nan(math::clamp(math::NAN, 0.0, 1.0)))
+    coba(|| math::clamp(-1.0, 0.0, 1.0))
+    coba(|| math::clamp(7, 0, 5))
+    let besar = (9223372036854775807 as u64) * 2 + 1
+    coba(|| math::sign(besar))
+    coba(|| math::sign(-7 as i8))
+    coba(|| str::is_empty([1, 2]))
+    assert_eq(1, 1, pesan())
+    wok(JEJAK)
+}
+"#),
+    ("enum program bervarian Ok/Err/Some/None bukan Option/Result (AGI-20261120-09)", r#"
+enum Status { Ok, Err(string) }
+enum Choice { Some(int), None }
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn main() {
+    coba(|| typeof(Status::Err("bad")))
+    coba(|| typeof(Choice::Some(42)))
+    coba(|| Status::Ok.is_ok())
+    coba(|| Status::Ok.unwrap(1, 2, 3))
+    coba(|| Status::Ok.map(|x| x))
+    coba(|| Choice::Some(42).map(|x| x + 1))
+    coba(|| Choice::Some(42).unwrap())
+    coba(|| Status::Ok.foo())
+}
+"#),
+    ("struct program bernama Ptr bukan pegangan pustaka lewat jembatan (AGI-20261120-10)", r#"
+package main
+struct Ptr { pub id: int }
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+pub fn main() {
+    let p = ptr::new(5)
+    coba(|| ptr::get(Ptr { id: 1 }))
+    coba(|| ptr::get(p))
+}
+"#),
+    ("panik milik program tidak menyimpang, kunci literal kembar yang terakhir menang (AGI-20261120-14)", r#"
+package main
+fn panik(m) { wok("panik saya:", m) }
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+pub fn main() {
+    let x = 5
+    if typeof(x) == "int" { panik("x") }
+    wok("lanjut")
+    let a = [10, 20, 30]
+    let d = {"a": 1, "a": "hello"}
+    wok(d["a"], d)
+}
+"#),
+    ("panik per korutin lewat defer+tangkap, tenggat timeout jenuh, aritas method atas konstruktor (AGI-20261120-08)", r#"
+package main
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.baris, g.pesan) } }
+fn bersih() {
+    coba(|| panik("DALAM"))
+}
+fn luar() {
+    defer bersih()
+    panik("LUAR")
+}
+pub fn main() {
+    coba(|| luar())
+    let f = Future::new(|| { time::sleep_ms(50); return 42 })
+    wok(future::timeout(f, 9223372036854775))
+    coba(|| Some(5).unwrap(7))
+    coba(|| (if true { Some(5) } else { None }).is_some(1))
+}
+"#),
+    ("for atas batas bertipe beda, slice yang ditulis badannya, indeks var modul bertag (AGI-20261120-13)", r#"
+package main
+var g = 0
+pub fn main() {
+    var cnt = 0
+    for i in (0 as u8)..(300 as i64) { cnt += 1 }
+    wok("cnt", cnt)
+    var xs: []int = [10, 20, 30]
+    var seen = []
+    for i, v in xs {
+        if i == 0 { xs[1] = 999 }
+        seen = arr::push(seen, v)
+    }
+    wok(seen, xs)
+    g = [1, "x"]
+    g[0] = 99
+    wok(g)
+}
+"#),
+    ("== atas titipan jrgc membandingkan isi, () tidak punya urutan (AGI-20261120-20)", r#"
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn main() {
+    wok(dok::json_decode("{\"x\": 1}").unwrap() == dok::json_decode("{\"x\": 1}").unwrap())
+    wok(dok::json_decode("{\"x\": 1}").unwrap() == dok::json_decode("{\"x\": 2}").unwrap())
+    wok(wokwok::array([1, 2]) == wokwok::array([1, 2]))
+    coba(|| ((), 1) < ((), 2))
+}
+"#),
+    ("argumen dievaluasi sekali dan urut tulis, expect berpesan bukan teks (AGI-20261120-07)", r#"
+package main
+var N = 0
+fn tick(s, v) { N = N + 1; wok("tick", s, N); return v }
+struct S { pub a: int }
+impl S { pub fn make(x) { return S { a: x } } }
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+pub fn main() {
+    let s = S::make(tick("static", 7))
+    wok(s.a, N)
+    let o: Option<int> = None
+    coba(|| o.expect(123))
+    let r: Result<int, string> = Err("boom")
+    coba(|| r.expect(456))
+    kedua()
+}
+fn free_mix(a: int, b) { return a + b }
+impl S { pub fn mix(self, a: int, b) { return a + b + self.a } }
+fn kedua() {
+    wok(free_mix(tick("free_1", 1), tick("free_2", 2)))
+    let s = S { a: 0 }
+    wok(s.mix(tick("meth_1", 10), tick("meth_2", 20)))
+}
+"#),
+    ("nama fungsi yang dibayangi closure lokal tidak dianggap murni (AGI-20261120-23)", r#"
+package main
+var g = [10, 20]
+fn murni() { return [30] }
+pub fn main() {
+    let murni = || { g[0] = 99
+        return [30] }
+    let h = g + murni()
+    wok(h, g)
+}
+"#),
+    ("sebar array atas nilai bertag (AGI-20261120-23)", r#"
+fn main() {
+ var x = 0
+ x = [1, "a"]
+ wok([0, ...x, 30])
+}
+"#),
+    ("method leluhur menang atas default trait, pengumpul method dikemas (AGI-20261120-22)", r#"
+struct Induk { pub a: int = 1 }
+impl Induk { pub fn sapa(self) -> string { return "dari Induk" } }
+trait Sapa { fn sapa(self) -> string { return "dari trait Sapa" } }
+struct Anak : Induk { pub b: int = 2 }
+impl Sapa for Anak {}
+struct H { pub a: int }
+impl H { pub fn jumlah(self, xs...) -> int { return self.a + len(xs) } }
+fn main() {
+    wok(Anak {}.sapa())
+    let h = H { a: 10 }
+    wok(h.jumlah([10, 20, 30]), h.jumlah(), h.jumlah(1, 2, 3))
+}
+"#),
+    ("str::sub/substring/slice atas nilai bertag (AGI-20261120-24)", r#"
+fn main() {
+ var x = 0
+ x = "halo dunia"
+ wok(str::sub(x, 0, 4), str::substring(x, 5), str::slice(x, 1, 3))
+}
+"#),
+    ("lapis: rotate negatif, sleep_ms NaN, tahun negatif, rand::int rentang lebar (AGI-20261119-43)", r#"
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn main() {
+ coba(|| arr::rotate_left([1, 2, 3], -1))
+ coba(|| arr::rotate_right([1, 2, 3], -1))
+ coba(|| time::sleep_ms(0.0 / 0.0))
+ coba(|| time::format(-62167219200000 - 86400000, "%Y-%m-%d"))
+ let r = rand::int(0, 9223372036854775807)
+ let s = rand::int(-5000000000000000000, 5000000000000000000)
+ wok(r >= 0, s >= -5000000000000000000 && s <= 5000000000000000000)
+}
+"#),
+    ("is_numeric satu definisi, sort satu NaN, jangkauan cap waktu (AGI-20261119-51)", r#"
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn main() {
+    wok(" ".is_numeric(), "1.2.3".is_numeric(), "-".is_numeric(), "-3.5".is_numeric(), " 42 ".is_numeric())
+    wok(str::is_numeric(" "), str::is_numeric("1.2.3"), str::is_numeric("-"))
+    wok(arr::sort([0.0 / 0.0]))
+    coba(|| time::year(9000000000000000))
+    coba(|| time::format(9000000000000000, "%Y"))
+    coba(|| time::hour(-9000000000000000))
+    wok(time::hour(3600000), time::year(8640000000000000))
+}
+"#),
+    ("select: penugasan menulis variabel luar, satu case bertemu select lain, kanal tertutup (AGI-20261119-52)", r#"
+fn tugas() {
+    let ch = Chan::new(1)
+    ch <- 99
+    var x = 0
+    select {
+        case x = <-ch: { wok("di dalam", x) }
+    }
+    wok(x)
+    let d = Chan::new(1)
+    d <- "teks"
+    var s = "awal"
+    var n = 0
+    for i in 0..3 {
+        select {
+            case s = <-d: { n += 1 }
+            default: { n += 10 }
+        }
+    }
+    wok(s, n)
+}
+
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn a() { let ch = Chan::new(1); ch.close(); select { case v := <-ch: { return v } } }
+fn b() { let ch = Chan::new(1); ch.close(); let v = <-ch; return v }
+fn c() { let ch = Chan::new(1); ch.close(); select { case ch <- 1: { return 1 } } }
+fn d() { let ch = Chan::new(1); ch.close(); ch <- 1; return 1 }
+fn tutup() { coba(a); coba(b); coba(c); coba(d) }
+
+fn main() {
+    tugas()
+    tutup()
+    let ch = Chan::new(0)
+    let selesai = Chan::new(0)
+    spawn {
+        select { case ch <- 42: {} }
+        selesai <- "kirim lewat select"
+    }
+    select { case v := <-ch: { wok("terima", v) } }
+    wok(<-selesai)
+    let a = Chan::new(0)
+    let b = Chan::new(0)
+    spawn { b <- 7 }
+    for i in 0..1 {
+        select {
+            case v := <-a: { wok("a", v) }
+            case w := <-b: { wok("b", w) }
+        }
+    }
+}
+"#),
+    ("ptr::update ulang dari aktor yang sama ditolak, update serentak sah (AGI-20261120-17)", r#"
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn sibuk() {
+    let p = ptr::new(1)
+    coba(|| ptr::update(p, |x| ptr::get(p)))
+    coba(|| ptr::update(p, |x| ptr::update(p, |y| y + 1)))
+    coba(|| ptr::update(p, |x| x + 10))
+    wok(ptr::get(p))
+}
+
+fn main() {
+    sibuk()
+    let p = ptr::new(0)
+    let selesai = Chan::new(4)
+    for i in 0..4 { spawn { for j in 0..50 { ptr::update(p, |x| x + 1) }; selesai <- true } }
+    for i in 0..4 { <-selesai }
+    wok(ptr::get(p))
+}
+"#),
+    ("tangkap memegang kunci pemanggil (AGI-20261119-13)", r#"
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn main() {
+    let m = Mutex::new()
+    m.lock()
+    coba(|| m.lock())
+    m.unlock()
+    coba(|| { m.lock(); return 42 })
+    m.unlock()
+    wok("lepas di luar berhasil")
+    coba(|| m.unlock())
+}
+"#),
+    ("await/join/timeout serentak atas tugas yang sama: satu dapat, yang lain gagal sudah diambil (AGI-20261119-38)", r#"
+fn ganda() {
+    let f = Future::new(|| { time::sleep_ms(30); return 42 })
+    let done = Chan::new(2)
+    go { let r = tangkap(|| future::await(f)); done.send(r.is_ok()) }
+    go { let r = tangkap(|| future::await(f)); done.send(r.is_ok()) }
+    let a = done.recv()
+    let b = done.recv()
+    wok(a != b)
+    let t = Task::spawn(|| { time::sleep_ms(30); return 7 })
+    go { let r = tangkap(|| task::join(t)); done.send(r.is_ok()) }
+    go { let r = tangkap(|| task::join(t)); done.send(r.is_ok()) }
+    let c = done.recv()
+    let d = done.recv()
+    wok(c != d)
+}
+
+fn main() {
+    ganda()
+    let f = Future::new(|| { time::sleep_ms(30); return 42 })
+    let done = Chan::new(2)
+    go { let r = tangkap(|| future::await(f)); done.send("await " + str(r.is_ok())) }
+    go { let r = tangkap(|| future::timeout(f, 2000)); done.send("timeout " + str(r.is_ok())) }
+    let a = done.recv()
+    let b = done.recv()
+    wok(a != b)
+}
+"#),
+    ("future::race atas tugas yang sudah diambil dan array kosong, Chan::new negatif (AGI-20261119-12)", r#"
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn main() {
+    let f = Future::new(|| 1)
+    wok(future::await(f))
+    coba(|| future::race([f]))
+    coba(|| future::race([]))
+    coba(|| Chan::new(-5))
+}
+"#),
+    ("defer di let/penugasan/return/larik, defer atas closure var modul, salin nilai bertag bersarang dalam (AGI-20261119-15)", r#"
+package main
+var cb = || wok("awal")
+fn pakai() {
+    defer cb()
+    cb = || wok("akhir")
+    wok("badan")
+}
+fn nilai() -> int {
+    let x = { defer wok("tunda di let"); 42 }
+    var y = 0
+    y = { defer wok("tunda di penugasan"); 7 }
+    return x + y + { defer wok("tunda di return"); 1 }
+}
+fn dalam() {
+    var x = json::parse("[1]")
+    var i = 0
+    while i < 100000 { x = [x]; i = i + 1 }
+    var y = x
+    wok("salin dalam", len(y))
+}
+pub fn main() {
+    dalam()
+    pakai()
+    wok(nilai())
+    wok([1, { defer wok("tunda di larik"); 2 }])
+}
+"#),
+    ("kanvas: sudut raksasa, garis/segitiga/lingkaran/grid raksasa tidak panik atau macet, clip jenuh (AGI-20261119-09)", r#"
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok"), Result::Err(g) => wok("err", g.pesan) } }
+fn main() {
+    let c = Canvas::new(4, 4, "uji")
+    coba(|| c.draw_arc(2.0, 2.0, 2.0, 0.0, 1e30, 0xFFFFFF))
+    coba(|| c.draw_arc(2.0, 2.0, 2.0, 0.0, 1e40, 0xFFFFFF))
+    coba(|| c.line_aa(16777216.0, 0.0, 16777220.0, 0.0, 0xFFFFFF))
+    coba(|| c.draw_line(0, 0, -2147483648, 1, 0xFFFFFF))
+    coba(|| c.clip(2, 2, 2147483647, 2147483647))
+    c.draw_pixel(3, 3, 0xFF0000)
+    wok(c.get_pixel(3, 3))
+    c.clip_reset()
+    coba(|| c.fill_triangle(0, -2147483648, 2, 0, 4, 2147483647, 0xFFFFFF))
+    coba(|| c.fill_circle(0, 0, 2000000000, 0x00FF00))
+    coba(|| c.draw_circle(0, 0, 2000000000, 0x00FF00))
+    coba(|| c.draw_grid(100000000, 1, 100, 1, 0xFFFFFF))
+    coba(|| c.draw_grid(-3, -3, 0, 0, 0xFFFFFF))
+    wok(c.get_pixel(1, 1))
+}
+"#),
+    ("fn bersarang terlihat dari closure dan go, indeks penugasan dihitung kiri ke kanan (AGI-20261120-03)", r#"
+package main
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+var hitung = 0
+fn berikut() -> int { hitung += 1; return hitung - 1 }
+fn bersarang() {
+    fn kali2(x) { return x * 2 }
+    coba(|| kali2(21))
+    wok(arr::map([1, 2, 3], |x| kali2(x)))
+    let ch = Chan::new(1)
+    go { ch <- kali2(7) }
+    wok(<-ch)
+}
+pub fn main() {
+    bersarang()
+    var grid = [[0, 0], [0, 0]]
+    grid[berikut()][berikut()] = 9
+    wok(grid)
+}
+"#),
+    ("dua select banyak case berhadapan di kanal tanpa penyangga bertemu lewat tawaran (AGI-20261119-52)", r#"
+fn main() {
+    let data = Chan::new(0)
+    let quit = Chan::new(0)
+    let selesai = Chan::new(0)
+    spawn {
+        var n = 0
+        var jalan = true
+        while jalan {
+            select {
+                case data <- n: { n += 1 }
+                case <-quit: { jalan = false }
+            }
+        }
+        selesai <- n
+    }
+    var jumlah = 0
+    for i in 0..50 {
+        select {
+            case v := <-data: { jumlah += v }
+            case <-selesai: { wok("tidak boleh") }
+        }
+    }
+    quit <- true
+    wok(jumlah, <-selesai)
+}
+"#),
+    ("urutan atas tipe tanpa urutan gagal saat jalan dengan kalimat acuan; tuple yang putus sebelumnya menjawab", r#"
+struct P { x: int }
+enum E { A, B }
+fn pesan(r: Result<bool, Galat>) -> string {
+    match r { Ok(v) => str(v), Err(g) => g.pesan }
+}
+fn main() {
+    wok("awal")
+    let e: []Option<int> = []
+    wok(e < e)
+    wok(pesan(tangkap(|| Some(1) < Some(2))))
+    wok(pesan(tangkap(|| [E::A] < [E::B])))
+    wok(pesan(tangkap(|| P { x: 1 } < P { x: 2 })))
+    wok(pesan(tangkap(|| (0, Some(2)) < (1, Some(3)))))
+    wok(pesan(tangkap(|| (1, Some(2)) >= (1, Some(3)))))
+}
+"#),
+    ("method Option atas None telanjang dengan closure berisi Option<int> (adaptor fungsi mengotakkan isinya)", r#"
+fn main() {
+  wok(None.or_else(|| Some(9)))
+  wok(Some(2).or_else(|| Some(9)))
+  let o = None
+  wok(o.or_else(|| Some("x")))
+  wok(None.map(|x| x + 1))
+  wok(None.and_then(|x| Some(x * 2)))
+  wok(Some(4).and_then(|x| Some(x * 2)))
+  wok(None.unwrap_or_else(|| 7))
+}
+"#),
+    ("var struct/enum/Option tanpa nilai awal yang terbukti diisi sebelum disebut (semua cabang if/else, lalu closure)", r#"
+struct D { pub x: int }
+enum Warna { Merah, Hijau }
+fn main() {
+  var d: D
+  var w: Warna
+  var o: Option<string>
+  let n = len("abc")
+  if n > 5 {
+    d = D { x: 1 }
+    w = Warna::Merah
+  } else if n > 2 {
+    d = D { x: 2 }
+    w = Warna::Hijau
+  } else {
+    d = D { x: 3 }
+    w = Warna::Merah
+  }
+  o = Some("z")
+  let f = || d.x * 10
+  wok(f(), w, o)
+  d = D { x: 7 }
+  wok(d.x)
+}
+"#),
+    ("crypto:: sidik dan pengodean di lapis (tanpa jembatan): sha256/sha1/md5/crc32/hex/base64 atas teks dan array byte", r#"
+fn main() {
+  var s = ""
+  for n in 0..200 {
+    if n < 5 || (n > 50 && n < 70) || (n > 110 && n < 130) || n % 37 == 0 {
+      wok(n, crypto::sha256(s), crypto::sha1(s), crypto::md5(s), crypto::crc32(s), crypto::hex_encode(s), crypto::base64_encode(s))
+    }
+    s = s + str(rune(97 + n % 26))
+    if n % 9 == 0 { s = s + "é" }
+  }
+  var b: []int = []
+  for n in 0..130 {
+    b = arr::push(b, (n * 37) % 256)
+    if n % 13 == 0 { wok(crypto::sha256(b), crypto::sha1(b), crypto::md5(b), crypto::crc32(b), crypto::base64_encode(b)) }
+  }
+  wok(crypto::md5(""), crypto::sha1("abc"), crypto::sha256([]))
+}
+"#),
+    ("range_inclusive di ujung 64 bit, len dict campur, list dan literal array atas tuple campur (AGI-20261120-05)", r#"
+fn main() {
+  wok(range_inclusive(9223372036854775807, 9223372036854775807))
+  wok(range_inclusive(-9223372036854775807 - 1, -9223372036854775807 - 1))
+  wok(range_inclusive(9223372036854775805, 9223372036854775807), range_inclusive(3, 1))
+  let t = (1, "a", 2.5)
+  let l = list(t)
+  wok(l, typeof(l), len(l), l[1])
+  wok(list((3, 4)), [t[0], t[1], t[2]], [t[2], t[0]])
+  var d = {"a": 1}
+  d["b"] = "x"
+  wok(len(d))
+}
+"#),
+    ("re:: di lapis (mesin Pike yang sama di runtime, tanpa jembatan): hasil, offset byte, kalimat gagal", r#"
+fn kedua() {
+    let r = re::compile("[0-9]+")
+    wok(re::find_all(r, "a1 b22 漢333 é4"))
+    wok(re::split(r, "x1y22z"), re::split("", "ab"), re::split(",", ""))
+    wok(re::replace_all(r, "a1b22", "<$0>"), re::replace_all("", "漢é", "-"))
+    var t = ""
+    for i in 0..2000 { t = t + "é1" }
+    wok(len(re::find_all(r, t)), len(re::replace_all(r, t, "")))
+    let g = tangkap(|| re::replace_all("", str::repeat("a", 1000), str::repeat("x", 300000))).map_err(|e| e.pesan)
+    wok(g)
+    wok(tangkap(|| re::test(r, 5)).map_err(|e| e.pesan))
+    wok(tangkap(|| re::compile(5)).map_err(|e| e.pesan))
+    wok(tangkap(|| re::replace(r, "a", 5)).map_err(|e| e.pesan))
+    wok(tangkap(|| re::match_str(r, "a")).map_err(|e| e.pesan))
+    let d = {"pattern": "b"}
+    wok(tangkap(|| re::test(d, "abc")).map_err(|e| e.pesan))
+}
+
+fn main() {
+    kedua()
+    let r = re::compile("a(b+)")
+    wok(r, typeof(r))
+    wok(re::test(r, "xabbb"), re::test("^é+$", "éé"))
+    wok(re::find(r, "zzabbc"), re::find("q", "abc"))
+    wok(re::find_all("a*", "baaac"))
+    wok(re::find_all("é", "aéé"))
+    wok(re::replace("a", "banana", "o"), re::replace_all("a", "banana", "o"), re::replace_all("x*", "ab", "-"))
+    wok(re::split(",\\s*", "a, b,c"), re::split("z", "abc"))
+    wok(re::match_str("^[0-9]+$", "123"))
+    let g = tangkap(|| re::test("(", "x")).map_err(|e| e.pesan)
+    wok(g)
+    let h = tangkap(|| re::compile("a{2,1}")).map_err(|e| e.pesan)
+    wok(h)
+    let k = tangkap(|| re::find(5, "x")).map_err(|e| e.pesan)
+    wok(k)
+}
+"#),
+    ("crypto:: sisanya di lapis (inti Rust yang sama di runtime, tanpa jembatan): sha512, hmac, base64/hex, aes, seal", r#"
+fn p<T>(r: Result<T, Galat>) { match r { Ok(v) => wok("ok", v), Err(e) => wok("galat", e.pesan) } }
+fn main() {
+    wok(crypto::sha512("abc"))
+    wok(crypto::sha512([1, 2, 255]), crypto::hash("x"))
+    wok(crypto::hmac_sha256("kunci", "pesan"), crypto::hmac_sha256(str::repeat("k", 100), [0, 1]))
+    wok(crypto::compare_digest("abc", "abc"), crypto::compare_digest("abc", "abd"), crypto::compare_digest([1], "ab"))
+    wok(crypto::base64url_encode([251, 255]), crypto::base64url_encode("hi"), crypto::base64url_encode(""))
+    wok(crypto::base64_decode("aGk="), crypto::base64_decode("aGk=aGk="), crypto::base64_decode("/w=="))
+    wok(crypto::base64_decode_bytes("/w=="), crypto::base64url_decode("aGk"), crypto::base64url_decode("aGk="))
+    wok(crypto::base64url_decode_bytes("-_8"), crypto::hex_decode("6869"), crypto::hex_decode("6g"), crypto::hex_decode("ff"))
+    wok(crypto::hex_decode_bytes("00ff10"), crypto::hex_decode_bytes("abc"))
+    let k = str::repeat("0f", 32)
+    let iv = str::repeat("a1", 16)
+    let c = crypto::aes_encrypt("rahasia", k, iv).unwrap()
+    wok(c, crypto::aes_decrypt(c, k, iv), crypto::aes_decrypt_bytes(c, k, iv))
+    wok(crypto::aes_decrypt(c, str::repeat("1f", 32), iv), crypto::aes_encrypt("x", "zz", iv), crypto::aes_encrypt("x", k, "00"))
+    let s = crypto::seal("isi kotak", k).unwrap()
+    wok(len(s), crypto::unseal(s, k), crypto::unseal_bytes(s, k), crypto::unseal(s, str::repeat("1f", 32)))
+    wok(crypto::unseal("aGk=", k), crypto::seal("x", "pendek"))
+    wok(len(crypto::aes_gen_key()), len(crypto::aes_gen_iv()))
+    var ok = true
+    for i in 0..200 { let r = crypto::random_int(-3, 4); if r < -3 || r > 4 { ok = false } }
+    wok(ok, crypto::random_int(7, 7))
+    p(tangkap(|| crypto::random_int(5, 1)))
+    p(tangkap(|| crypto::random_int(1.5, 2)))
+    p(tangkap(|| crypto::sha512(5)))
+    p(tangkap(|| crypto::hmac_sha256("k", [300])))
+    p(tangkap(|| crypto::base64_decode(5)))
+    p(tangkap(|| crypto::aes_encrypt("x", 5, iv)))
+}
+"#),
+    ("json:: atas struct/enum/tuple native (kait @jrg_buram_ke_json, tanpa jembatan), field privat ikut", r#"
+struct Kosong {}
+struct FF { f: fn(int) -> int }
+enum E { Dua(int, string), Rek { a: int, b: Option<int> }, U }
+fn kedua() {
+    wok(json::stringify(E::Dua(1, "x")), json::stringify(E::Rek { a: 1, b: None }), json::stringify(E::U))
+    wok(json::stringify(Kosong {}), json::stringify([(1, 2.5), (3, 4.0)]), json::stringify(((1, 2), "a")))
+    wok(json::stringify({"k": [Some(1), None]}))
+    let g = tangkap(|| json::stringify(FF { f: |x| x }))
+    match g { Ok(v) => wok(v), Err(e) => wok(e.pesan) }
+    let h = tangkap(|| json::stringify([Future::new(|| 1)]))
+    match h { Ok(v) => wok(v), Err(e) => wok(e.pesan) }
+}
+
+struct Titik { x: int, y: float, nama: string }
+struct Kotak { a: Titik, isi: []Titik, tanda: Option<int> }
+enum Bentuk { Bulat(float), Persegi { s: int }, Kosong }
+fn main() {
+    kedua()
+    let t = Titik { x: 1, y: 2.5, nama: "a\"b" }
+    wok(json::stringify(t))
+    wok(json::stringify(Kotak { a: t, isi: [t, t], tanda: Some(3) }))
+    wok(json::stringify(Kotak { a: t, isi: [], tanda: None }))
+    wok(json::stringify((1, "x", true)))
+    wok(json::stringify([Bentuk::Bulat(1.5), Bentuk::Persegi { s: 2 }, Bentuk::Kosong]))
+    wok(json::pretty(t, 2))
+    wok(json::stringify(Ok(5)), json::stringify(Err("e")))
+    let d = {"p": t}
+    wok(json::stringify(d))
 }
 "#),
 ];

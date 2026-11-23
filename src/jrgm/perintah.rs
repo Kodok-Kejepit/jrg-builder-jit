@@ -137,6 +137,24 @@ pub(crate) fn cmd_run(profile: &str, args: &[String], verbose: bool, prof: bool,
     run_jrg_file(&manifest.entry, verbose, prof, use_vm, emit_bc)
 }
 
+/// `jrgm run --bebas`: titik masuk proyek disusun jadi kernel (`jrgc --bebas`) dengan dependensinya, lalu di-boot.
+pub(crate) fn cmd_run_bebas() -> Result<(), String> {
+    let cwd = std::env::current_dir().map_err(|e| format!("tidak bisa get cwd: {}", crate::host::galat_io(&e)))?;
+    let manifest = Manifest::load(&cwd)?;
+    let mut inc = vec![cwd.join("src")];
+    tambah_path_dependensi(&cwd, &mut inc)?;
+    inc.dedup();
+    let keluar = cwd.join("target").join(format!("{}.elf", manifest.name));
+    let _ = std::fs::create_dir_all(cwd.join("target"));
+    let mut cmd = process::Command::new(crate::hotreload::biner_jrgc());
+    cmd.arg(&manifest.entry).arg("--bebas").arg("-o").arg(&keluar);
+    // Folder `berkas/` proyek jadi sistem berkas RAM kernel.
+    if cwd.join("berkas").is_dir() { cmd.arg("--berkas").arg(cwd.join("berkas")); }
+    for d in &inc { cmd.arg("-I").arg(d); }
+    let status = cmd.status().map_err(|e| format!("jrgm run --bebas: gagal menjalankan jrgc ({})", crate::host::galat_io(&e)))?;
+    match status.code() { Some(0) => Ok(()), Some(k) => process::exit(k), None => process::exit(1) }
+}
+
 pub(crate) fn cmd_exec(file: &Path, args: &[String], verbose: bool, prof: bool,
             use_vm: bool, use_jit: bool, emit_bc: bool, watch: bool, clear: bool) -> Result<(), String> {
     if let Some(r) = super::bahasa::resep_berkas(file) {
@@ -405,7 +423,7 @@ pub(crate) fn cmd_add(name: &str, version: Option<&str>, git: Option<&str>, rev:
     } else {
         format!("{}\n{}\n{}", isi.trim_end(), bagian, baris)
     };
-    std::fs::write(&manifes, baru)
+    super::tulis_utuh(&manifes, baru)
         .map_err(|e| format!("jrgm add: tidak bisa tulis `jrgm.toml`: {}", crate::host::galat_io(&e)))?;
 
     // Graf diperiksa SESUDAH menulis, dan kegagalannya dilaporkan — sebuah
@@ -447,7 +465,7 @@ pub(crate) fn cmd_remove(name: &str) -> Result<(), String> {
         return Err(format!("jrgm remove: `{}` tidak ditulis sebagai satu baris `{} = {{ .. }}` di \
             `[dependencies]` — buang bagiannya sendiri; `jrgm.toml` tidak diubah", name, name));
     }
-    std::fs::write(&manifes, baru)
+    super::tulis_utuh(&manifes, baru)
         .map_err(|e| format!("jrgm remove: tidak bisa tulis `jrgm.toml`: {}", crate::host::galat_io(&e)))?;
     crate::cetak_t!("membuang `{}`", name);
     Ok(())

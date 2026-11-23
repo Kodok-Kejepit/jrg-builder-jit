@@ -24,6 +24,7 @@ Contoh:
   jrgm lint                  periksa tanpa menjalankan (galat + peringatan)
   jrgm publish               tag v<versi> lalu dorong ke repositori git
   jrgm new gameku --android  proyek aplikasi Android
+  jrgm new osku --bebas      kernel tanpa sistem operasi (jrgm run --bebas)
   jrgm apk                   bungkus jadi target/<nama>.apk
   jrgm siapkan android       pasang SDK/NDK/build-tools (ditawarkan otomatis oleh jrgm apk)
   jrgm run --android         pasang ke HP, buka, tampilkan keluarannya
@@ -46,16 +47,16 @@ pub(crate) struct Cli {
     pub(crate) command: JrgmCommand,
 
     /// Nada diagnostik SOPAN — buang baris sapaan di atas tiap error.
-    #[arg(long = "sopan", global = true, conflicts_with_all = ["galak", "nada"])]
+    #[arg(long = "sopan", visible_alias = "polite", global = true, conflicts_with_all = ["galak", "nada"])]
     pub(crate) sopan: bool,
 
-    /// Pilih nada diagnostik: sopan, galak, judes, hangat, cool, lawak.
+    /// Pilih nada diagnostik: sopan, galak, judes, hangat, cool, lawak (atau polite, fierce, sassy, warm, cool, funny).
     #[arg(long = "nada", global = true, value_name = "NAMA")]
     pub(crate) nada: Option<String>,
 
     /// Nada GALAK — ini sudah bawaan, jadi flag ini cuma dipakai kalau
     /// `JRG_SOPAN` di lingkungan sedang mematikannya.
-    #[arg(long = "galak", global = true)]
+    #[arg(long = "galak", visible_alias = "fierce", global = true)]
     pub(crate) galak: bool,
 }
 
@@ -69,6 +70,9 @@ pub(crate) enum JrgmCommand {
         /// Sama dengan `--kind android`: proyek aplikasi Android (kanvas + sentuhan)
         #[arg(long)]
         android: bool,
+        /// Sama dengan `--kind bebas`: kernel tanpa sistem operasi (`jrgm run --bebas`)
+        #[arg(long)]
+        bebas: bool,
         /// Proyek bahasa lain: python, javascript, c, cpp, rust, go, java, php, lua, ruby, sh
         #[arg(long, visible_alias = "lang")]
         bahasa: Option<String>,
@@ -144,6 +148,9 @@ pub(crate) enum JrgmCommand {
         /// Gunakan JRGJIT: VM yang mengompilasi bagian panas jadi kode mesin saat jalan
         #[arg(long = "jit")]
         use_jit: bool,
+        /// Susun jadi kernel tanpa sistem operasi lalu boot di QEMU (`jrgc --bebas`)
+        #[arg(long = "bebas", conflicts_with_all = ["use_vm", "use_jit", "watch"])]
+        bebas: bool,
         /// Emit bytecode disassembly (butuh --vm)
         #[arg(long = "emit-bc")]
         emit_bc: bool,

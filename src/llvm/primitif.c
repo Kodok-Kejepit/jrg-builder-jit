@@ -84,6 +84,8 @@ typedef struct {
     int64_t cadangan[3];
 } JrgPetaKepala;
 
+void jrg_panic(const unsigned char *ptr, int64_t len);
+
 static JrgPetaKepala *jrg_peta_kepala(const void *p) {
     return (JrgPetaKepala *)((char *)p - sizeof(JrgPetaKepala));
 }
@@ -183,8 +185,13 @@ static void jrg_peta_indeks(JrgPetaKepala *h, const void *p, int64_t len, int64_
         int64_t n = 16;
         int64_t sasaran = 2 * (h->kap > len ? h->kap : len);
         while (n < sasaran) n *= 2;
-        h->indeks = jrg_alloc(jrg_kali(n, (int64_t)sizeof(int32_t)), 4);
-        memset(h->indeks, 0, (size_t)n * sizeof(int32_t));
+        // Di luar arena: indeks lahir malas, sering di putaran loop berarena yang pemulihannya melepasnya padahal
+        // dict-nya hidup di luar loop (AGI-20261119-28). Tidak dibebaskan: kepala yang memegangnya tidak punya pemilik.
+        h->indeks = calloc((size_t)n, sizeof(int32_t));
+        if (h->indeks == 0) {
+            static const char pesan[] = "memori habis";
+            jrg_panic((const unsigned char *)pesan, (int64_t)(sizeof pesan - 1));
+        }
         h->n_indeks = n;
         h->terindeks = 0;
     }
@@ -340,6 +347,8 @@ void jrg_sort_any(JrgAny *p, int64_t n, const char *pola, int64_t pl) {
 
 // `arr::sort` atas pecahan: NaN tidak punya urutan, jadi ditolak — tidak ditaruh di ujung.
 void jrg_sort_f64_ketat(double *p, int64_t n, const char *pesan, int64_t pl) {
+    // Satu elemen tidak dibandingkan dengan apa pun, seperti acuan (AGI-20261119-51).
+    if (n <= 1) return;
     for (int64_t i = 0; i < n; i++) {
         if (p[i] != p[i]) jrg_panic((const unsigned char *)pesan, pl);
     }
@@ -446,7 +455,21 @@ static uint32_t jrg_any_lukis(const JrgAny *a) {
 }
 
 // Salin nilai berlukisan `dari` di `src` menjadi berlukisan `ke` di `dst`; 0 kalau mustahil.
-static int jrg_lukis_ubah(const void *src, uint32_t dari, void *dst, uint32_t ke) {
+// Daftar kerja di heap untuk dua penjelajah di bawah: nilai bertag bersarang dalam (dibuat loop, bukan rekursi
+// program) dulu menghabiskan stack C di sini (AGI-20261119-15), seperti `jrg_tampil_lukis` sebelum dibuat iteratif.
+typedef struct { const void *src; void *dst; uint32_t dari, ke; } JrgLukisTugas;
+typedef struct { JrgLukisTugas *isi; int64_t n, kap; } JrgLukisDaftar;
+static void jrg_lukis_dorong(JrgLukisDaftar *d, const void *src, uint32_t dari, void *dst, uint32_t ke) {
+    if (d->n == d->kap) {
+        d->kap = d->kap ? d->kap * 2 : 64;
+        d->isi = realloc(d->isi, (size_t)d->kap * sizeof *d->isi);
+        if (d->isi == 0) jrg_panic((const unsigned char *)"memori habis", 12);
+    }
+    d->isi[d->n++] = (JrgLukisTugas){ src, dst, dari, ke };
+}
+
+// Satu langkah ubah: daun ditulis langsung, array/dict mendorong elemennya. 0 = tidak bisa diubah.
+static int jrg_lukis_ubah_satu(JrgLukisDaftar *kerja, const void *src, uint32_t dari, void *dst, uint32_t ke) {
     if (dari == ke) { memcpy(dst, src, (size_t)jrg_lukis_ukuran(ke)); return 1; }
     uint32_t jd = dari & 15, jk = ke & 15;
     if (jk == JRG_L_ANY) {
@@ -468,7 +491,9 @@ static int jrg_lukis_ubah(const void *src, uint32_t dari, void *dst, uint32_t ke
     if (jd == JRG_L_ANY) {
         const JrgAny *k = src;
         uint32_t l = jrg_any_lukis(k);
-        return l != 0 && jrg_lukis_ubah(&k->isi, l, dst, ke);
+        if (l == 0) return 0;
+        jrg_lukis_dorong(kerja, &k->isi, l, dst, ke);
+        return 1;
     }
     if (jd != jk) return 0;
     uint32_t ed = dari >> 4, ek = ke >> 4;
@@ -477,8 +502,7 @@ static int jrg_lukis_ubah(const void *src, uint32_t dari, void *dst, uint32_t ke
         const JrgSlice *s = src;
         int64_t ud = jrg_lukis_ukuran(ed), uk = jrg_lukis_ukuran(ek);
         char *buf = jrg_alloc(s->len > 0 ? jrg_kali(s->len, uk) : 1, 8);
-        for (int64_t i = 0; i < s->len; i++)
-            if (!jrg_lukis_ubah((const char *)s->ptr + i * ud, ed, buf + i * uk, ek)) return 0;
+        for (int64_t i = 0; i < s->len; i++) jrg_lukis_dorong(kerja, (const char *)s->ptr + i * ud, ed, buf + i * uk, ek);
         JrgSlice h = { buf, s->len };
         memcpy(dst, &h, sizeof h);
         return 1;
@@ -492,7 +516,7 @@ static int jrg_lukis_ubah(const void *src, uint32_t dari, void *dst, uint32_t ke
             char *pd = buf + i * lk;
             memset(pd, 0, (size_t)lk);
             memcpy(pd, ps, sizeof(JrgStr));
-            if (!jrg_lukis_ubah(ps + 16, ed, pd + 16, ek)) return 0;
+            jrg_lukis_dorong(kerja, ps + 16, ed, pd + 16, ek);
         }
         if (d->ptr != 0 && d->len > 0) jrg_peta_kepala(buf)->terurut = jrg_peta_kepala(d->ptr)->terurut;
         JrgDict h = { buf, d->len };
@@ -502,38 +526,93 @@ static int jrg_lukis_ubah(const void *src, uint32_t dari, void *dst, uint32_t ke
     return 0;
 }
 
+static int jrg_lukis_ubah(const void *src, uint32_t dari, void *dst, uint32_t ke) {
+    JrgLukisDaftar kerja = { 0, 0, 0 };
+    int ok = 1;
+    jrg_lukis_dorong(&kerja, src, dari, dst, ke);
+    while (ok && kerja.n > 0) {
+        JrgLukisTugas t = kerja.isi[--kerja.n];
+        ok = jrg_lukis_ubah_satu(&kerja, t.src, t.dari, t.dst, t.ke);
+    }
+    free(kerja.isi);
+    return ok;
+}
+
 // Salin-dalam DI TEMPAT nilai berlukisan `l`: penyangga array/dict di dalamnya diganti salinannya,
 // supaya salinan sebuah kotak tidak berbagi isi dengan aslinya.
-static void jrg_lukis_salin(void *p, uint32_t l) {
-    uint32_t j = l & 15, e = l >> 4;
-    if (j == JRG_L_ANY) {
-        JrgAny *k = p;
-        uint32_t dalam = jrg_any_lukis(k);
-        if ((dalam & 15) == JRG_L_SLICE || (dalam & 15) == JRG_L_DICT) jrg_lukis_salin(&k->isi, dalam);
-        return;
+static void jrg_lukis_salin(void *p0, uint32_t l0) {
+    JrgLukisDaftar kerja = { 0, 0, 0 };
+    jrg_lukis_dorong(&kerja, 0, l0, p0, 0);
+    while (kerja.n > 0) {
+        JrgLukisTugas t = kerja.isi[--kerja.n];
+        void *p = t.dst;
+        uint32_t l = t.dari, j = l & 15, e = l >> 4;
+        if (j == JRG_L_ANY) {
+            JrgAny *k = p;
+            uint32_t dalam = jrg_any_lukis(k);
+            if ((dalam & 15) == JRG_L_SLICE || (dalam & 15) == JRG_L_DICT) jrg_lukis_dorong(&kerja, 0, dalam, &k->isi, 0);
+            continue;
+        }
+        if ((e & 15) == 0 || (e & 15) == JRG_L_BURAM) continue;
+        int bersarang = (e & 15) == JRG_L_ANY || (e & 15) == JRG_L_SLICE || (e & 15) == JRG_L_DICT;
+        if (j == JRG_L_SLICE) {
+            JrgSlice *s = p;
+            int64_t uk = jrg_lukis_ukuran(e);
+            char *buf = jrg_alloc(s->len > 0 ? jrg_kali(s->len, uk) : 1, 8);
+            if (s->len > 0) memcpy(buf, s->ptr, (size_t)(s->len * uk));
+            if (bersarang) for (int64_t i = 0; i < s->len; i++) jrg_lukis_dorong(&kerja, 0, e, buf + i * uk, 0);
+            s->ptr = (void *)buf;
+        } else if (j == JRG_L_DICT) {
+            JrgDict *d = p;
+            if (d->ptr == 0 || d->len == 0) continue;
+            int64_t lk = jrg_lukis_langkah(e);
+            char *buf = jrg_dict_baru(d->len, lk, 8);
+            memcpy(buf, d->ptr, (size_t)(d->len * lk));
+            jrg_peta_kepala(buf)->terurut = jrg_peta_kepala(d->ptr)->terurut;
+            if (bersarang) for (int64_t i = 0; i < d->len; i++) jrg_lukis_dorong(&kerja, 0, e, buf + i * lk + 16, 0);
+            d->ptr = (void *)buf;
+        }
     }
-    if ((e & 15) == 0 || (e & 15) == JRG_L_BURAM) return;
-    int bersarang = (e & 15) == JRG_L_ANY || (e & 15) == JRG_L_SLICE || (e & 15) == JRG_L_DICT;
-    if (j == JRG_L_SLICE) {
-        JrgSlice *s = p;
-        int64_t uk = jrg_lukis_ukuran(e);
-        char *buf = jrg_alloc(s->len > 0 ? jrg_kali(s->len, uk) : 1, 8);
-        if (s->len > 0) memcpy(buf, s->ptr, (size_t)(s->len * uk));
-        if (bersarang) for (int64_t i = 0; i < s->len; i++) jrg_lukis_salin(buf + i * uk, e);
-        s->ptr = (void *)buf;
-    } else if (j == JRG_L_DICT) {
-        JrgDict *d = p;
-        if (d->ptr == 0 || d->len == 0) return;
-        int64_t lk = jrg_lukis_langkah(e);
-        char *buf = jrg_dict_baru(d->len, lk, 8);
-        memcpy(buf, d->ptr, (size_t)(d->len * lk));
-        jrg_peta_kepala(buf)->terurut = jrg_peta_kepala(d->ptr)->terurut;
-        if (bersarang) for (int64_t i = 0; i < d->len; i++) jrg_lukis_salin(buf + i * lk + 16, e);
-        d->ptr = (void *)buf;
-    }
+    free(kerja.isi);
 }
 
 void jrg_any_salin(JrgAny *a) { jrg_lukis_salin(a, JRG_L_ANY); }
+
+// 1 kalau kotak `a` memuat nilai tanpa padanan JSON native (struct, enum, tuple, handle) di kedalaman mana pun:
+// `json::stringify` atas wadah berisi nilai bertag memilih penyandi native atau cadangan jembatan SAAT JALAN.
+int32_t jrg_json_ada_buram(const JrgAny *a) {
+    JrgLukisDaftar kerja = { 0, 0, 0 };
+    jrg_lukis_dorong(&kerja, a, JRG_L_ANY, 0, 0);
+    int32_t ada = 0;
+    while (kerja.n > 0 && !ada) {
+        JrgLukisTugas t = kerja.isi[--kerja.n];
+        const void *p = t.src;
+        uint32_t l = t.dari, j = l & 15, e = l >> 4;
+        if (j == JRG_L_ANY) {
+            const JrgAny *k = p;
+            int32_t tag = k->tag & 255;
+            if (tag > 8 && tag != 10) { ada = 1; break; }   /* buram milik program: kait `@jrg_buram_ke_json` */
+            uint32_t dalam = jrg_any_lukis(k);
+            if ((dalam & 15) == JRG_L_SLICE || (dalam & 15) == JRG_L_DICT) jrg_lukis_dorong(&kerja, &k->isi, dalam, 0, 0);
+            continue;
+        }
+        if (j == JRG_L_BURAM || (e & 15) == JRG_L_BURAM) { ada = 1; break; }
+        if ((e & 15) == 0) continue;
+        int bersarang = (e & 15) == JRG_L_ANY || (e & 15) == JRG_L_SLICE || (e & 15) == JRG_L_DICT;
+        if (!bersarang) continue;
+        if (j == JRG_L_SLICE) {
+            const JrgSlice *s = p;
+            int64_t uk = jrg_lukis_ukuran(e);
+            for (int64_t i = 0; i < s->len; i++) jrg_lukis_dorong(&kerja, (const char *)s->ptr + i * uk, e, 0, 0);
+        } else if (j == JRG_L_DICT) {
+            const JrgDict *d = p;
+            int64_t lk = jrg_lukis_langkah(e);
+            for (int64_t i = 0; d->ptr && i < d->len; i++) jrg_lukis_dorong(&kerja, (const char *)d->ptr + i * lk + 16, e, 0, 0);
+        }
+    }
+    free(kerja.isi);
+    return ada;
+}
 
 static int64_t jrg_lukis_nama(uint32_t l, char *buf, int64_t n, int64_t maks) {
     const char *t = "?";
@@ -838,9 +917,15 @@ typedef struct {
     void (*buram)(const JrgAny *, JrgAny *);
     void (*serah)(void);
     int64_t (*lain)(void);
+    void (*luncur)(void (*)(void *), void *);
+    uintptr_t (*id)(void);
+    int64_t (*siap_lain)(void);
 } JrgKait;
 void jrg_ko_serah(void);
 int64_t jrg_ko_lain(void);
+void jrg_ko_spawn(void (*fn)(void *), void *arg);
+uintptr_t jrg_ko_aktor(void);
+int64_t jrg_ko_siap_lain(void);
 
 // Dipancarkan codegen kalau ada isi buram yang bisa sampai ke jembatan (`jrg_buram_jembatan_isi`).
 __attribute__((weak)) void jrg_buram_jembatan_isi(const JrgAny *, JrgAny *);
@@ -856,12 +941,18 @@ void jrg_jembatan_lepas(const JrgAny *v) {
 
 // Hasil: 0 nilai biasa, 1 `Some`/`Ok`, 2 `None`, 3 `Err`; kegagalan builtinnya menghentikan program.
 int32_t jrg_jembatan(const char *nama, int64_t nl, const JrgAny *args, int64_t n, JrgAny *out) {
-    static const JrgKait kait = { jrg_alloc, jrg_dict_tempat, jrg_any_ubah, jrg_buram_jembatan_isi, jrg_ko_serah, jrg_ko_lain };
-    // Pustakanya tidak ditautkan: program ini tidak pernah memanggil builtin lewat jembatan,
-    // jadi nilai titipan tidak mungkin ada — yang sampai ke sini tag yang tak dikenal.
+    static const JrgKait kait = { jrg_alloc, jrg_dict_tempat, jrg_any_ubah, jrg_buram_jembatan_isi, jrg_ko_serah, jrg_ko_lain, jrg_ko_spawn, jrg_ko_aktor, jrg_ko_siap_lain };
+    // Pustakanya tidak ditautkan: cuma kernel `--bebas` yang sampai di sini, lewat jembatan CADANGAN (mis.
+    // `json::stringify` atas wadah berisi `any` yang ternyata memuat struct) — biner biasa selalu menautkannya.
     if (jrg_jembatan_panggil == 0) {
-        static const char pesan[] = "tag nilai tidak dikenal — ini bug di jrgc, bukan di programmu";
-        jrg_panic((const unsigned char *)pesan, (int64_t)(sizeof pesan - 1));
+        static const char awal[] = "`", akhir[] = "` atas nilai ini (struct, enum, tuple atau handle) butuh jembatan builtin "
+            "`jrgc`, dan biner ini tidak membawanya (kernel `--bebas` tanpa sistem operasi)";
+        char pesan[256];
+        int64_t n = 0, nk = nl < 64 ? nl : 64;
+        memcpy(pesan, awal, sizeof awal - 1); n += sizeof awal - 1;
+        memcpy(pesan + n, nama, (size_t)nk); n += nk;
+        memcpy(pesan + n, akhir, sizeof akhir - 1); n += sizeof akhir - 1;
+        jrg_panic((const unsigned char *)pesan, n);
     }
     int32_t r = jrg_jembatan_panggil(nama, nl, args, n, out, &kait);
     if (r < 0) jrg_panic((const unsigned char *)out->isi.s.ptr, out->isi.s.len);
@@ -877,6 +968,11 @@ int32_t jrg_jembatan(const char *nama, int64_t nl, const JrgAny *args, int64_t n
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__APPLE__) || defined(__ANDROID__)
+#include <sys/random.h>
+#endif
+
+int64_t jrg_lebar_kode(uint32_t cp);   // `lebar.c`
 
 /* `num_cpus()`: inti yang terlihat proses ini, paling sedikit 1. */
 int64_t jrg_num_cpus(void) {
@@ -984,6 +1080,9 @@ static int jrg_utf8_sah(const unsigned char *p, int64_t n) {
 }
 
 // Hasil: >= 0 berhasil (artinya per operasi), negatif = -errno. Teks hasil di `out`.
+int64_t jrg_kripto_os(const char *ap, int64_t an, const char *bp, int64_t bn, int64_t i, const char **op, int64_t *on);
+int64_t jrg_re_os(const char *ap, int64_t an, const char *bp, int64_t bn, int64_t i, const char **op, int64_t *on);
+
 int64_t jrg_os(int32_t op, const char *ap, int64_t an, const char *bp, int64_t bn, int64_t i, JrgStr *out) {
     jrg_os_teks(out, 0, 0);
     // NUL memotong teks di C: `a.txt\0.jrg` dulu jadi `a.txt`. Acuan menolaknya, jadi di sini juga (-100001).
@@ -1038,7 +1137,7 @@ int64_t jrg_os(int32_t op, const char *ap, int64_t an, const char *bp, int64_t b
             return stat(a, &st) == 0 && S_ISDIR(st.st_mode) ? 0 : -ENOTDIR;
         }
         case 10: return rename(a, jrg_os_cstr(bp, bn)) == 0 ? 0 : -errno;
-        case 11: {  // isi folder, terurut, dipisah baris baru
+        case 11: {  // isi folder, terurut, dipisah NUL: `\n` sah di nama berkas POSIX, NUL tidak (AGI-20261119-29)
             DIR *d = opendir(a);
             if (d == 0) return -errno;
             int64_t kap = 16, n = 0, total = 0;
@@ -1063,7 +1162,7 @@ int64_t jrg_os(int32_t op, const char *ap, int64_t an, const char *bp, int64_t b
             char *buf = jrg_alloc(total + 1, 1);
             int64_t p = 0;
             for (int64_t k = 0; k < n; k++) {
-                if (k > 0) buf[p++] = '\n';
+                if (k > 0) buf[p++] = '\0';
                 memcpy(buf + p, nama[k].ptr, (size_t)nama[k].len);
                 p += nama[k].len;
             }
@@ -1073,7 +1172,13 @@ int64_t jrg_os(int32_t op, const char *ap, int64_t an, const char *bp, int64_t b
         case 12: {  // variabel lingkungan: 1 kalau diset
             const char *v = getenv(a);
             if (v == 0) return 0;
-            jrg_os_teks(out, v, (int64_t)strlen(v));
+            // Isi yang bukan UTF-8 dijawab tidak ada, seperti acuan — teks JRG selalu UTF-8 (AGI-20261119-51).
+            if (!jrg_utf8_sah((const unsigned char *)v, (int64_t)strlen(v))) return 0;
+            // Disalin: `setenv` sesudahnya boleh membebaskan penyangga `getenv` di libc selain glibc.
+            int64_t vn = (int64_t)strlen(v);
+            char *salin = vn > 0 ? jrg_alloc(vn, 1) : 0;
+            if (vn > 0) memcpy(salin, v, (size_t)vn);
+            jrg_os_teks(out, salin, vn);
             return 1;
         }
         case 13: return setenv(a, jrg_os_cstr(bp, bn), 1) == 0 ? 0 : -errno;
@@ -1150,6 +1255,22 @@ int64_t jrg_os(int32_t op, const char *ap, int64_t an, const char *bp, int64_t b
             const char *s = "tak-dikenal";
 #endif
             jrg_os_teks(out, s, (int64_t)strlen(s));
+            return 0;
+        }
+        case 29: return jrg_lebar_kode((uint32_t)i);   // kolom layar satu karakter (`term::lebar`)
+        case 30: return jrg_re_os(ap, an, bp, bn, i, &out->ptr, &out->len);   // `re::` (runtime Rust)
+        case 31: return jrg_kripto_os(ap, an, bp, bn, i, &out->ptr, &out->len);   // `crypto::` (runtime Rust)
+        case 28: {  // `i` byte dari sumber acak OS, sebagai heksadesimal (`crypto::random_hex`)
+            // Teks hasil di arena runtime: `jrg_os_teks` cuma menyimpan penunjuknya.
+            unsigned char *b = malloc(i > 0 ? (size_t)i : 1);
+            char *h = jrg_alloc(i * 2 + 1, 1);
+            if (!b) return -ENOMEM;
+            for (int64_t k = 0; k < i; k += 256) {
+                if (getentropy(b + k, (size_t)(i - k < 256 ? i - k : 256)) != 0) { int e = errno; free(b); return -e; }
+            }
+            for (int64_t k = 0; k < i; k++) { h[2 * k] = "0123456789abcdef"[b[k] >> 4]; h[2 * k + 1] = "0123456789abcdef"[b[k] & 15]; }
+            free(b);
+            jrg_os_teks(out, h, i * 2);
             return 0;
         }
         default: return -ENOSYS;

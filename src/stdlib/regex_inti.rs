@@ -2,17 +2,45 @@
 // Waktunya linear (panjang teks × ukuran program), jadi pola dari pemakai tidak bisa membuatnya meledak
 // (ReDoS). Semantiknya leftmost-first seperti Perl/Python: alternatif dan pengulangan dicoba urut prioritas.
 
+// SALINAN PERSISNYA di `runtime/src/regex_inti.rs` (runtime LLVM, `no_std`), dijaga tes: cuma `alloc`/`core`.
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+
 /// Batas pengulangan `{n,m}` dan ukuran program; di atasnya pola ditolak, bukan dijalankan lambat.
 pub const MAKS_ULANG: usize = 1000;
 pub const MAKS_PROGRAM: usize = 100_000;
 /// Batas sarang grup, seperti Go sesudah CVE-2022-24921: pengurainya rekursif per `(`.
 pub const MAKS_SARANG: usize = 1000;
 
+/// Rentang kelas yang URUT dan tidak tumpang-tindih, dibagi antar-salinan: `x{1000}` atas kelas besar dulu
+/// menyalin seluruh daftar per salinan (ratusan MiB), dan tiap karakter dicocokkan linear (AGI-20261119-25).
+type Kelas = alloc::sync::Arc<[(char, char)]>;
+
+fn kelas_dari(mut r: Vec<(char, char)>) -> Kelas {
+    r.sort_unstable();
+    let mut hasil: Vec<(char, char)> = Vec::with_capacity(r.len());
+    for (a, b) in r {
+        match hasil.last_mut() {
+            Some(t) if (a as u32) <= (t.1 as u32).saturating_add(1) => { if b > t.1 { t.1 = b; } }
+            _ => hasil.push((a, b)),
+        }
+    }
+    hasil.into()
+}
+
+fn di_kelas(r: &[(char, char)], c: char) -> bool {
+    let i = r.partition_point(|(a, _)| *a <= c);
+    i > 0 && r[i - 1].1 >= c
+}
+
 #[derive(Debug, Clone)]
 enum Node {
     Literal(char),
     AnyChar,
-    Class(Vec<(char, char)>, bool),
+    Class(Kelas, bool),
     Awal,
     Akhir,
     BatasKata(bool),
@@ -26,7 +54,7 @@ enum Node {
 enum Inst {
     Char(char),
     Any,
-    Class(Vec<(char, char)>, bool),
+    Class(Kelas, bool),
     Awal,
     Akhir,
     BatasKata(bool),
@@ -158,12 +186,12 @@ impl<'a> Urai<'a> {
         let c = self.lihat().ok_or("pola berakhir dengan `\\` menggantung")?;
         self.p += 1;
         Ok(match c {
-            'd' => Node::Class(DIGIT.to_vec(), false),
-            'D' => Node::Class(DIGIT.to_vec(), true),
-            'w' => Node::Class(KATA.to_vec(), false),
-            'W' => Node::Class(KATA.to_vec(), true),
-            's' => Node::Class(SPASI.to_vec(), false),
-            'S' => Node::Class(SPASI.to_vec(), true),
+            'd' => Node::Class(kelas_dari(DIGIT.to_vec()), false),
+            'D' => Node::Class(kelas_dari(DIGIT.to_vec()), true),
+            'w' => Node::Class(kelas_dari(KATA.to_vec()), false),
+            'W' => Node::Class(kelas_dari(KATA.to_vec()), true),
+            's' => Node::Class(kelas_dari(SPASI.to_vec()), false),
+            'S' => Node::Class(kelas_dari(SPASI.to_vec()), true),
             'b' => Node::BatasKata(true),
             'B' => Node::BatasKata(false),
             'A' => Node::Awal,
@@ -208,7 +236,7 @@ impl<'a> Urai<'a> {
                 items.push((lo, lo));
             }
         }
-        Ok(Node::Class(items, neg))
+        Ok(Node::Class(kelas_dari(items), neg))
     }
 
     /// Satu butir di dalam `[...]`: sebuah karakter, atau himpunan `\d`/`\w`/`\s`.
@@ -358,7 +386,7 @@ impl Regex {
                     Inst::Match => { hasil = Some((mulai, pos)); break; }
                     Inst::Char(c) => t.get(pos) == Some(c),
                     Inst::Any => t.get(pos).map_or(false, |c| *c != '\n'),
-                    Inst::Class(r, neg) => t.get(pos).map_or(false, |c| r.iter().any(|(a, b)| a <= c && c <= b) != *neg),
+                    Inst::Class(r, neg) => t.get(pos).map_or(false, |c| di_kelas(r, *c) != *neg),
                     _ => false,
                 };
                 if lolos {
@@ -369,7 +397,7 @@ impl Regex {
                 // Utas yang tersisa cuma bisa selesai di `Match` pada posisi ini; sudah diperiksa di atas.
                 break;
             }
-            std::mem::swap(&mut kini, &mut depan);
+            core::mem::swap(&mut kini, &mut depan);
             pos += 1;
         }
         hasil
@@ -388,6 +416,18 @@ impl Regex {
         }
         keluar
     }
+}
+
+/// Kecocokan pertama (atau semuanya) dari `pola` di `s`: indeks karakter awal/akhir lalu offset byte-nya.
+/// Satu definisi untuk `re::` di `jrgc` dan di runtime LLVM.
+pub fn cocok_di(pola: &str, s: &str, semua: bool) -> Result<Vec<[usize; 4]>, String> {
+    let r = Regex::baru(pola)?;
+    let mut cs = Vec::with_capacity(s.len());
+    let mut off = Vec::with_capacity(s.len() + 1);
+    for (i, c) in s.char_indices() { cs.push(c); off.push(i); }
+    off.push(s.len());
+    let hasil: Vec<(usize, usize)> = if semua { r.semua(&cs) } else { r.cari_dari(&cs, 0).into_iter().collect() };
+    Ok(hasil.into_iter().map(|(a, b)| [a, b, off[a], off[b]]).collect())
 }
 
 #[cfg(test)]

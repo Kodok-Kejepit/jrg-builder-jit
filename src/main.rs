@@ -94,6 +94,22 @@ struct Cli {
     #[arg(long = "emit-wasm", conflicts_with_all = ["emit_llvm", "jit", "apk"])]
     emit_wasm: bool,
 
+    /// Kernel tanpa sistem operasi: kompilasi jadi kernel x86_64 multiboot lewat backend LLVM, lalu boot di QEMU
+    #[arg(long = "bebas", conflicts_with_all = ["jit", "emit_wasm", "apk", "use_vm"])]
+    bebas: bool,
+
+    /// Dengan --bebas: isi folder ini jadi sistem berkas RAM kernel (`/` = folder itu), dibaca dan ditulis `fs::`
+    #[arg(long = "berkas", value_name = "FOLDER", requires = "bebas")]
+    berkas: Option<PathBuf>,
+
+    /// Dengan --bebas: juga tulis image disk UEFI (MBR + partisi EFI + GRUB) yang bisa ditulis ke flashdisk
+    #[arg(long = "img", value_name = "BERKAS", requires = "bebas")]
+    img: Option<PathBuf>,
+
+    /// Dengan --bebas: buka jendela layar VGA QEMU (bawaan tanpa jendela, keluaran lewat serial)
+    #[arg(long = "layar", requires = "bebas")]
+    layar: bool,
+
     /// Bungkus jadi aplikasi Android (lewat backend LLVM)
     #[arg(long = "apk", value_name = "BERKAS")]
     apk: Option<PathBuf>,
@@ -157,17 +173,17 @@ struct Cli {
     #[arg(long = "bahasa", alias = "language", value_name = "KODE", help_heading = "Diagnostik")]
     bahasa: Option<String>,
 
-    /// Nada pesan galat: sopan|galak|judes|hangat|cool|lawak
+    /// Nada pesan galat: sopan|galak|judes|hangat|cool|lawak (atau polite|fierce|sassy|warm|cool|funny)
     #[arg(long = "nada", value_name = "NAMA", help_heading = "Diagnostik")]
     nada: Option<String>,
 
     /// Tanpa sapaan di atas pesan galat (sama dengan --nada=sopan)
-    #[arg(long = "sopan", conflicts_with_all = ["galak", "nada"],
+    #[arg(long = "sopan", visible_alias = "polite", conflicts_with_all = ["galak", "nada"],
           help_heading = "Diagnostik")]
     sopan: bool,
 
     /// Sama dengan --nada=galak
-    #[arg(long = "galak", conflicts_with_all = ["sopan", "nada"],
+    #[arg(long = "galak", visible_alias = "fierce", conflicts_with_all = ["sopan", "nada"],
           help_heading = "Diagnostik")]
     galak: bool,
 
@@ -365,7 +381,7 @@ fn run_sumber(nama: &str, src: String, dir: PathBuf, cli: &Cli) -> Result<(), Ve
         return Err(Vec::new());
     }
 
-    if cli.emit_llvm || cli.apk.is_some() || cli.emit_wasm {
+    if cli.emit_llvm || cli.apk.is_some() || cli.emit_wasm || cli.bebas {
         // `--uji`: `main` buatan yang menjalankan tiap tes (`llvm::uji`); tanpa tes, kalimat yang sama dengan acuan.
         let uji_ast;
         let ast = if cli.uji {
@@ -389,6 +405,7 @@ fn run_sumber(nama: &str, src: String, dir: PathBuf, cli: &Cli) -> Result<(), Ve
                 fast_math: effective_fast_math,
                 full_buffered_stdout: effective_full_buffered_stdout,
                 ptr32: cli.emit_wasm,
+                bebas: cli.bebas,
             },
             &jalur_impor,
         ).map_err(|errs| {
@@ -413,6 +430,29 @@ fn run_sumber(nama: &str, src: String, dir: PathBuf, cli: &Cli) -> Result<(), Ve
                 return Ok(());
             }
             let kode = jrgc::wasm::jalankan(&berkas, &[]).map_err(|e| vec![format!("jrgc: {}", e)])?;
+            keluar(kode);
+        }
+
+        if cli.bebas {
+            // `-o` bawaan (`a.out`) jadi `<nama-sumber>.elf` di folder kerja.
+            let berkas = if cli.output == std::path::Path::new("a.out") {
+                PathBuf::from(std::path::Path::new(nama).file_stem().unwrap_or_default()).with_extension("elf")
+            } else { cli.output.clone() };
+            jrgc::bebas::kompilasi(&ir, &berkas, cli.berkas.as_deref(), cli.verbose).map_err(|e| vec![format!("jrgc: --bebas: {}", e)])?;
+            if let Some(img) = &cli.img {
+                jrgc::bebas::buat_img(&berkas, img, cli.verbose).map_err(|e| vec![format!("jrgc: --img: {}", e)])?;
+                if cli.no_run {
+                    jrgc::ecetak_t!("[jrgc] image UEFI: {} (tulis ke flashdisk: dd if={} of=/dev/sdX bs=4M)", img.display(), img.display());
+                    return Ok(());
+                }
+                let kode = jrgc::bebas::jalankan_img(img).map_err(|e| vec![format!("jrgc: --img: {}", e)])?;
+                keluar(kode);
+            }
+            if cli.no_run {
+                jrgc::ecetak_t!("[jrgc] kernel: {} (boot: qemu-system-x86_64 -kernel {})", berkas.display(), berkas.display());
+                return Ok(());
+            }
+            let kode = jrgc::bebas::jalankan(&berkas, cli.layar).map_err(|e| vec![format!("jrgc: --bebas: {}", e)])?;
             keluar(kode);
         }
 
@@ -698,7 +738,7 @@ fn utama() {
             None => {
                 epesan!(
                     "error: nada `{}` tidak ada. yang tersedia: {}",
-                    n, diag::Nada::SEMUA.join(", ")
+                    n, diag::Nada::daftar()
                 );
                 keluar(2);
             }

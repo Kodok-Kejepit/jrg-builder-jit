@@ -411,7 +411,8 @@ impl Compiler {
             // spawn { body } — jalankan block sebagai goroutine OS thread
             // ── Spawn goroutine ──────────────────────────────────────
             Stmt::Spawn(ss) => {
-                let captures: Vec<(String, usize)> = if let Some(params) = &ss.params {
+                // Sumber tangkapan: `Ok(slot)` lokal, `Err(i)` upvalue closure pembungkus (AGI-20261120-18).
+                let captures: Vec<(String, Result<usize, usize>)> = if let Some(params) = &ss.params {
                     let mut captures = Vec::with_capacity(params.len());
                     for param in params {
                         let name = param_name(param);
@@ -420,12 +421,15 @@ impl Compiler {
                                 "parameter capture spawn harus identifier",
                             ));
                         }
-                        let slot = self.resolve_local(&name).ok_or_else(|| {
-                            CompileError::new(format!(
-                                "spawn tidak bisa menangkap local `{}` yang belum didefinisikan",
-                                name,
-                            ))
-                        })?;
+                        let slot = match self.resolve_local(&name) {
+                            Some(slot) => Ok(slot),
+                            None => Err(self.resolve_upval(&name).ok_or_else(|| {
+                                CompileError::new(format!(
+                                    "spawn tidak bisa menangkap local `{}` yang belum didefinisikan",
+                                    name,
+                                ))
+                            })?),
+                        };
                         captures.push((name, slot));
                     }
                     captures
@@ -434,13 +438,21 @@ impl Compiler {
                         .iter()
                         .enumerate()
                         .filter(|(slot, local)| self.resolve_local(&local.name) == Some(*slot))
-                        .map(|(slot, local)| (local.name.clone(), slot))
+                        .map(|(slot, local)| (local.name.clone(), Ok(slot)))
+                        .chain(
+                            self.upvals
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, u)| self.resolve_local(&u.name).is_none())
+                                .map(|(i, u)| (u.name.clone(), Err(i))),
+                        )
                         .collect()
                 };
                 let arity = u8::try_from(captures.len()).map_err(|_| {
                     CompileError::new("spawn menangkap lebih dari 255 local")
                 })?;
                 let mut c = Compiler::new("<goroutine>", arity);
+                c.saudara = self.saudara.clone();
                 c.scope_depth = 1;
                 for (name, _) in &captures {
                     let slot = c.locals.len();
@@ -452,8 +464,11 @@ impl Compiler {
                 let fn_val = VmFunction::new("<goroutine>", arity, c.chunk);
                 let ci = self.chunk.add_constant(VmValue::Function(std::sync::Arc::new(fn_val)));
                 self.chunk.emit_arg(OpCode::Const, ci);
-                for (_, slot) in &captures {
-                    self.chunk.emit_arg(OpCode::LoadLocal, *slot as u32);
+                for (_, sumber) in &captures {
+                    match sumber {
+                        Ok(slot) => self.chunk.emit_arg(OpCode::LoadLocal, *slot as u32),
+                        Err(ui) => self.chunk.emit_arg(OpCode::LoadUpval, *ui as u32),
+                    }
                 }
                 // Galat `Spawn` (thread tak bisa dibuat, misalnya di peramban) menunjuk pernyataan `spawn`-nya.
                 let lama = self.chunk.masuk_span(ss.span);
@@ -660,6 +675,13 @@ impl Compiler {
                             let skip = self.chunk.emit_jump(OpCode::SelectRecvArm);
                             let value_slot = self.slot_berikutnya();
                             self.define_local("__select_recv_value__");
+                            // Aturan `let` seperti interpreter: pola yang tidak cocok gagal, bukan diikat paksa.
+                            let mut gagal = Vec::new();
+                            self.compile_pattern_conditions(pattern, &PatternSource::Local(value_slot), &mut gagal)?;
+                            let cocok = self.chunk.emit_jump(OpCode::Jump);
+                            for j in gagal { self.chunk.patch_jump(j); }
+                            self.chunk.emit_arg(OpCode::GagalCocok, 2);
+                            self.chunk.patch_jump(cocok);
                             let mut bindings = Vec::new();
                             self.bind_pattern(pattern, value_slot, &mut bindings)?;
                             self.begin_scope();

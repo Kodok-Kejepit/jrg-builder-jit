@@ -48,6 +48,8 @@ pub struct CodegenOptions {
     pub full_buffered_stdout: bool,
     /// Sasaran berpenunjuk 32 bit (`--emit-wasm`, wasm32): ukuran tipe yang isinya penunjuk mengikutinya.
     pub ptr32: bool,
+    /// Kernel tanpa sistem operasi (`--bebas`): `asli::` boleh dipakai.
+    pub bebas: bool,
 }
 
 /// Keadaan `defer` satu fungsi.
@@ -168,6 +170,8 @@ pub struct Codegen {
     pub(crate) pop_pindah: Option<String>,
     /// `(a, r)`: `a = r[0]` sesudah pop berbagi itu boleh memindah `r.0`, karena sisa blok cuma membaca `r[1]`.
     pub(crate) pop_tugas_pindah: Option<(String, String)>,
+    /// `var x: T` tanpa nilai nol di pernyataan ini terbukti diisi sebelum disebut (`isi_pasti`).
+    pub(crate) var_isi_terbukti: bool,
     pub(crate) finished_blocks: Vec<(String, Vec<String>)>,
     pub(crate) terminated: bool,
     pub(crate) loop_stack: Vec<LoopCtx>,
@@ -222,6 +226,8 @@ pub struct Codegen {
     /// Tambahan yang ditempelkan ke pesan `coerce` yang gagal, dipasang oleh
     /// situs yang tahu konteksnya.
     pub(crate) catatan_koersi: Option<String>,
+    /// Catatan fungsi yang sedang diturunkan: penerimanya membayangi field induk dengan tipe lain.
+    pub(crate) catatan_bayang: Option<String>,
     /// Menyala selama `coerce_longgar`: jenis boleh berganti.
     pub(crate) koersi_longgar: bool,
     /// `var` tingkat modul yang dideklarasikan `[]` dan tipe elemennya TIDAK bisa
@@ -272,6 +278,11 @@ pub struct Codegen {
     pub(crate) sama_terpancar: usize,
     /// Penyeberang tipe buram ke jembatan (struct jadi dict bertanda), dipancarkan kalau dipakai.
     pub(crate) jemb_terpancar: usize,
+    /// `json::` atas nilai buram: `@json.buram.N` yang sudah dipancarkan, dan apakah kaitnya dipakai.
+    pub(crate) json_terpancar: usize,
+    pub(crate) pakai_json_buram: bool,
+    /// Fungsi buatan kompilator (`@json.buram.N`, `@jemb.buram.N`) membaca seluruh field, privat juga, seperti acuan.
+    pub(crate) baca_semua_field: bool,
     /// Adaptor nilai fungsi yang sudah dibuat, per pasangan tipe.
     pub(crate) adaptor_ada: HashMap<String, String>,
     pub(crate) desk_fn: Vec<super::codegen_desk::DeskFn>,
@@ -284,6 +295,8 @@ pub struct Codegen {
     /// Tipe yang badan fungsi bantunya sedang dibangun: tingkat pertamanya diturunkan sebaris.
     pub(crate) sebaris_sekali: Option<String>,
     pub(crate) pakai_jemb_buram: bool,
+    /// Panggilan jembatan berikutnya cuma cadangan saat jalan (`JEMBATAN_CADANGAN`, bukan `PAKAI_JEMBATAN`).
+    pub(crate) jembatan_cadangan: bool,
     pub(crate) pakai_sama_buram: bool,
     pub(crate) pakai_aritas_buram: bool,
 
@@ -400,6 +413,7 @@ impl Codegen {
             tulis_antara: false,
             rantai_hasil: Vec::new(),
             catatan_koersi: None,
+            catatan_bayang: None,
             koersi_longgar: false,
             var_kosong_tak_tersimpulkan: Vec::new(),
             fn_bersarang: Vec::new(),
@@ -413,6 +427,7 @@ impl Codegen {
             memo_teks_lokal: None,
             pop_pindah: None,
             pop_tugas_pindah: None,
+            var_isi_terbukti: false,
             finished_blocks: Vec::new(),
             terminated: false,
             loop_stack: Vec::new(),
@@ -447,6 +462,9 @@ impl Codegen {
             pakai_buram: false,
             sama_terpancar: 0,
             jemb_terpancar: 0,
+            json_terpancar: 0,
+            pakai_json_buram: false,
+            baca_semua_field: false,
             adaptor_ada: HashMap::new(),
             desk_fn: Vec::new(),
             situs_bernama: Vec::new(),
@@ -456,6 +474,7 @@ impl Codegen {
             bantu_tipe_ada: std::collections::HashSet::new(),
             sebaris_sekali: None,
             pakai_jemb_buram: false,
+            jembatan_cadangan: false,
             pakai_sama_buram: false,
             pakai_aritas_buram: false,
             kap_tumbuh: HashMap::new(),
@@ -555,6 +574,10 @@ impl Codegen {
     pub(crate) fn lapor_koersi(&mut self, msg: impl Into<String>) {
         let mut msg: String = msg.into();
         if let Some(c) = self.catatan_koersi.clone() {
+            msg.push('\n');
+            msg.push_str(&c);
+        }
+        if let Some(c) = self.catatan_bayang.clone() {
             msg.push('\n');
             msg.push_str(&c);
         }
@@ -1092,6 +1115,11 @@ impl Codegen {
                     self.jemb_terpancar += 1;
                     if let Err(e) = self.pancarkan_buram_jembatan(no) { self.errors.push(e); }
                 }
+                None if self.pakai_json_buram && self.json_terpancar < self.tipe_buram.len() => {
+                    let no = self.json_terpancar;
+                    self.json_terpancar += 1;
+                    if let Err(e) = self.pancarkan_buram_json(no) { self.errors.push(e); }
+                }
                 None if self.ada_keluarga_tertunda() => {
                     if let Err(e) = self.pancarkan_keluarga() { self.errors.push(e); }
                 }
@@ -1191,6 +1219,9 @@ impl Codegen {
         }
         if self.pakai_jemb_buram {
             out.push_str(&self.definisi_buram_jembatan());
+        }
+        if self.pakai_json_buram {
+            out.push_str(&self.definisi_buram_json());
         }
         out.push_str(&self.definisi_metode_dinamis());
         out.push_str(&self.definisi_keluarga());

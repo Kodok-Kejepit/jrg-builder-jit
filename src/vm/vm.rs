@@ -196,7 +196,35 @@ pub enum NativeKhusus {
     Ffi { nomor: u16 },
 }
 
+/// Tawaran terima sebuah `select` di VM: didaftarkan `SelectEnd`, ditutup lengan pertama putaran berikutnya.
+pub(crate) struct PilihVm {
+    pub(crate) t: std::sync::Arc<crate::antrean::Tawaran<VmValue>>,
+    pub(crate) kanal: Vec<super::channel::VmChannel>,
+    pub(crate) masuk: Option<(usize, VmValue)>,
+    pub(crate) ditutup: bool,
+}
+
+impl Vm {
+    /// Tarik tawaran `select` dari semua kanalnya (lengan berhasil, galat, atau `default`).
+    pub(crate) fn pilih_selesai(&mut self) {
+        if let Some(p) = self.pilih.take() { for c in &p.kanal { c.tarik_tawaran(&p.t); } }
+        self.pilih_kanal.clear();
+        self.pilih_buntu = None;
+    }
+    /// Awal putaran: tutup tawarannya sekali; nilai yang sudah masuk dikembalikan nomor kanalnya.
+    pub(crate) fn pilih_tutup(&mut self) -> Option<usize> {
+        let p = self.pilih.as_mut()?;
+        if !p.ditutup { p.ditutup = true; p.masuk = p.t.tutup(); }
+        p.masuk.as_ref().map(|(n, _)| *n)
+    }
+}
+
 pub struct Vm {
+    /// `select` yang sedang berputar tanpa case siap (detektor kebuntuan); dilepas begitu satu lengan jalan.
+    pub(crate) pilih_buntu: Option<crate::antrean::buntu::PutaranPilih>,
+    /// Tawaran terima `select` yang sedang menunggu, dan kanal terima yang gagal di putaran ini (AGI-20261119-52).
+    pub(crate) pilih: Option<PilihVm>,
+    pub(crate) pilih_kanal: Vec<super::channel::VmChannel>,
     pub stack:    Vec<VmValue>,
     pub globals:  crate::hash_cepat::PetaCepat<String, VmValue>,
     pub(crate) frames:   Vec<CallFrame>,
@@ -223,6 +251,9 @@ impl Vm {
     /// deklarasi program tidak pernah bisa menimpa sebuah builtin.
     pub fn new() -> Self {
         Vm {
+            pilih_buntu: None,
+            pilih: None,
+            pilih_kanal: Vec::new(),
             stack: Vec::with_capacity(256),
             globals: Default::default(),
             frames: Vec::with_capacity(64),
@@ -453,7 +484,8 @@ impl Vm {
         }
 
         // 2. Penerima bawaan yang memang punya HOF ini — aturan varian sama dengan interpreter.
-        let varian = obj.bagian_enum().map(|(_, v, _)| v.to_string());
+        // Cuma `Option`/`Result`: enum program bervarian `Some`/`Ok` tidak mewarisi HOF-nya (AGI-20261120-09).
+        let varian = obj.bagian_enum().filter(|(t, _, _)| matches!(*t, "Option" | "Result")).map(|(_, v, _)| v.to_string());
         let punya = match (&obj, varian.as_deref()) {
             (VmValue::Array(_), _) => !matches!(method, "map_err" | "and_then"),
             (_, Some(v)) => match method {
@@ -895,7 +927,7 @@ pub(crate) fn vm_ptr_step(a: &[VmValue], fname: &str, delta: i128) -> Result<VmV
         return Err(format!("{}: null pointer dereference", fname));
     }
     let cell = vm_ptr_cell(a.get(0).unwrap_or(&VmValue::Nil), fname)?;
-    let mut g = cell.lock().unwrap_or_else(|p| p.into_inner());
+    let mut g = crate::dok::ptr::kunci_sel(&cell)?;
     let baru = match &*g {
         VmValue::Int(n)   => VmValue::Int(n.checked_add(delta).ok_or_else(|| format!(
             "{}: {}", fname, crate::interpreter::pesan_luber("+", *n, delta)))?),

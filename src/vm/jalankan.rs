@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use super::vm::PilihVm;
 use super::opcode::OpCode;
 use super::value::{Label, Peta, VmValue, VmFunction, VmClosure, UpvalSrc};
 use super::channel::{VmChannel, spawn_goroutine, SpawnTask};
@@ -1286,6 +1287,7 @@ impl Vm {
                     // Sama dengan `<-c`/`c <- v`: operasi yang tak akan pernah berhasil adalah
                     // galat — dulu `select` menggantung, atau menjawab `nil`.
                     if let VmValue::Channel(c) = self.pop(sp)? {
+                        if c.is_closed() { self.pilih_selesai(); }
                         if arg == 0 && c.is_closed() && c.len() == 0 {
                             return Err(VmError::at(crate::antrean::PESAN_TERIMA_TERTUTUP.to_string(), sp));
                         }
@@ -1307,9 +1309,23 @@ impl Vm {
                             // `coba_terima`, bukan `has_value` + `recv`: di channel tanpa penyangga
                             // pengirim yang menunggu baru menaruh nilainya sesudah melihat penerima.
                             self.pop(sp)?;
-                            match c.coba_terima() {
-                                Ok(val) => self.push(val),
-                                Err(_) => self.frames.last_mut().unwrap().ip = arg as usize,
+                            // Nilai yang masuk lewat tawaran milik lengan kanalnya; lengan lain dilewati.
+                            if let Some(nomor) = self.pilih_tutup() {
+                                if nomor == c.nomor() {
+                                    let (_, val) = self.pilih.as_mut().and_then(|p| p.masuk.take()).expect("baru diperiksa");
+                                    self.pilih_selesai();
+                                    self.push(val);
+                                } else {
+                                    self.frames.last_mut().unwrap().ip = arg as usize;
+                                }
+                            } else {
+                                match c.coba_terima() {
+                                    Ok(val) => { self.pilih_selesai(); self.push(val) }
+                                    Err(_) => {
+                                        if c.kapasitas() == 0 { self.pilih_kanal.push(c.clone()); }
+                                        self.frames.last_mut().unwrap().ip = arg as usize
+                                    }
+                                }
                             }
                         }
                         // Bukan channel DITOLAK: dulu dianggap "belum siap", jadi
@@ -1325,7 +1341,12 @@ impl Vm {
                     let ch  = self.peek(1, sp)?.clone();
                     match ch {
                         VmValue::Channel(c) => {
-                            if c.try_send(val.clone()).map_err(|e| VmError::at(e, sp))? {
+                            // Ada nilai masuk lewat tawaran: lengan kirim tidak boleh ikut jalan.
+                            let terkirim = if self.pilih_tutup().is_some() { false } else {
+                                c.try_send(val.clone()).map_err(|e| { self.pilih_selesai(); VmError::at(e, sp) })?
+                            };
+                            if terkirim {
+                                self.pilih_selesai();
                                 self.pop(sp)?; // val
                                 self.pop(sp)?; // ch
                                 // Fall through to arm body
@@ -1341,6 +1362,18 @@ impl Vm {
                 }
                 OpCode::SelectEnd => {
                     if arg != u32::MAX {
+                        if crate::antrean::buntu::PutaranPilih::putaran(&mut self.pilih_buntu) {
+                            self.pilih_selesai();
+                            return Err(VmError::at(crate::antrean::PESAN_BUNTU.to_string(), sp));
+                        }
+                        // Putaran tanpa hasil: tawaran terima didaftarkan di kanal tanpa penyangga dan dibuka.
+                        let kanal = std::mem::take(&mut self.pilih_kanal);
+                        let p = self.pilih.get_or_insert_with(|| PilihVm {
+                            t: crate::antrean::Tawaran::baru(), kanal: Vec::new(), masuk: None, ditutup: false });
+                        for c in kanal { if !p.kanal.iter().any(|x| x.sama(&c)) { p.kanal.push(c); } }
+                        p.ditutup = false;
+                        p.t.buka();
+                        for c in &p.kanal { c.tawarkan_terima(&p.t); }
                         std::thread::sleep(std::time::Duration::from_micros(200));
                         self.frames.last_mut().unwrap().ip = arg as usize;
                     }
@@ -1389,7 +1422,7 @@ impl Vm {
                     crate::host::tulis(&v.to_string());
                     self.push(VmValue::Nil);
                 }
-                OpCode::SelectDefault => { /* default arm no-op */ }
+                OpCode::SelectDefault => { self.pilih_selesai(); }
                 OpCode::GagalCocok => {
                     let v = self.peek(0, sp)?;
                     let pesan = if arg >= 2 {

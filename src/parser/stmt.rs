@@ -125,8 +125,12 @@ impl Parser {
             TokenKind::Ident(n)
                 if matches!(n.as_str(), "def" | "function" | "func")
                     && matches!(self.peek_kind(1), Some(TokenKind::Ident(_)))
-                    && matches!(self.peek_kind(2), Some(TokenKind::LParen)) =>
-                Some(format!("fungsi di JRG ditulis `fn nama(a, b) {{ .. }}`, bukan `{} nama(..)`", n)),
+                    && matches!(self.peek_kind(2), Some(TokenKind::LParen)) => {
+                let n = n.clone();
+                // Badan berkurawal (JS/Go) dilompati utuh; badan Python tanpa kurawal dibiarkan.
+                if self.kurung_lalu_kurawal(2) { self.lompati_bentuk_berblok(); }
+                Some(format!("fungsi di JRG ditulis `fn nama(a, b) {{ .. }}`, bukan `{} nama(..)`", n))
+            }
             TokenKind::KwFor if matches!(self.peek_kind(1), Some(TokenKind::LParen)) && self.kurung_berisi_titik_koma(1) => {
                 self.lompati_bentuk_berblok();
                 Some(concat!(
@@ -167,6 +171,22 @@ impl Parser {
         pesan.map(|p| self.error_di(p, galat_di))
     }
 
+    /// Sesudah `)` pasangan `(` di `peek(i)` ada `{` sebelum `:`, `;` atau akhir berkas.
+    fn kurung_lalu_kurawal(&self, i: usize) -> bool {
+        let mut dalam = 0usize;
+        let mut tutup = false;
+        for t in &self.tokens[(self.pos + i).min(self.tokens.len())..] {
+            match t.kind {
+                TokenKind::LParen if !tutup => dalam += 1,
+                TokenKind::RParen if !tutup => { dalam -= 1; if dalam == 0 { tutup = true; } }
+                TokenKind::LBrace if tutup => return true,
+                TokenKind::Colon | TokenKind::Semi | TokenKind::Eof | TokenKind::RBrace if tutup => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// `(` di `peek(i)` memuat `;` sebelum `)` pasangannya: kepala `for` gaya C, bukan pola tuple.
     fn kurung_berisi_titik_koma(&self, i: usize) -> bool {
         let mut dalam = 0usize;
@@ -190,7 +210,11 @@ impl Parser {
                 TokenKind::LParen | TokenKind::LBracket => kurung += 1,
                 TokenKind::RParen | TokenKind::RBracket => kurung = kurung.saturating_sub(1),
                 TokenKind::RBrace if kurung == 0 => return,
-                TokenKind::LBrace if kurung == 0 => { self.advance(); self.tutup_kurawal(1); return; }
+                TokenKind::LBrace if kurung == 0 => {
+                    self.advance(); self.tutup_kurawal(1);
+                    self.lompat_sampai = Some(self.pos);
+                    return;
+                }
                 _ => {}
             }
             self.advance();
@@ -276,7 +300,7 @@ impl Parser {
             // desugared straight into the same `SpawnStmt` AST node so the
             // interpreter needs no extra code path to support it.
             TokenKind::KwGo     => self.parse_go_stmt().map(Stmt::Spawn),
-            TokenKind::KwSelect => self.parse_select_stmt().map(Stmt::Select),
+            TokenKind::KwSelect => self.parse_select_stmt().map(turunkan_select),
             TokenKind::KwDefer  => self.parse_defer_stmt().map(Stmt::Defer),
             TokenKind::LBrace   => self.parse_block().map(Stmt::Block),
             _ => {
@@ -341,9 +365,9 @@ impl Parser {
             (k1, k2),
             (Some(TokenKind::StringLit(_)), Some(TokenKind::Colon))
                 | (Some(TokenKind::RawStringLit(_)), Some(TokenKind::Colon))
-                | (Some(TokenKind::Ident(_)), Some(TokenKind::Colon))
                 | (Some(TokenKind::IntLit(_)), Some(TokenKind::Colon))
-        )
+        ) || matches!((k1, k2), (Some(TokenKind::Ident(n)), Some(TokenKind::Colon)) if !n.starts_with('\''))
+        // `{ 'luar: loop { .. } }` itu blok berlabel, bukan dict (AGI-20261119-04): label terbaca `Ident("'luar")`.
     }
 
     /// `{"nama": "budi", "umur": 17}` — literal dict.
@@ -608,6 +632,8 @@ impl Parser {
 
         let mut nama = Vec::new();
         kumpul_nama_pola(&l.pattern, &mut nama);
+        let mut ber_mut = Vec::new();
+        super::nama_mut_pola(&l.pattern, &mut ber_mut);
 
         // Tanpa nama terikat, tidak ada yang perlu keluar dari `match` —
         // jadi ia cukup jadi statement.
@@ -628,12 +654,12 @@ impl Parser {
         // Satu nama keluar apa adanya; beberapa nama dibungkus tuple, karena
         // `let (a, b) = …` memang sudah bisa membongkarnya.
         let (pola_kiri, nilai_arm) = if nama.len() == 1 {
-            (Pattern::Ident { name: nama[0].clone(), is_mut: false, span },
+            (Pattern::Ident { name: nama[0].clone(), is_mut: ber_mut.contains(&nama[0]), span },
              Expr::Ident(nama[0].clone(), span))
         } else {
             (Pattern::Tuple {
                 elems: nama.iter().map(|n| Pattern::Ident {
-                    name: n.clone(), is_mut: false, span }).collect(),
+                    name: n.clone(), is_mut: ber_mut.contains(n), span }).collect(),
                 span,
              },
              Expr::Tuple {
@@ -697,7 +723,7 @@ impl Parser {
         let sisa: MatchBody = if self.eat(&TokenKind::KwElse) {
             if self.at_exact(&TokenKind::KwIf) {
                 let lanjut = if matches!(self.peek_kind(1), Some(TokenKind::KwLet)) {
-                    self.parse_if_let()?
+                    self.dengan_sarang(Self::parse_if_let)?
                 } else {
                     Expr::If(Box::new(self.parse_if_stmt()?))
                 };
@@ -761,6 +787,13 @@ impl Parser {
         let mut else_ifs = Vec::new();
         let mut else_ = None;
         while self.eat(&TokenKind::KwElse) {
+            // `if c { } else if let P = e { }`: sisanya diurai `parse_if_let` dan jadi blok `else` (AGI-20261119-04).
+            if self.at_exact(&TokenKind::KwIf) && matches!(self.peek_kind(1), Some(TokenKind::KwLet)) {
+                let s0 = self.span_lo();
+                let e = self.dengan_sarang(Self::parse_if_let)?;
+                else_ = Some(Block { stmts: Vec::new(), tail: Some(Box::new(e)), span: self.merge_span(s0) });
+                break;
+            }
             if self.at_exact(&TokenKind::KwIf) {
                 self.advance();
                 let (ei_init, ei_cond) = self.parse_if_init_and_cond()?;
@@ -1146,4 +1179,29 @@ impl Parser {
         let expr = Box::new(self.parse_expr()?);
         Ok(DeferStmt { expr, span: self.merge_span(lo) })
     }
+}
+
+
+/// `select` dengan satu case tanpa `default` ADALAH operasi kanalnya yang memblokir: tiga mesin lalu memakai jalur
+/// pemblokir yang bisa bertemu dengan `select` lain di kanal tanpa penyangga dan yang terpantau detektor kebuntuan —
+/// dulu dua `select` seperti itu saling menunggu selamanya (AGI-20261119-52).
+fn turunkan_select(sel: SelectStmt) -> Stmt {
+    if sel.default.is_some() || sel.cases.len() != 1 { return Stmt::Select(sel); }
+    let (pertama, body) = match sel.cases.into_iter().next().unwrap() {
+        SelectCase::Send { chan, val, body, span } => (Stmt::Expr(Box::new(Expr::Send { chan, val, span })), body),
+        SelectCase::Let { stmt, body, .. } => (Stmt::Let(stmt), body),
+        SelectCase::Recv { names, is_decl, chan, body, span } => {
+            let r = Expr::Recv { chan, span };
+            let st = match names.first().cloned() {
+                None => Stmt::Expr(Box::new(r)),
+                Some(_) if is_decl => Stmt::ShortDecl(ShortDeclStmt { names, values: vec![r], span }),
+                Some(n) => Stmt::Assign(AssignStmt { targets: vec![Expr::Ident(n, span)], op: AssignOp::Eq,
+                                                     values: vec![r], span }),
+            };
+            (st, body)
+        }
+    };
+    let mut stmts = vec![pertama];
+    stmts.extend(body.stmts);
+    Stmt::Block(Block { stmts, tail: body.tail, span: sel.span })
 }

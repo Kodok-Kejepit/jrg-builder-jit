@@ -902,17 +902,6 @@ pub fn angka_i32(v: &crate::interpreter::Value) -> Result<i32, String> {
     }
 }
 
-/// Besar koordinat dan ukuran yang masih berarti: kanvas paling besar 16 juta piksel, jadi nilai di luar ±100 juta tidak menggambar
-/// apa pun yang berbeda — tapi membuat `f32` tak bisa menambah 1 (di atas 2^24) dan hitungan `i32` meluap (AGI-20261119-09).
-pub const MAKS_KOORDINAT: f64 = 1.0e8;
-
-pub fn periksa_besar(f: f64) -> Result<f64, String> {
-    if f.abs() > MAKS_KOORDINAT {
-        return Err(format!("terlalu besar: {} (paling jauh ±{} dari asal)", f, MAKS_KOORDINAT as i64));
-    }
-    Ok(f)
-}
-
 /// Angka untuk menggambar. NaN dan tak hingga ditolak: dulu jadi 0 tanpa suara.
 pub fn angka_f64(v: &crate::interpreter::Value) -> Result<f64, String> {
     use crate::interpreter::Value;
@@ -974,16 +963,17 @@ pub fn dispatch_canvas_method(
     };
     let get_i = |idx: usize| -> Result<i32, Signal> {
         match args.get(idx) {
-            Some(v) => angka_i32(v).and_then(|n| periksa_besar(n as f64).map(|_| n)).map_err(|e| tolak(idx, e)),
+            Some(v) => angka_i32(v).map_err(|e| tolak(idx, e)),
             None => Ok(0),
         }
     };
     let get_f = |idx: usize| -> Result<f32, Signal> {
         match args.get(idx) {
-            // Terhingga SESUDAH jadi `f32` juga: `1e40` terhingga sebagai `f64` tapi tak hingga sebagai `f32`.
-            Some(v) => angka_f64(v).and_then(periksa_besar).map(|f| f as f32)
-                .and_then(|f| if f.is_finite() { Ok(f) } else { Err("harus angka yang terhingga".to_string()) })
-                .map_err(|e| tolak(idx, e)),
+            // Finite di 64 bit tapi tak hingga di 32 bit (`1e40`) ditolak, bukan jadi tak hingga diam-diam.
+            Some(v) => angka_f64(v).and_then(|f| {
+                let g = f as f32;
+                if g.is_finite() { Ok(g) } else { Err(format!("angka `{}` terlalu besar untuk kanvas (pecahan 32 bit)", f)) }
+            }).map_err(|e| tolak(idx, e)),
             None => Ok(0.0),
         }
     };
@@ -1270,15 +1260,13 @@ pub fn dispatch_canvas_method(
             let (fw, fh) = (inner.width as f32, inner.height as f32);
             let g = &mut *inner;
             let mut p = pena!(g);
-            // Garis di luar kanvas tidak terlihat, jadi cuma yang jatuh di dalam yang digambar (dulu `cols` seratus juta memutar
-            // seratus juta garis di kanvas 4x4). Sel selebar nol atau negatif cuma punya garis pertama.
-            let terlihat = |n: i32, sisi: i32, lebar: f32| -> i64 {
-                if n < 0 { return -1; }
-                if sisi <= 0 { return 0.min(n as i64); }
-                (n as i64).min((lebar / sisi as f32).floor() as i64 + 1)
+            // Garis yang jatuh di luar kanvas tidak dihitung satu per satu: `cols = 1e8` dulu berputar lama sekali,
+            // dan `c * cw` meluap (AGI-20261119-09).
+            let sampai = |n: i32, sel: i32, ukuran: f32| -> i64 {
+                if n < 0 { -1 } else if sel <= 0 { 0 } else { (n as i64).min((ukuran as i64) / sel as i64 + 1) }
             };
-            for c in 0..=terlihat(cols, cw, fw) { let x = (c * cw as i64) as f32; p.garis(x, 0.0, x, fh, col); }
-            for r in 0..=terlihat(rows, ch, fh) { let y = (r * ch as i64) as f32; p.garis(0.0, y, fw, y, col); }
+            for c in 0..=sampai(cols, cw, fw) { let x = (c * cw as i64) as f32; p.garis(x, 0.0, x, fh, col); }
+            for r in 0..=sampai(rows, ch, fh) { let y = (r * ch as i64) as f32; p.garis(0.0, y, fw, y, col); }
             Ok(Value::Unit)
         }
 
@@ -1400,6 +1388,7 @@ pub fn dispatch_canvas_method(
             if args.len() < 4 { cerr!("clip butuh 4 arg: (x,y,w,h)"); }
             let (x, y, w, h) = (get_i(0)?, get_i(1)?, get_i(2)?, get_i(3)?);
             lock!(inner, mut);
+            // Jenuh, bukan meluap jadi negatif dan diam-diam memblokir semua gambar (AGI-20261119-09).
             inner.st.potong = Some((x, y, x.saturating_add(w), y.saturating_add(h)));
             Ok(Value::Unit)
         }

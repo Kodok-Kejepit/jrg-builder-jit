@@ -43,7 +43,7 @@ pub fn utama(argumen: Vec<String>) {
             None => {
                 crate::ecetak_t!(
                     "error: nada `{}` tidak ada. yang tersedia: {}",
-                    n, crate::diag::Nada::SEMUA.join(", ")
+                    n, crate::diag::Nada::daftar()
                 );
                 process::exit(2);
             }
@@ -55,14 +55,14 @@ pub fn utama(argumen: Vec<String>) {
     }
 
     let result = match cli.command {
-        JrgmCommand::New    { name, kind, android, bahasa: Some(b) }
+        JrgmCommand::New    { name, kind, android, bebas, bahasa: Some(b) }
             if !b.trim().eq_ignore_ascii_case("jrg")
-            => if android || kind != "bin" {
+            => if android || bebas || kind != "bin" {
                 Err("`--bahasa` tidak bisa digabung dengan `--kind`/`--android`: rangka bahasa lain cuma program biasa".into())
             } else { bahasa::resep(&b).and_then(|r| bahasa::rangka(&name, r)) },
 
-        JrgmCommand::New    { name, kind, android, .. }
-            => cmd_new(&name, if android { "android" } else { &kind }),
+        JrgmCommand::New    { name, kind, android, bebas, .. }
+            => cmd_new(&name, if android { "android" } else if bebas { "bebas" } else { &kind }),
 
         JrgmCommand::Apk    { abi, output, rilis, aab, verbose }
             => android::cmd_apk(abi.as_deref(), output.as_deref(), rilis, aab, verbose),
@@ -79,6 +79,7 @@ pub fn utama(argumen: Vec<String>) {
         JrgmCommand::Build  { profile, target, verbose, skip_python_deps }
             => cmd_build(&profile, target.as_deref(), verbose, skip_python_deps),
 
+        JrgmCommand::Run    { bebas: true, .. } => perintah::cmd_run_bebas(),
         JrgmCommand::Run    { build_profile, args, verbose, prof, use_vm, use_jit, emit_bc, watch, clear, skip_python_deps, .. }
             => cmd_run(&build_profile, &args, verbose, prof, use_vm, use_jit, emit_bc, watch, clear, skip_python_deps),
 
@@ -161,6 +162,19 @@ fn singkatan_bahasa(mut a: Vec<String>) -> Vec<String> {
         }
     }
     a
+}
+
+/// Menulis `jrgm.toml`/`jrgm.lock` utuh atau tidak sama sekali: berkas sementara di folder yang
+/// sama, `fsync`, lalu `rename` — proses yang mati di tengah tidak meninggalkan manifes terpotong.
+pub(crate) fn tulis_utuh(p: &std::path::Path, isi: impl AsRef<[u8]>) -> std::io::Result<()> {
+    use std::io::Write;
+    let nama = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let sementara = p.with_file_name(format!(".{}.jrgm-{}", nama, std::process::id()));
+    let hasil = std::fs::File::create(&sementara)
+        .and_then(|mut f| { f.write_all(isi.as_ref())?; f.sync_all() })
+        .and_then(|_| std::fs::rename(&sementara, p));
+    if hasil.is_err() { let _ = std::fs::remove_file(&sementara); }
+    hasil
 }
 
 // ─── Tes unit ──────────────────────────────────────────────────────────────
@@ -293,9 +307,9 @@ mod tes {
             assert!(e.contains(pesan), "{:?}: {}", isi, e);
         }
         // Dulu salah baca: `\"` di teks, `,` di dalam tabel sebaris, `[dependencies.z]`; `kode = 3` tetap sah.
-        let m = manifes::Manifest::parse_from_str("[package]\nname = \"a\\\"b\"\n[dependencies]\nk = { path = \"../a,b\" }\n\
+        let m = manifes::Manifest::parse_from_str("[package]\nrepositori = \"a\\\"b\"\n[dependencies]\nk = { path = \"../a,b\" }\n\
             [dependencies.z]\npath = \"../z\"\n[android]\nkode = 3\n", p).unwrap();
-        assert_eq!(m.name, "a\"b");
+        assert_eq!(m.repositori.as_deref(), Some("a\"b"));
         assert_eq!(m.dependencies.iter().map(|d| d.akar.clone()).collect::<Vec<_>>(), vec![p.join("../a,b"), p.join("../z")]);
         assert_eq!(m.android.kode.as_deref(), Some("3"));
         let m = manifes::Manifest::parse_from_str("[dependencies]\nb = { git = \"https://x\", version = \"1.0.0-rc.1\" }\n", p).unwrap();

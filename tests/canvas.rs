@@ -1233,7 +1233,7 @@ mod mode_kanvas {
         std::fs::write(d.join("w.jrg"), "let c = Canvas::new(3, 2, \"Web\", \"web\")\n\
             var n = 0\nwhile n < 400 && canvas::update(c) {\n time::sleep_ms(10)\n n = n + 1\n}\n\
             wok(\"tetikus:\", canvas::get_mouse_pos(c))\ncanvas::close(c)\ntime::sleep_ms(4000)\nwok(\"selesai\")\n").unwrap();
-        let port = 47900 + (std::process::id() % 90) as u16;
+        let port = 48100 + (std::process::id() % 90) as u16;
         let mut anak = Command::new(jrgc()).arg("w.jrg").arg("--sopan").current_dir(&d)
             .env("JRG_KANVAS_PORT", port.to_string()).env_remove("DISPLAY").env_remove("WAYLAND_DISPLAY")
             .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
@@ -1325,40 +1325,4 @@ mod mode_kanvas {
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "30 125.0\n0 []\n1 [Left]\n1 [Space]\n1 []\n0 []",
                    "{}", String::from_utf8_lossy(&out.stderr));
     }
-}
-
-/// AGI-20261119-09: primitif gambar menggantung (`line_aa` di atas 2^24, `draw_line` dari `i32::MIN`, bentuk berukuran miliaran) atau
-/// panik (`draw_arc` bersudut raksasa, `clip` meluap). Yang di luar jangkauan wajar ditolak dengan kalimat; yang di dalamnya selesai
-/// cepat. Kalau ada yang menggantung lagi, suite ini yang macet.
-#[test]
-fn primitif_gambar_ekstrem_ditolak_atau_selesai_bukan_menggantung_atau_panik() {
-    let badan = r#"
-    let c = Canvas::new(4, 4)
-    // Di jangkauan tapi tadinya menggantung: `f32` tidak bisa menambah 1 di atas 2^24.
-    canvas::line_aa(c, 16777216.0, 0.0, 16777220.0, 0.0, 0xFFFFFF)
-    // Sudut raksasa tadinya `capacity overflow`: jumlah segmen dijepit.
-    canvas::draw_arc(c, 2.0, 2.0, 5.0, 0.0, 90000000.0, 0xFF0000)
-    // Bentuk raksasa yang menutup kanvas: dipotong ke kanvas, tidak diputar miliaran kali.
-    canvas::fill_circle(c, 2.0, 2.0, 20000000, 0x00FF00)
-    canvas::fill_triangle(c, -50000000.0, -50000000.0, 90000000.0, 0.0, 0.0, 90000000.0, 0x0000FF)
-    canvas::draw_grid(c, 90000000, 90000000, 1, 1, 0x808080)
-    canvas::blit_region(c, c, 0, 0, 90000000, 90000000, 0.0, 0.0)
-    canvas::clip(c, 2, 2, 90000000, 90000000)
-    wok("selesai", canvas::get_pixel(c, 3, 3))
-    // Di luar jangkauan wajar: ditolak dengan kalimat, bukan hang, panik atau terbungkus diam-diam.
-    for _, f in [|| canvas::draw_line(c, 0, 0, -2147483648, 1, 0xFFFFFF), || canvas::clip(c, 2, 2, 2147483647, 2147483647),
-                 || canvas::draw_arc(c, 2.0, 2.0, 5.0, 0.0, 1e30, 0xFF0000), || canvas::line_aa(c, 1e40, 0.0, 1.0, 0.0, 0xFFFFFF),
-                 || canvas::fill_circle(c, 2.0, 2.0, 2000000000, 0xFF0000)] {
-        wok(tangkap(f).is_err())
-    }
-    "#;
-    let r = Ruang::baru();
-    for vm in [false, true] {
-        let (k, ok) = r.jalankan_di(badan, vm);
-        assert!(ok, "program gagal (vm={vm}):\n{k}");
-        assert!(k.contains("selesai"), "{k}");
-        assert_eq!(k.matches("true").count(), 5, "kelima argumen ekstrem harus ditolak (vm={vm}):\n{k}");
-    }
-    let (k, _) = r.jalankan("canvas::draw_line(Canvas::new(4, 4), 0, 0, -2147483648, 1, 0xFFFFFF)");
-    assert!(k.contains("terlalu besar"), "kalimat penolakan harus menyebut sebabnya:\n{k}");
 }

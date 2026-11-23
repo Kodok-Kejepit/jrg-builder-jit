@@ -9,6 +9,8 @@ pub mod ruang_tipe;
 pub mod hash_cepat;
 pub mod json_inti;
 pub mod kutip_inti;
+pub mod kripto_inti;
+pub mod kripto_cepat;
 pub mod kompres;
 pub mod diag;
 pub mod host;
@@ -30,6 +32,7 @@ pub mod jit;
 /// Backend ketiga: lowering AST ke LLVM IR, lalu native lewat `clang`.
 pub mod llvm;
 pub mod wasm;
+pub mod bebas;
 
 /// Bahasa pesan JRG (Indonesia/Inggris) dan penerjemah pesan di pintu keluar.
 pub mod terjemah;

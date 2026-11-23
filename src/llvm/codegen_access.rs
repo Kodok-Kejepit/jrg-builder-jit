@@ -46,7 +46,9 @@ impl Codegen {
             return Err(super::galat::tandai(span, format!(
                 "{}butuh bilangan bulat, dapat `{}`", awalan, v.ty.nama_typeof())));
         }
-        Ok(self.coerce_longgar(v, &JrgType::I64))
+        // `u64`/`i128` yang tidak muat 64 bit bertanda ditolak saat jalan: dulu `u64::MAX` dibaca -1 dan `2^64` dibaca 0,
+        // jadi `math::gcd`/`range`/`str::repeat` menjawab salah tanpa suara (AGI-20261120-05).
+        Ok(self.ke_i64_terperiksa(v, if siapa.is_empty() { "argumen bulat" } else { siapa }))
     }
 
     pub fn coerce(&mut self, v: &Val, target: &JrgType) -> Val {
@@ -85,7 +87,16 @@ impl Codegen {
         }
         // Fungsi ke fungsi beda tipe yang menyebut nilai bertag: dibungkus adaptor.
         if let (JrgType::Fn(p1, r1), JrgType::Fn(p2, r2)) = (&v.ty, target) {
-            let bisa = |a: &JrgType, b: &JrgType| a == b || *a == JrgType::Any || *b == JrgType::Any
+            // `Option<T>` lawan `Option<bertag>` juga: `coerce` di adaptor mengotakkan atau membuka isinya.
+            let opsi = |a: &JrgType, b: &JrgType| match (a, b) {
+                (JrgType::Enum(x), JrgType::Enum(y)) => match (self.option_args.get(x), self.option_args.get(y)) {
+                    (Some(tx), Some(ty)) => (*tx == JrgType::Any) != (*ty == JrgType::Any)
+                        && super::codegen_any::tag_untuk(if *tx == JrgType::Any { ty } else { tx }).is_some(),
+                    _ => false,
+                },
+                _ => false,
+            };
+            let bisa = |a: &JrgType, b: &JrgType| a == b || *a == JrgType::Any || *b == JrgType::Any || opsi(a, b)
                 || matches!((a, b), (JrgType::Array(x, _), JrgType::Slice(y)) if super::codegen_any::luruh(x) == **y || **y == JrgType::Any);
             if p1.len() == p2.len() && p1.iter().zip(p2.iter()).all(|(a, b)| bisa(a, b)) && (bisa(r1, r2) || **r2 == JrgType::Unit) {
                 return self.adaptasi_fungsi(v, target);
@@ -357,7 +368,8 @@ impl Codegen {
             self.tempat_tiruan_sesudah(&pesan, span)?;
             return Ok(Val { text: "0".into(), ty: JrgType::I64 });
         }
-        Ok(self.coerce_longgar(&iv, &JrgType::I64))
+        // Dijenuhkan, bukan dipotong: `a[2^64]` dulu membaca `a[0]`, `a[u64::MAX]` membaca `a[-1]` (AGI-20261120-14).
+        Ok(self.jenuh_i64(&iv))
     }
 
     // ── places (lvalues) ────────────────────────────────────────────────
@@ -568,6 +580,16 @@ impl Codegen {
     /// Alamat sasaran penugasan: menulis ke field sebuah handle pustaka ditolak saat jalan.
     pub(crate) fn tempat_tulis(&mut self, t: &Expr) -> Result<(String, JrgType), String> {
         match t {
+            // `.len`/`.is_empty` cuma field BACA atas teks/larik: menulisnya dulu menimpa panjang internal `%JrgSlice`/
+            // `%JrgStr`, lalu pemeriksaan batas membaca panjang palsu — OOB baca/tulis (AGI-20261119-48).
+            Expr::Field { obj, field, span } if matches!(field.as_str(), "len" | "is_empty")
+                && matches!(self.tipe_jalur(obj), Some(JrgType::Str | JrgType::Slice(_) | JrgType::Array(..))) => {
+                let ty = self.tipe_jalur(obj).unwrap();
+                self.tulis_antara = true;
+                let _ = self.get_place(obj)?;
+                return self.tempat_tiruan_sesudah(
+                    &crate::interpreter::galat_index::bukan_pemilik_field(&ty.nama_typeof(), field), *span);
+            }
             Expr::Field { obj, field, span } => {
                 if let Some(h) = self.tipe_jalur(obj).and_then(|ty| Self::nama_handle_pustaka(&ty)) {
                     self.tulis_antara = true;
@@ -610,8 +632,10 @@ impl Codegen {
                 };
                 // Satu pintu untuk BACA dan TULIS: `codegen_field` dan jalur target
                 // penugasan dua-duanya lewat sini, jadi penegakan visibilitas tidak bisa …
-                crate::vm::visibilitas::periksa(super::generik::dasar(name), field, self.cur_self_ty.as_deref())
-                    .map_err(|e| crate::llvm::galat::tandai(span, e))?;
+                if !self.baca_semua_field {
+                    crate::vm::visibilitas::periksa(super::generik::dasar(name), field, self.cur_self_ty.as_deref())
+                        .map_err(|e| crate::llvm::galat::tandai(span, e))?;
+                }
                 let fty = layout.fields[idx].1.clone();
                 let r = self.fresh("fld.");
                 self.emit(format!("{} = getelementptr {}, ptr {}, i32 0, i32 {}", r, oty.llvm_ty(), optr, idx));
@@ -1064,7 +1088,7 @@ impl Codegen {
                 return self.dict_baca(&d, &k, span);
             }
             let iv = self.codegen_expr(idx, Some(&JrgType::I64))?;
-            let iv = self.coerce_longgar(&iv, &JrgType::I64);
+            let iv = self.jenuh_i64(&iv);
             let (tp, tt) = self.get_index_place(&tempat, &dalam, &iv, span)?;
             return Ok(self.load_place(&tp, &tt));
         }
@@ -1131,14 +1155,10 @@ impl Codegen {
         Ok(self.load_place(&eptr, &ety))
     }
 
-    /// Jumlah karakter teks `(sptr, slen)`: memo runtime dibaca langsung di IR, runtime dipanggil cuma kalau
-    /// memonya teks lain. Teks ASCII ⇔ jumlah karakter = panjang bita.
-    pub(crate) fn jumlah_karakter(&mut self, sptr: &str, slen: &str) -> String {
-        // Memo lokal fungsi dulu: di loop `char_at(s, i)` memo global dibaca dan dibandingkan ulang tiap karakter,
-        // karena jalur lambatnya memanggil runtime yang bisa mengubahnya (`string_ops`); yang lokal jadi register.
-        // Aman dengan alasan memo global: teks tidak diubah di tempat dan arena tidak memakai ulang alamat.
+    /// Slot memo `(ptr, panjang bita, jumlah karakter)` fungsi ini, dibuat di blok masuk kalau belum ada.
+    pub(crate) fn memo_lokal(&mut self) -> (String, String, String) {
         let ada = |m: &(String, String, String), baris: &[String]| baris.iter().any(|l| l.starts_with(&format!("  {} =", m.0)));
-        let (lp, ll, ln) = match self.memo_teks_lokal.clone() {
+        match self.memo_teks_lokal.clone() {
             Some(m) if ada(&m, &self.entry_allocas) => m,
             _ => {
                 let m = (self.alloca_raw("tmlp.", "ptr", None), self.alloca_raw("tmll.", "i64", None), self.alloca_raw("tmln.", "i64", None));
@@ -1147,7 +1167,15 @@ impl Codegen {
                 self.memo_teks_lokal = Some(m.clone());
                 m
             }
-        };
+        }
+    }
+
+    /// Jumlah karakter teks `(sptr, slen)`: memo runtime dibaca langsung di IR, runtime dipanggil cuma kalau
+    /// memonya teks lain. Teks ASCII ⇔ jumlah karakter = panjang bita.
+    pub(crate) fn jumlah_karakter(&mut self, sptr: &str, slen: &str) -> String {
+        // Memo lokal dulu: memo global dibaca ulang tiap karakter di loop `char_at` (`string_ops`), yang lokal jadi
+        // register. Alamat yang dipakai ulang sesudah pemulihan arena dibuang `pulihkan_putaran` (AGI-20261119-50).
+        let (lp, ll, ln) = self.memo_lokal();
         let (xp, xl, xn) = (self.fresh("tlp."), self.fresh("tll."), self.fresh("tln."));
         self.emit(format!("{} = load ptr, ptr {}", xp, lp));
         self.emit(format!("{} = load i64, ptr {}", xl, ll));
@@ -1382,7 +1410,7 @@ impl Codegen {
             let sisi = if salah(&lo) { "awal" } else { "akhir" };
             if sisi == "akhir" {
                 if let Some(l) = &lo {
-                    let l = self.coerce_longgar(l, &JrgType::I64);
+                    let l = self.jenuh_i64(l);
                     self.emit_slice_bounds_check(&l, panjang, &panjang.text);
                 }
             }
@@ -1391,8 +1419,8 @@ impl Codegen {
             self.tempat_tiruan_sesudah(&pesan, span)?;
             return Ok(None);
         }
-        let lo_v = lo.map(|v| self.coerce_longgar(&v, &JrgType::I64)).unwrap_or(nol);
-        let hi_v = hi.map(|v| self.coerce_longgar(&v, &JrgType::I64)).unwrap_or_else(|| panjang.clone());
+        let lo_v = lo.map(|v| self.jenuh_i64(&v)).unwrap_or(nol);
+        let hi_v = hi.map(|v| self.jenuh_i64(&v)).unwrap_or_else(|| panjang.clone());
         Ok(Some(self.emit_slice_bounds_check(&lo_v, &hi_v, &panjang.text)))
     }
 
@@ -1497,11 +1525,11 @@ impl Codegen {
         self.emit(format!("{} = call i64 @jrg_str_char_count(ptr {}, i64 {})", n, sptr, slen));
 
         let lo_v = match lo {
-            Some(e) => { let v = self.codegen_expr(e, Some(&JrgType::I64))?; self.coerce_longgar(&v, &JrgType::I64) }
+            Some(e) => { let v = self.codegen_expr(e, Some(&JrgType::I64))?; self.jenuh_i64(&v) }
             None => Val { text: "0".into(), ty: JrgType::I64 },
         };
         let hi_v = match hi {
-            Some(e) => { let v = self.codegen_expr(e, Some(&JrgType::I64))?; self.coerce_longgar(&v, &JrgType::I64) }
+            Some(e) => { let v = self.codegen_expr(e, Some(&JrgType::I64))?; self.jenuh_i64(&v) }
             None => Val { text: n.clone(), ty: JrgType::I64 },
         };
         let (lo_v, hi_v) = self.emit_slice_bounds_check(&lo_v, &hi_v, &n);

@@ -597,6 +597,32 @@ fn uji_di_llvm_seperti_acuan() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `proses::tulis` ke anak yang dihentikan menjawab `Err`, bukan SIGPIPE yang mematikan biner (AGI-20261119-30).
+#[test]
+fn proses_tidak_macet_dan_tidak_mati_sigpipe() {
+    if !ada_clang() || !cfg!(unix) { eprintln!("lewati"); return; }
+    let l = jalankan_llvm("package main\npub fn main() {\n    let besar = str::repeat(\"x\", 300000)\n    let a = proses::mulai(\"sleep\", [\"5\"], dict { batas_ms: 400 }).unwrap()\n    let r = proses::tulis(a, besar)\n    wok(\"tulis selesai\", r.is_err())\n    let b = proses::mulai(\"sleep\", [\"5\"], dict { batas_ms: 400, masukan: besar }).unwrap()\n    wok(\"mulai kembali\")\n    var s = proses::baca(b).unwrap()\n    while !s.selesai { time::sleep_ms(50); s = proses::baca(b).unwrap() }\n    wok(\"habis waktu\", s.habis_waktu)\n    let c = proses::mulai(\"sh\", [\"-c\", \"sleep 2 & echo hai\"]).unwrap()\n    time::sleep_ms(200)\n    var t = proses::baca(c).unwrap()\n    while !t.selesai { time::sleep_ms(50); t = proses::baca(c).unwrap() }\n    wok(\"cucu\", str::trim(t.keluaran))\n}\n");
+    assert!(l.sukses, "{}", l.galat);
+    assert_eq!(l.keluaran, "tulis selesai true\nmulai kembali\nhabis waktu true\ncucu hai");
+}
+
+/// Stack korutin yang selesai dilepas walau banyak yang selesai beruntun sebelum `spawn` berikutnya: jumlah pemetaan
+/// memori tidak ikut jumlah gelombang goroutine (AGI-20261119-12; dulu 2 VMA dan 1 MiB bocor per korutin).
+#[test]
+fn stack_korutin_selesai_dilepas() {
+    if !ada_clang() { eprintln!("lewati: clang tidak ada"); return; }
+    let peta = |gelombang: usize| -> usize {
+        let src = format!("package main\npub fn main() {{ let done = Chan::new(10)\n for b in 0..{} {{\n \
+            for i in 0..10 {{ go {{ done.send(1) }} }}\n for i in 0..10 {{ <-done }} }}\n \
+            wok(len(str::split(fs::read(\"/proc/self/maps\"), \"\\n\"))) }}", gelombang);
+        let l = jalankan_llvm(&src);
+        assert!(l.sukses, "{}\n{}", src, l.galat);
+        l.keluaran.trim().parse().unwrap()
+    };
+    let (sedikit, banyak) = (peta(5), peta(60));
+    assert!(banyak < sedikit + 20, "pemetaan memori naik {} -> {} untuk 50 -> 600 goroutine", sedikit, banyak);
+}
+
 /// Kebuntuan yang terlihat dari goroutine `spawn` atau badan Future mengakhiri programnya SEKALI.
 /// Dulu goroutine itu saja yang tamat, lalu kebuntuan yang sama ditemukan lagi sampai stack habis.
 #[test]
@@ -839,6 +865,29 @@ include!("bersama/paritas_llvm.rs");
 // ───────────────────────────────────────────
 
 const BELUM_DIDUKUNG_LLVM: &[(&str, &str, &str)] = &[
+    // AGI-20261120-14 (#1113): indeks `u64` di luar 64 bit bertanda — ditolak di luar batas (dulu membaca `a[-1]`),
+    // tapi kalimatnya menyebut `i64::MAX`, bukan angka aslinya.
+    ("indeks u64 raksasa", "package main\npub fn main() {\n let a = [10, 20, 30]\n let b = (9223372036854775807 as u64) * 2 + 1\n wok(a[b])\n}",
+     "di luar batas"),
+    // AGI-20261120-05 (#1110): argumen bulat `u64`/`i128` di luar 64 bit bertanda — dulu dibaca -1/0 diam-diam.
+    ("math::gcd atas u64 di luar 64 bit bertanda", "package main\npub fn main() {\n let b = (9223372036854775807 as u64) * 2 + 1\n wok(math::gcd(b, 3))\n}",
+     "di luar 64 bit bertanda belum didukung"),
+    // AGI-20261119-49 (#1106): `**` yang hasilnya tidak muat tipe sempitnya, dan operand di luar 64 bit — dulu dipotong diam-diam.
+    ("pangkat yang tidak muat u8", "package main\npub fn main() { wok((2 as u8) ** (8 as u8)) }", "tidak muat di `u8`"),
+    ("pangkat atas i128 di luar 64 bit", "package main\npub fn main() {\n let b: i128 = (9223372036854775807 as i128) * 16\n wok(b ** (1 as i128))\n}",
+     "di luar 64 bit bertanda belum didukung"),
+    // AGI-20261119-47 (#1105): bulat di luar 64 bit bertanda di wadah campur — dulu terpotong diam-diam (`u64::MAX` jadi -1).
+    ("u64 di luar 64 bit bertanda masuk wadah campur", "package main\npub fn main() {\n let b: u64 = 18446744073709551615\n let xs = [b, \"x\"]\n wok(xs)\n}",
+     "tidak muat di nilai bertag"),
+    // AGI-20261120-21 (#1089): method warisan atas field yang dibayangi anak dengan tipe lain — celah, disebut sebabnya.
+    ("method warisan atas field induk yang dibayangi tipe lain", "package main\nstruct Induk { pub x: int }\nimpl Induk { pub fn baca(self) -> int { self.x + 1 } }\nstruct Anak : Induk { pub x: string }\npub fn main() { wok(Anak { x: \"halo\" }.baca()) }",
+     "membayangi field induknya dengan tipe lain"),
+    // AGI-20261120-16 (#1085): `struct Galat` milik program dulu dipakai sebagai tempat rekaman `tangkap` (stack overflow).
+    ("struct Galat milik program bertabrakan dengan rekaman tangkap", "package main\nstruct Galat { kode: int }\npub fn main() {\n let r = tangkap(|| { panik(\"x\") })\n wok(r)\n}",
+     "bertabrakan dengan rekaman `Galat` yang dijawab `tangkap`"),
+    // AGI-20261120-06 (#1083): `?` dulu menulis bit `Err` bertipe lain ke tempat `Err` kembalian (SIGSEGV).
+    ("? meneruskan Err berjenis lain", "package main\nfn a() -> Result<int, int> { return Err(42) }\nfn b() -> Result<int, string> { let v = a()?\n return Ok(v) }\npub fn main() { wok(b()) }",
+     "meneruskan `Err` bertipe `int`, sedangkan fungsi ini mengembalikan `Err` bertipe `string`"),
     // Larik nilai fungsi berbeda tipe hasil: dulu ditolak tanpa lokasi dengan "string sebagai int" (pembungkus
     // bawaan dipaksa ke hasil elemen pertama); sekarang di situs pemakai, menyebut tipe fungsinya.
     ("larik fungsi bawaan berbeda tipe hasil",
@@ -926,14 +975,9 @@ const BELUM_DIDUKUNG_LLVM: &[(&str, &str, &str)] = &[
      "tidak muat di `int` backend LLVM"),
     ("literal tidak muat di anotasinya", "package main\npub fn main() { let x: u8 = 300\n wok(x) }",
      "tidak muat di `u8`"),
-    // Tahap 5: dulu DIVERGENSI — LLVM mengarang `D {x: 0}`, `Some(0)`, varian pertama.
-    // 2026-11-18: dibaca SEBELUM diisi kini ditolak acuan juga (`DITOLAK_INTERP_DAN_LLVM`); yang tersisa di sini
-    // bentuk sah: diisi dulu, baru dibaca — LLVM masih menolak deklarasinya.
-    ("var struct tanpa nilai awal, diisi lalu dibaca", "package main\nstruct D { x: int = 5 }\npub fn main() { var a: D\n a = D {}\n wok(a) }",
-     "tidak punya nilai nol"),
-    ("var Option tanpa nilai awal, diisi lalu dibaca", "package main\npub fn main() { var a: Option<int>\n a = Some(2)\n wok(a) }",
-     "tidak punya nilai nol"),
-    ("var enum tanpa nilai awal, diisi lalu dibaca", "package main\nenum Warna { Merah, Hijau }\npub fn main() { var a: Warna\n a = Warna::Hijau\n wok(a) }",
+    // "var struct/Option/enum tanpa nilai awal, diisi lalu dibaca" dulu di sini — sejak #1153 LLVM menerimanya
+    // kalau terbukti diisi sebelum disebut (`isi_pasti`), kasusnya di `PARITAS_LLVM`. Yang tidak terbukti:
+    ("var tanpa nilai awal, diisi di satu cabang saja", "package main\nstruct D { pub x: int }\npub fn main() { var a: D\n if len(\"ab\") < 5 { a = D { x: 1 } }\n wok(a.x) }",
      "tidak punya nilai nol"),
     // "extern C: fungsi sebagai argumen" (sampai Fase FUNGSI-JEMBATAN) dan
     // "urutan pada array" (sampai Fase UMUM) dulu di sini.
@@ -973,6 +1017,18 @@ pub fn main() {
 
 /// `(nama, program, kata-kunci-interpreter, kata-kunci-llvm)`
 const DITOLAK_INTERP_DAN_LLVM: &[(&str, &str, &str, &str)] = &[
+    ("kebuntuan: Future membaca pointer di tengah ptr::update yang menunggunya (AGI-20261120-17)", "fn main() {\n    let p = ptr::new(1)\n    ptr::update(p, |x| { let f = Future::new(|| ptr::get(p)); x + future::await(f) })\n    wok(\"tidak sampai\")\n}\n",
+     "kebuntuan: semua goroutine sedang menunggu channel", "kebuntuan: semua goroutine sedang menunggu channel"),
+    ("kebuntuan: dua kunci AB-BA (AGI-20261119-44)", "fn main() {\n    let m1 = Mutex::new()\n    let m2 = Mutex::new()\n    let siap = Chan::new(0)\n    m1.lock()\n    spawn { m2.lock(); siap <- true; m1.lock() }\n    <-siap\n    m2.lock()\n    wok(\"tidak sampai\")\n}\n",
+     "kebuntuan: semua goroutine sedang menunggu channel", "kebuntuan: semua goroutine sedang menunggu channel"),
+    ("kebuntuan: goroutine menunggu kunci, main menunggu channel darinya (AGI-20261119-44)", "fn main() {\n    let m = Mutex::new()\n    let ch = Chan::new(0)\n    m.lock()\n    spawn { m.lock(); ch <- 1 }\n    wok(<-ch)\n}\n",
+     "kebuntuan: semua goroutine sedang menunggu channel", "kebuntuan: semua goroutine sedang menunggu channel"),
+    ("kebuntuan: main selesai memegang kunci yang ditunggu goroutine (AGI-20261119-44)", "fn main() {\n    let m = Mutex::new()\n    m.lock()\n    spawn { m.lock(); wok(\"dapat\") }\n    wok(\"main selesai\")\n}\n",
+     "kebuntuan: semua goroutine sedang menunggu channel", "kebuntuan: semua goroutine sedang menunggu channel"),
+    ("kebuntuan: select satu case tanpa pengirim (AGI-20261119-52)", "fn main() {\n    let ch = Chan::new(0)\n    wok(\"mulai\")\n    select { case v := <-ch: { wok(\"terima\", v) } }\n}\n",
+     "kebuntuan: semua goroutine sedang menunggu channel", "kebuntuan: semua goroutine sedang menunggu channel"),
+    ("kebuntuan: select banyak case tanpa pengirim (AGI-20261119-52)", "fn main() {\n    let a = Chan::new(0)\n    let b = Chan::new(0)\n    wok(\"mulai\")\n    select {\n        case v := <-a: { wok(\"a\", v) }\n        case w := <-b: { wok(\"b\", w) }\n    }\n}\n",
+     "kebuntuan: semua goroutine sedang menunggu channel", "kebuntuan: semua goroutine sedang menunggu channel"),
     // 2026-11-18: kebuntuan dilaporkan interpreter dan `--vm` juga (`antrean::buntu`).
     ("kebuntuan: main menerima dari channel tanpa pengirim", "package main\npub fn main() { let c = make_chan(int)\n wok(<-c) }",
      "kebuntuan: semua goroutine sedang menunggu channel", "kebuntuan: semua goroutine sedang menunggu channel"),
@@ -1822,6 +1878,10 @@ fn salinan_json_inti_di_runtime_identik() {
         "runtime/src/json_inti.rs berbeda dari src/json_inti.rs — salin ulang: cp src/json_inti.rs runtime/src/");
     assert!(include_str!("../src/kutip_inti.rs") == include_str!("../runtime/src/kutip_inti.rs"),
         "runtime/src/kutip_inti.rs berbeda dari src/kutip_inti.rs — salin ulang: cp src/kutip_inti.rs runtime/src/");
+    assert!(include_str!("../src/kripto_inti.rs") == include_str!("../runtime/src/kripto_inti.rs"),
+        "runtime/src/kripto_inti.rs berbeda dari src/kripto_inti.rs — salin ulang: cp src/kripto_inti.rs runtime/src/");
+    assert!(include_str!("../src/stdlib/regex_inti.rs") == include_str!("../runtime/src/regex_inti.rs"),
+        "runtime/src/regex_inti.rs berbeda dari src/stdlib/regex_inti.rs — salin ulang: cp src/stdlib/regex_inti.rs runtime/src/");
 }
 
 #[test]
@@ -2159,6 +2219,11 @@ pub fn main() {{
   dok::router_get(r, "/u/:id", |req: DokRequest| dok::text("id=" + req.params["id"]))
   dok::router_post(r, "/gema", |req| dok::text(str(len(req.body))))
   dok::router_get(r, "/x", |req| [1][5])
+  let ch = make_chan(int, 1)
+  dok::router_get(r, "/lambat", |req| {{ time::sleep_ms(1500); dok::text("lambat") }})
+  dok::router_get(r, "/cepat", |req| dok::text("cepat"))
+  dok::router_get(r, "/tunggu", |req| {{ let v = <- ch; dok::text("dapat " + str(v)) }})
+  dok::router_get(r, "/isi", |req| {{ ch <- 42; dok::text("terisi") }})
   dok::serve(r, {})
 }}
 "#, port);
@@ -2203,6 +2268,18 @@ pub fn main() {{
                 minta(port, &get("/hilang")),
                 minta(port, "POST /gema HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc"),
             ]);
+            // Handler yang menunggu (tidur, channel) tidak menahan handler lain (AGI-20261118-03).
+            let (lambat, cepat, tunggu) = std::thread::scope(|sc| {
+                let l = sc.spawn(|| minta(port, &get("/lambat")));
+                let t = sc.spawn(|| minta(port, &get("/tunggu")));
+                std::thread::sleep(Duration::from_millis(200));
+                let mulai = Instant::now();
+                let c = minta(port, &get("/cepat"));
+                let cepat = format!("{} {}", c, mulai.elapsed() < Duration::from_millis(1000));
+                let _ = minta(port, &get("/isi"));
+                (l.join().unwrap(), cepat, t.join().unwrap())
+            });
+            jawab.as_mut().unwrap().extend([lambat, cepat, tunggu]);
             drop(anak);
             break;
         }
@@ -2210,7 +2287,8 @@ pub fn main() {{
         hasil.push(jawab.expect("server tidak pernah siap di lima port"));
     }
     assert_eq!(hasil[0], ["200 hai 1", "200 hai 2", "200 id=77", "500 handler error",
-                          "404 404 Not Found: GET /hilang", "200 3"], "jawaban acuan");
+                          "404 404 Not Found: GET /hilang", "200 3", "200 lambat", "200 cepat true",
+                          "200 dapat 42"], "jawaban acuan");
     assert_eq!(hasil[0], hasil[1], "--emit-llvm menjawab beda dari acuan");
 }
 

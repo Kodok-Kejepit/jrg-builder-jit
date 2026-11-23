@@ -168,7 +168,7 @@ pub(crate) fn bangun_apk(akar: &Path, m: &Manifest, opsi: &OpsiApk, tujuan: &Pat
     tambah_path_dependensi(akar, &mut jalur)?;
     jalur.dedup();
     let ir = crate::llvm::generate_ir_dgn_jalur(&ast,
-        crate::llvm::codegen::CodegenOptions { fast_math: false, full_buffered_stdout: false, ptr32: false }, &jalur)
+        crate::llvm::codegen::CodegenOptions { fast_math: false, full_buffered_stdout: false, ptr32: false, bebas: false }, &jalur)
         .map_err(|errs| {
             let g: Vec<_> = errs.iter().map(|e| crate::llvm::galat::GalatLlvm::dari_pesan(e)).collect();
             crate::diag::laporkan_llvm(&mut peta, &g);
@@ -245,7 +245,7 @@ fn tulis_kunci_ke_manifes(akar: &Path, alias: &str) -> Result<(), String> {
         }
         None => format!("{}\n[android]\n{}\n", isi.trim_end(), baris),
     };
-    std::fs::write(&p, baru).map_err(|e| format!("tidak bisa tulis jrgm.toml: {}", crate::host::galat_io(&e)))
+    super::tulis_utuh(std::path::Path::new(&p), baru).map_err(|e| format!("tidak bisa tulis jrgm.toml: {}", crate::host::galat_io(&e)))
 }
 
 fn adb_keluaran(adb: &Path, args: &[&str]) -> Result<String, String> {

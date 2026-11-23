@@ -201,11 +201,13 @@ impl Codegen {
                 // Tipe tanpa nilai nol yang jelas (struct, Option, enum, …) bernilai `nil` di
                 // acuan; LLVM tidak punya `nil` untuknya dan dulu mengarang nilai.
                 if let Some(te) = &v.ty {
-                    if crate::parser::nilai_nol(te, v.span).is_none() {
+                    // Terbukti diisi sebelum disebut: tempatnya tidak pernah terbaca, nol apa pun boleh.
+                    if crate::parser::nilai_nol(te, v.span).is_none() && !std::mem::take(&mut self.var_isi_terbukti) {
                         return Err(super::galat::tandai(v.span, format!(
                             "`var {}` tanpa nilai awal bertipe yang tidak punya nilai nol — dua mesin lain \
-                             menolaknya saat DIBACA sebelum diisi, dan backend LLVM v1 belum bisa mencatat \
-                             \"belum diisi\". Beri nilai awal, atau jalankan tanpa `--emit-llvm`", v.name)));
+                             menolaknya saat DIBACA sebelum diisi, dan backend LLVM cuma menerimanya kalau \
+                             terbukti diisi sebelum disebut (`x = ..` langsung, atau di semua cabang `if`/`else`). \
+                             Beri nilai awal, atau jalankan tanpa `--emit-llvm`", v.name)));
                     }
                 }
                 let t = expected.clone().unwrap_or(JrgType::I64);
@@ -418,6 +420,10 @@ impl Codegen {
                 if self.lookup_local(nama).is_some_and(|(_, t)| t == JrgType::Any) && !self.tangkapan.contains(nama) {
                     return self.tulis_indeks_bertag(obj, index, nilai, *span);
                 }
+                // `var` modul bertag juga (AGI-20261120-13): dulu ditolak "tidak bisa index nilai bertag".
+                if self.lookup_local(nama).is_none() && self.var_global.get(&self.k(nama)).is_some_and(|g| g.1 == JrgType::Any) {
+                    return self.tulis_indeks_bertag(obj, index, nilai, *span);
+                }
             } else if matches!(**obj, Expr::Index { .. } | Expr::Field { .. })
                 && self.akar_lokal_polos(obj) && self.tempat_bertag(obj) {
                 return self.tulis_indeks_bertag(obj, index, nilai, *span);
@@ -447,17 +453,25 @@ impl Codegen {
             ([Expr::Field { obj, .. }], 1) if self.tipe_jalur(obj).is_some_and(|t| Self::bukan_pemilik_field(&t)))
             || matches!((a.targets.as_slice(), a.values.len()),
             ([Expr::Index { obj, .. }], 1) if self.tipe_jalur(obj).is_some_and(|t| !Self::bisa_ditulis_index(&t)));
+        // Banyak sasaran (`a[i], b.x = r1, r2`): tempat `[..]`/`.f` dicari SESUDAH semua sisi kanan,
+        // satu per satu tepat sebelum ditulis — urutan dua mesin acuan (`exec_assign`).
+        let banyak = a.targets.len() > 1 && a.targets.len() == a.values.len();
+        let tunda_per: Vec<Option<Option<JrgType>>> = a.targets.iter().map(|t| match t {
+            Expr::Index { .. } | Expr::Field { .. } if banyak => Some(self.tipe_tempat(t)),
+            _ => None,
+        }).collect();
         let mut place_ptrs: Vec<Option<(String, JrgType)>> = Vec::with_capacity(a.targets.len());
-        for t in &a.targets {
+        for (t, tunda_t) in a.targets.iter().zip(&tunda_per) {
             // `_` membuang nilainya: tidak ada tempat untuk ditulis (membacanya ditolak parser).
             let buang = matches!(t, Expr::Ident(n, _) if n == "_");
-            place_ptrs.push(if buang || tunda_ya { None } else { Some(self.tempat_tulis(t)?) });
+            place_ptrs.push(if buang || tunda_ya || tunda_t.is_some() { None } else { Some(self.tempat_tulis(t)?) });
         }
         let mut new_vals = Vec::with_capacity(a.values.len());
         for (i, val_expr) in a.values.iter().enumerate() {
             let tempat = &place_ptrs[i.min(place_ptrs.len() - 1)];
             let expected = tempat.as_ref().filter(|_| a.targets.len() == a.values.len())
-                .map(|(_, ty)| ty.clone()).or_else(|| tunda.clone());
+                .map(|(_, ty)| ty.clone()).or_else(|| tunda.clone())
+                .or_else(|| tunda_per.get(i).cloned().flatten().flatten());
             // Nama targetnya dititipkan, supaya closure di sisi kanan tahu ia akan
             // dipanggil dengan nama apa — itu yang membuat `rec = |n| ...
             let nama_lama = std::mem::replace(
@@ -485,6 +499,10 @@ impl Codegen {
         }
         if tunda_ya { place_ptrs[0] = Some(self.tempat_tulis(&a.targets[0])?); }
         for (i, (tempat, rhs)) in place_ptrs.into_iter().zip(new_vals.into_iter()).enumerate() {
+            let tempat = match tempat {
+                None if tunda_per.get(i).is_some_and(|x| x.is_some()) => Some(self.tempat_tulis(&a.targets[i])?),
+                t => t,
+            };
             let Some((ptr, ty)) = tempat else { continue };
             let rhs_final = if matches!(a.op, AssignOp::Eq) {
                 // JRG bertipe DINAMIS: `var x = 1; x = "teks"` sah, dan `typeof(x)` berubah
@@ -543,7 +561,10 @@ impl Codegen {
             self.codegen_stmt_block(&ifs.then)?;
             self.pop_scope();
             // `panik` meninggalkan blok mati yang masih terbuka: diakhiri di sini, sisa blok tidak tercapai.
-            if super::codegen_statis::blok_menyimpang(&ifs.then) { self.terminate("unreachable".to_string()); }
+            // `panik` milik program kembali normal: `unreachable` sesudahnya UB (AGI-20261120-14).
+            if super::codegen_statis::blok_menyimpang(&ifs.then) && self.panik_bawaan(&|n| self.lookup_local(n).is_some()) {
+                self.terminate("unreachable".to_string());
+            }
             if self.terminated { self.pop_scope(); return Ok(()); }
             self.terminate(format!("br label %{}", merge));
             self.start_block(merge);

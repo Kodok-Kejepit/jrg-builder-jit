@@ -2,6 +2,14 @@
 // dibaca `backend_parity.rs` dan `llvm_parity.rs` lewat `include!`, jadi satu tabel dua tes.
 
 const PARITAS: &[(&str, &str)] = &[
+    // AGI-20261119-04 (#1079): enam anomali sintaks lexer/parser.
+    ("sintaks: closure fn bertipe kembalian, & bitwise rapat, blok berlabel, else-if-let, let-else mut",
+     "package main\npub fn main() {\n let f = fn(x: int) -> int { return x * 2 }\n let mutex = 6\n let mu = 3\n let a = 5\n wok(f(4), a&mutex, a&mu)\n let x = { 'luar: loop { break 'luar }; 99 }\n let o = Some(2)\n if false { wok(0) } else if let Some(v) = o { wok(x, v) } else { wok(0) }\n let (mut p, q) = (1, 2) else { return }\n p = p + 10\n wok(p, q)\n}"),
+    ("ribuan baris kosong dan komentar tidak menghabiskan stack lexer", "package main\npub fn main() {\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n// k\n wok(7)\n}"),
+    // AGI-20261119-02 (#1077): penanda `...` dulu tertimpa panggilan bersarang di dalam argumen dan tergeser.
+    ("spread di samping panggilan bersarang", "package main\nfn show(a, b, c) { return str(a) + \",\" + str(b) + \",\" + str(c) }\nfn tiga(a, b, c) { return a + b + c }\nfn id(x) { return x }\npub fn main() { wok(show(10, id(5), ...[999]))\n wok(tiga(...[1, 2], id(3)))\n wok(show(...[10], id(20), ...[30])) }"),
+    // AGI-20261119-01 (#1076): prefiks basis dilepas tepat sekali — `0x0b1` dulu diam-diam `1`, `0x0b` dan `0Xff` ditolak.
+    ("literal bulat: prefiks basis tepat sekali, huruf besar sah", "package main\npub fn main() { wok(0x0b1, 0x0b0b1, 0x0b0a, 0x0_b1, 0x0b, 0Xff, 0O77, 0B101, 0b0_1) }"),
     // AGI-20261119-07: header `[..]` ditulis dengan jalur UTUH — dulu jalur di atas 64 karakter dipotong jadi `40…12 (N karakter)`
     // dan karakter tak terlihat jadi `\u{200b}` (sintaks Rust), jadi `toml::stringify` menulis TOML yang rusak.
     ("toml::stringify: header tabel panjang dan bertanda samar kembali utuh lewat toml::parse", r#"package main
@@ -2847,6 +2855,430 @@ fn turun(n: int) -> int { return turun(n + 1) + 1 }
 pub fn main() {
     match tangkap(|| turun(0)) { Err(g) => wok("stack habis tertangkap, berlokasi:", g.baris > 0), Ok(_) => wok("?") }
     wok("lanjut")
+}
+"#),
+    ("std/mesin menolak NaN, dt negatif dan klik bukan bool (AGI-20261120-21)", r#"
+import "std/mesin/sprite"
+import "std/mesin/masukan"
+fn coba(f) { match tangkap(f) { Ok(v) => wok("ok"), Err(g) => wok(g.pesan) } }
+fn main() {
+    coba(|| sprite::animasi([1, 2], math::NAN, true))
+    coba(|| sprite::animasi([1, 2], 10, true).maju(-0.4))
+    coba(|| sprite::animasi([1, 2], 10, true).maju(0.25).petak())
+    coba(|| masukan::buatan_tetikus(masukan::kosong(), [], 0, 0, [1, 2, 3]))
+}
+"#),
+    ("dok::render: tag penutup mentah dan komentar mengikuti HTML5 (AGI-20261119-17)", r#"
+fn coba(t) {
+    match dok::render(t, {"x": "nilai"}) { Ok(s) => wok("OK  ", s), Err(e) => wok("TOLAK", str::substr(e, 0, 60)) }
+}
+fn main() {
+    coba("<script>var a = \"</script\" + \">\"; {{ x }}</script>")
+    coba("<script>var a = 1;</scriptx> {{ x }}</script>")
+    coba("<script>1</script> <p>{{ x }}</p>")
+    coba("<script>1</script\n> <p>{{ x }}</p>")
+    coba("<!--> <script>{{ x }}</script>")
+    coba("<!---> <a onclick=\"{{ x }}\">")
+    coba("<!-- a --!> <script>{{ x }}</script>")
+    coba("<!-- a --> <p>{{ x }}</p>")
+    coba("<!-- <script>{{ x }}</script> -->")
+}
+"#),
+    ("dok::mat_* menolak matriks bergerigi dan ukuran tak sah, dok::json_* menghormati field privat (AGI-20261119-20)", r#"
+struct Akun { pub nama: string, saldo: int }
+fn coba(f) { match tangkap(f) { Ok(v) => wok("ok", v), Err(g) => wok("err", g.pesan) } }
+fn main() {
+    coba(|| dok::mat_mul([[1.0, 2.0], [3.0]], [[1.0], [2.0]]))
+    coba(|| dok::mat_transpose([[1.0, 2.0], [3.0]]))
+    coba(|| dok::mat_new(-1, 2))
+    coba(|| dok::mat_new(100000, 100000))
+    coba(|| dok::mat_get([[1.0]], 18446744073709551616, 0))
+    coba(|| dok::mat_get([[1.0, 2.0]], 0, 1))
+    let a = Akun { nama: "x", saldo: 5 }
+    coba(|| dok::json_keys(a))
+    coba(|| dok::json_get(a, "saldo"))
+    coba(|| dok::json_get(a, "nama"))
+    coba(|| dok::json_set(a, "saldo", 999))
+    coba(|| dok::json_get(ptr::new(1), "id"))
+}
+"#),
+    ("re:: kelas tumpang-tindih dirapikan, kelas besar berulang tidak meledak (AGI-20261119-25)", r#"
+fn main() {
+    wok(re::find_all("[a-cb-ex]+", "zzabcdexyz"), re::test("^[^0-9a-f]+$", "ghz"), re::test("^[^0-9a-f]+$", "gh1"))
+    wok(re::find_all("[\\w-]+", "a-b c_d"), re::test("[\\d\\s]", "x 1"), re::test("^[ -/]$", "a"))
+    let besar = "(" + "[" + str::repeat("b", 3000) + "a]{0,50}){10}z"
+    wok(re::test(besar, str::repeat("a", 100)), re::test(besar, str::repeat("a", 20) + "z"))
+}
+"#),
+    ("enum program bervarian Ok/Err/Some/None tidak mewarisi method dan `?` Option/Result (AGI-20261120-09)", r#"
+enum Status { Ok, Err(string) }
+enum Choice { Some(int), None }
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn f() { let x = Status::Err("custom")?
+ return 1 }
+fn main() {
+    coba(|| typeof(Status::Err("bad")))
+    coba(|| typeof(Choice::Some(42)))
+    coba(|| Status::Ok.is_ok())
+    coba(|| Status::Ok.unwrap(1, 2, 3))
+    coba(|| Status::Ok.map(|x| x))
+    coba(|| Choice::Some(42).map(|x| x + 1))
+    coba(|| Choice::Some(42).unwrap())
+    coba(|| Status::Ok.foo())
+    coba(|| f())
+}
+"#),
+    ("wokwok::det atas NaN/tak hingga bukan 0 (AGI-20261120-15)", r#"
+fn main() {
+    wok(wokwok::det(wokwok::array([[0.0 / 0.0]])), wokwok::det(wokwok::array([[1.0 / 0.0]])))
+    wok(wokwok::det(wokwok::array([[1.0, 0.0 / 0.0], [2.0, 3.0]])), wokwok::det(wokwok::array([[1.0, 2.0], [2.0, 4.0]])))
+}
+"#),
+    ("str::format dengan { literal, kombinator Option/Result memeriksa argumennya (AGI-20261120-11)", r#"
+fn main() {
+ wok(str::format("{\"x\": {}}", 5))
+ wok(str::format("a { b {}", 1))
+ wok(str::format("{{}}", 2))
+ wok(str::format("{x} {}", 3))
+ main2()
+}
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn main2() {
+ coba(|| Some(1).xor(42))
+ coba(|| None.xor(42))
+ coba(|| None.or(42))
+ coba(|| Some(1).and(42))
+ coba(|| Err(1).or(42))
+ coba(|| Ok(1).and(42))
+ coba(|| Some(1).or(None))
+ coba(|| Ok(1).and(Ok(2)))
+}
+"#),
+    ("wokwok:: bulat di atas 2^53 tetap persis: array, pembanding, argmax, argsort (AGI-20261120-25)", r#"
+fn main() {
+    wok(wokwok::array([9007199254740993]), wokwok::array([9223372036854775806]))
+    let k = wokwok::array([[true, false], [false, true]])
+    wok(wokwok::where(k, wokwok::array([[10, 20]]), wokwok::array([[100], [200]])))
+    let a = wokwok::add(wokwok::array([9007199254740992]), wokwok::array([0]))
+    let b = wokwok::add(wokwok::array([9007199254740992]), wokwok::array([1]))
+    wok(wokwok::eq(a, b), wokwok::lt(a, b))
+    wok(wokwok::argmax(wokwok::array([9007199254740992, 9007199254740993])), wokwok::argsort(wokwok::array([9007199254740993, 9007199254740992])))
+}
+"#),
+    ("url::build menolak port/host yang memilih host atau port lain, url::parse menyamarkan sandi di galat (AGI-20261119-39)", r#"
+fn main() {
+    wok(url::build({"skema": "http", "host": "trusted.com", "port": "80@evil.com:8443", "jalur": "/api"}))
+    wok(url::build({"skema": "https", "host": "internal.svc:6379", "jalur": "/cmd"}))
+    wok(url::build({"skema": "http", "host": "[::1]", "port": "8080", "jalur": "/x"}))
+    wok(url::parse("//alice:SUPERSECRET@host"))
+    wok(url::parse("http:alice:SUPERSECRET@host"))
+}
+"#),
+    ("dok::password_verify menolak bentuk hash lain, dok::render tidak membaca field privat (AGI-20261119-40)", r#"
+fn sandi_uji() {
+ let h = dok::password_hash("rahasia")
+ wok(dok::password_verify("rahasia", h), dok::password_verify("salah", h), dok::password_needs_rehash(h))
+ wok(dok::password_verify("x", "pbkdf2$sha256$1000$$AA"), dok::password_needs_rehash("pbkdf2$sha256$600000$$AA"))
+}
+struct Akun { pub nama: string, sandi: string }
+fn main() {
+ sandi_uji()
+ let a = Akun { nama: "budi", sandi: "rahasia" }
+ wok(dok::render("{{ nama }}|{{ sandi }}|{{ a.sandi }}|{{ a.nama }}", dict { nama: "x", a: a }))
+ wok(dok::render("{{ nama }}-{{ sandi }}", a))
+}
+"#),
+    ("channel tanpa penyangga tetap sehat sesudah kebuntuan ditangkap (AGI-20261119-41)", r#"
+fn main() {
+    let ch2 = Chan::new(0)
+    let r2 = tangkap(|| { ch2.send(99) })
+    wok(r2.is_err())
+    wok(ch2.try_recv())
+    let ch1 = Chan::new(0)
+    let r1 = tangkap(|| { <-ch1 })
+    wok(r1.is_err())
+    wok(ch1.try_send(5))
+}
+"#),
+    ("std/shlex, glob, path, ini: NUL lewat \\, jalur absolut, ekstensi dotfile, BOM (AGI-20261119-33)", r#"
+import "std/shlex"
+import "std/glob"
+import "std/uang"
+import "std/hitung"
+import "std/path"
+import "std/ini"
+fn main() {
+    wok(shlex::split("a\\\u0000b").is_err())
+    wok(glob::cocok("etc/*", "/etc/passwd"), glob::cocok("etc/*", "etc/passwd"))
+    wok(path::extension(".config.json"), path::extension(".bashrc"), path::stem(".config.json"))
+    wok(ini::stringify({"": {"\uFEFFa": "1"}}).is_err())
+}
+"#),
+    ("std/csv, dotenv, bungkus, log: kutip, komentar nilai kosong, lebar lebar, log json (AGI-20261119-45)", r#"
+import "std/csv"
+import "std/dotenv"
+import "std/bungkus"
+import "std/log"
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn main() {
+    coba(|| csv::parse("\"unclosed,still"))
+    coba(|| csv::parse("a\"b,c\"d"))
+    coba(|| csv::parse("a,b\rc,d"))
+    coba(|| csv::parse("a,b\r\nc,\"x\r\ny\"\r\n"))
+    env_uji()
+    potong_uji()
+    log_uji()
+}
+
+fn env_uji() {
+ wok(dotenv::parse("A= #komentar\nB=#bukan\nexport\tC=3\nD = \"x y\" # k\nE=nilai # k"))
+}
+
+fn potong_uji() {
+ wok(bungkus::potong("日本語", 2), bungkus::potong("日本語", 3), bungkus::potong("abcdef", 4), bungkus::potong("ab", 1))
+}
+
+fn log_uji() {
+    var p = log::baru("app role=admin")
+    p.waktu = false
+    wok(log::baris(p, "info", "masuk", dict::new()))
+    var j = log::baru("app")
+    j.waktu = false
+    j.format = "json"
+    wok(log::baris(j, "info", "a\u202Eb", {"x": 0.0 / 0.0}))
+}
+"#),
+    ("is_numeric satu definisi, sort satu NaN, jangkauan cap waktu (AGI-20261119-51)", r#"
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn main() {
+    wok(" ".is_numeric(), "1.2.3".is_numeric(), "-".is_numeric(), "-3.5".is_numeric(), " 42 ".is_numeric())
+    wok(str::is_numeric(" "), str::is_numeric("1.2.3"), str::is_numeric("-"))
+    wok(arr::sort([0.0 / 0.0]))
+    coba(|| time::year(9000000000000000))
+    coba(|| time::format(9000000000000000, "%Y"))
+    coba(|| time::hour(-9000000000000000))
+    wok(time::hour(3600000), time::year(8640000000000000))
+}
+"#),
+    ("select: case let menguji polanya seperti let, penugasan menulis variabel luar (AGI-20261119-52)", r#"
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn terima_let(isi) {
+    let ch = Chan::new(1)
+    ch <- isi
+    var hasil = "kosong"
+    select {
+        case let Some(x) = <-ch: { hasil = "dapat " + str(x) }
+    }
+    return hasil
+}
+fn terima_tuple(isi) {
+    let ch = Chan::new(1)
+    ch <- isi
+    var hasil = 0
+    select {
+        case let (a, 5) = <-ch: { hasil = a }
+    }
+    return hasil
+}
+fn main() {
+    coba(|| terima_let(Some(3)))
+    coba(|| terima_let(Result::Ok(3)))
+    coba(|| terima_let(None))
+    coba(|| terima_tuple((1, 5)))
+    coba(|| terima_tuple((1, 6)))
+    let ch = Chan::new(1)
+    ch <- 99
+    var x = 0
+    select {
+        case x = <-ch: {}
+    }
+    wok(x)
+}
+"#),
+    ("select satu case bertemu select lain di kanal tanpa penyangga (AGI-20261119-52)", r#"
+fn main() {
+    let ch = Chan::new(0)
+    let selesai = Chan::new(0)
+    spawn {
+        select { case ch <- 42: {} }
+        selesai <- "kirim lewat select"
+    }
+    select { case v := <-ch: { wok("terima", v) } }
+    wok(<-selesai)
+    let a = Chan::new(0)
+    let b = Chan::new(0)
+    spawn { b <- 7 }
+    for i in 0..1 {
+        select {
+            case v := <-a: { wok("a", v) }
+            case w := <-b: { wok("b", w) }
+        }
+    }
+}
+"#),
+    ("kunci yang ditunggu lalu dilepas tidak dikira buntu (AGI-20261119-44)", r#"
+fn main() {
+    let m = Mutex::new()
+    let ch = Chan::new(0)
+    m.lock()
+    spawn { m.lock(); ch <- 1; m.unlock() }
+    time::sleep(0.2)
+    m.unlock()
+    wok(<-ch)
+}
+"#),
+    ("ptr::update ulang dari aktor yang sama ditolak, update serentak sah, tangkap memegang kunci pemanggil (AGI-20261120-17, AGI-20261119-13)", r#"
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+fn sibuk() {
+    let p = ptr::new(1)
+    coba(|| ptr::update(p, |x| ptr::get(p)))
+    coba(|| ptr::update(p, |x| ptr::update(p, |y| y + 1)))
+    coba(|| ptr::update(p, |x| x + 10))
+    wok(ptr::get(p))
+}
+
+fn kunci_tangkap() {
+    let m = Mutex::new()
+    m.lock()
+    coba(|| m.lock())
+    m.unlock()
+    coba(|| { m.lock(); return 42 })
+    m.unlock()
+    wok("lepas di luar berhasil")
+    coba(|| m.unlock())
+}
+
+fn main() {
+    sibuk()
+    kunci_tangkap()
+    let p = ptr::new(0)
+    let selesai = Chan::new(4)
+    for i in 0..4 { spawn { for j in 0..50 { ptr::update(p, |x| x + 1) }; selesai <- true } }
+    for i in 0..4 { <-selesai }
+    wok(ptr::get(p))
+}
+"#),
+    ("await/join/timeout serentak atas tugas yang sama: satu dapat, yang lain gagal sudah diambil (AGI-20261119-38)", r#"
+fn ganda() {
+    let f = Future::new(|| { time::sleep_ms(30); return 42 })
+    let done = Chan::new(2)
+    go { let r = tangkap(|| future::await(f)); done.send(r.is_ok()) }
+    go { let r = tangkap(|| future::await(f)); done.send(r.is_ok()) }
+    let a = done.recv()
+    let b = done.recv()
+    wok(a != b)
+    let t = Task::spawn(|| { time::sleep_ms(30); return 7 })
+    go { let r = tangkap(|| task::join(t)); done.send(r.is_ok()) }
+    go { let r = tangkap(|| task::join(t)); done.send(r.is_ok()) }
+    let c = done.recv()
+    let d = done.recv()
+    wok(c != d)
+}
+
+fn main() {
+    ganda()
+    let f = Future::new(|| { time::sleep_ms(30); return 42 })
+    let done = Chan::new(2)
+    go { let r = tangkap(|| future::await(f)); done.send("await " + str(r.is_ok())) }
+    go { let r = tangkap(|| future::timeout(f, 2000)); done.send("timeout " + str(r.is_ok())) }
+    let a = done.recv()
+    let b = done.recv()
+    wok(a != b)
+}
+"#),
+    ("defer di let/penugasan/return/larik, defer atas closure var modul, salin nilai bertag bersarang dalam (AGI-20261119-15)", r#"
+package main
+var cb = || wok("awal")
+fn pakai() {
+    defer cb()
+    cb = || wok("akhir")
+    wok("badan")
+}
+fn nilai() -> int {
+    let x = { defer wok("tunda di let"); 42 }
+    var y = 0
+    y = { defer wok("tunda di penugasan"); 7 }
+    return x + y + { defer wok("tunda di return"); 1 }
+}
+fn dalam() {
+    var x = json::parse("[1]")
+    var i = 0
+    while i < 100000 { x = [x]; i = i + 1 }
+    var y = x
+    wok("salin dalam", len(y))
+}
+pub fn main() {
+    dalam()
+    pakai()
+    wok(nilai())
+    wok([1, { defer wok("tunda di larik"); 2 }])
+}
+"#),
+    ("kanvas: sudut raksasa, garis/segitiga/lingkaran/grid raksasa tidak panik atau macet, clip jenuh (AGI-20261119-09)", r#"
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok"), Result::Err(g) => wok("err", g.pesan) } }
+fn main() {
+    let c = Canvas::new(4, 4, "uji")
+    coba(|| c.draw_arc(2.0, 2.0, 2.0, 0.0, 1e30, 0xFFFFFF))
+    coba(|| c.draw_arc(2.0, 2.0, 2.0, 0.0, 1e40, 0xFFFFFF))
+    coba(|| c.line_aa(16777216.0, 0.0, 16777220.0, 0.0, 0xFFFFFF))
+    coba(|| c.draw_line(0, 0, -2147483648, 1, 0xFFFFFF))
+    coba(|| c.clip(2, 2, 2147483647, 2147483647))
+    c.draw_pixel(3, 3, 0xFF0000)
+    wok(c.get_pixel(3, 3))
+    c.clip_reset()
+    coba(|| c.fill_triangle(0, -2147483648, 2, 0, 4, 2147483647, 0xFFFFFF))
+    coba(|| c.fill_circle(0, 0, 2000000000, 0x00FF00))
+    coba(|| c.draw_circle(0, 0, 2000000000, 0x00FF00))
+    coba(|| c.draw_grid(100000000, 1, 100, 1, 0xFFFFFF))
+    coba(|| c.draw_grid(-3, -3, 0, 0, 0xFFFFFF))
+    wok(c.get_pixel(1, 1))
+}
+"#),
+    ("fn bersarang terlihat dari closure dan go, indeks penugasan dihitung kiri ke kanan (AGI-20261120-03)", r#"
+package main
+fn coba(f) { match tangkap(f) { Result::Ok(v) => wok("ok", v), Result::Err(g) => wok("err", g.pesan) } }
+var hitung = 0
+fn berikut() -> int { hitung += 1; return hitung - 1 }
+fn bersarang() {
+    fn kali2(x) { return x * 2 }
+    coba(|| kali2(21))
+    wok(arr::map([1, 2, 3], |x| kali2(x)))
+    let ch = Chan::new(1)
+    go { ch <- kali2(7) }
+    wok(<-ch)
+}
+pub fn main() {
+    bersarang()
+    var grid = [[0, 0], [0, 0]]
+    grid[berikut()][berikut()] = 9
+    wok(grid)
+}
+"#),
+    ("dua select banyak case berhadapan di kanal tanpa penyangga bertemu lewat tawaran (AGI-20261119-52)", r#"
+fn main() {
+    let data = Chan::new(0)
+    let quit = Chan::new(0)
+    let selesai = Chan::new(0)
+    spawn {
+        var n = 0
+        var jalan = true
+        while jalan {
+            select {
+                case data <- n: { n += 1 }
+                case <-quit: { jalan = false }
+            }
+        }
+        selesai <- n
+    }
+    var jumlah = 0
+    for i in 0..50 {
+        select {
+            case v := <-data: { jumlah += v }
+            case <-selesai: { wok("tidak boleh") }
+        }
+    }
+    quit <- true
+    wok(jumlah, <-selesai)
 }
 "#),
 ];

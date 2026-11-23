@@ -75,6 +75,8 @@ pub struct Parser {
     dalam: u32,
     /// Keluarga kembalian fungsi/closure yang sedang diurai, untuk `Expr::Propagate`.
     keluarga: Keluarga,
+    /// Posisi sesudah bentuk asing yang sudah dilompati utuh; pemulihan di sana tidak memakan token lagi.
+    lompat_sampai: Option<usize>,
 }
 
 /// Batas sarang: lebih dalam dari ini, stack pengurai sendiri habis (dulu SIGABRT tanpa pesan,
@@ -86,7 +88,7 @@ impl Parser {
         Parser { tokens, pos: 0, errors: Vec::new(),
             tambahan_item: Vec::new(), arg_sebar: Vec::new(), recover,
                  larang_struct_literal: false, minus_baru: false, literal_min: None, dalam: 0,
-                 keluarga: Keluarga::Bebas }
+                 keluarga: Keluarga::Bebas, lompat_sampai: None }
     }
 
     /// Urai ekspresi sebagai HEADER kontrol: `{` yang menyusulnya membuka
@@ -156,6 +158,9 @@ impl Parser {
         // lain (`and`, `or`, `not`) mendarat di sini sebagai "harusnya ada `)`",
         // yang benar tentang tokennya dan diam soal apa yang sedang ditulis.
         if let Some(pesan) = self.kata_asing_di_sini() {
+            return Err(self.error(pesan));
+        }
+        if let Some(pesan) = self.bentuk_asing_di_ekspresi() {
             return Err(self.error(pesan));
         }
         // `if a = 1 { ... }` — satu sama dengan di kepala syarat. Pesannya
@@ -326,6 +331,7 @@ impl Parser {
     pub(crate) fn synchronize(&mut self) {
         // Dulu: kalau token SAAT INI (tempat error terjadi) sudah salah satu
         // stop-keyword (mis. `pub`), loop `break` TANPA advance sama sekali.
+        if self.lompat_sampai.take() == Some(self.pos) { return; }
         self.advance();
         loop {
             match &self.current().kind {
@@ -378,6 +384,7 @@ impl Parser {
     /// Pemulihan di tingkat atas berkas: deklarasi yang rusak dilompati UTUH (badannya
     /// ikut), sampai kata kunci deklarasi berikutnya — dulu `}` penutupnya jadi galat kedua.
     pub(crate) fn synchronize_atas(&mut self, mulai: usize) {
+        if self.lompat_sampai.take() == Some(self.pos) { return; }
         let dalam = self.kurawal_terbuka(mulai);
         self.tutup_kurawal(dalam);
         if self.pos == mulai { self.advance(); }
@@ -1395,6 +1402,19 @@ fn kumpul_tipe_ekspr(e: &Expr, generik: &[String], keluar: &mut Vec<(String, Spa
 }
 
 /// Nama yang diikat sebuah pola, dalam URUTAN KEMUNCULAN.
+/// Nama yang diikat sebagai `mut` di pola: `let (mut a, b) = .. else` dulu kehilangan `mut`-nya (AGI-20261119-04).
+pub(crate) fn nama_mut_pola(p: &Pattern, keluar: &mut Vec<String>) {
+    match p {
+        Pattern::Ident { name, is_mut: true, .. } => keluar.push(name.clone()),
+        Pattern::Binding { inner, .. } | Pattern::Ref { inner, .. } => nama_mut_pola(inner, keluar),
+        Pattern::Tuple { elems, .. } => { for e in elems { nama_mut_pola(e, keluar) } }
+        Pattern::Struct { fields, .. } => { for f in fields { nama_mut_pola(&f.pat, keluar) } }
+        Pattern::Enum { inner: Some(i), .. } => nama_mut_pola(i, keluar),
+        Pattern::Array { before, after, .. } => { for e in before.iter().chain(after) { nama_mut_pola(e, keluar) } }
+        _ => {}
+    }
+}
+
 fn kumpul_nama_pola(p: &Pattern, keluar: &mut Vec<String>) {
     match p {
         Pattern::Ident { name, .. } => {

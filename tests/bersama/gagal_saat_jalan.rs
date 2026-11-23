@@ -1,6 +1,16 @@
 // Tabel bersama `tests/llvm_parity.rs` dan `tests/jit_parity.rs`; disisipkan lewat `include!`.
 
 const GAGAL_SAAT_JALAN: &[(&str, &str, &str, &str)] = &[
+    // AGI-20261119-48 (#1086): `--emit-llvm` dulu menulis ke panjang internal larik/teks (OOB baca/tulis).
+    ("menulis .len larik", "package main\npub fn main() {\n var a = [1, 2]\n wok(\"a\")\n a.len = 99\n wok(a)\n}",
+     "a", "`array` tidak punya field — `.len` cuma bisa ditulis ke struct atau dict"),
+    ("menulis .len teks", "package main\npub fn main() {\n var s = \"ab\"\n wok(\"a\")\n s.len = 99\n wok(s)\n}",
+     "a", "`string` tidak punya field — `.len` cuma bisa ditulis ke struct atau dict"),
+    // AGI-20261118-07 (#1070): `--emit-llvm` dulu menjadikan panjang negatif 0 diam-diam dan tanpa batas atas.
+    ("jawa::array panjang negatif", "package main\npub fn main() {\n wok(\"a\")\n let h = jawa::array(-1)\n wok(jawa::array_len(h))\n}",
+     "a", "panjang tidak boleh negatif, dapat -1"),
+    ("jawa::buffer di atas batas alokasi", "package main\npub fn main() {\n wok(\"a\")\n let h = jawa::buffer(300000000)\n wok(1)\n}",
+     "a", "kelewat besar (maks 268435456)"),
     // K5: kalimat acuan milik fungsi di balik nilai fungsi, saat jalan.
     ("argumen bernama asing lewat parameter bernilai fungsi",
      "package main\nfn pakai(g) { return g(a: 10, b: 2) }\npub fn main() {\n wok(\"mulai\")\n wok(pakai(|x, y| x))\n}",

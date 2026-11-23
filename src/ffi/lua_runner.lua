@@ -164,6 +164,9 @@ local function adalah_deret(t)
     if k > n then n = k end
     jumlah = jumlah + 1
   end
+  -- Deret yang panjangnya dicatat (nilai balik ganda, array dari JRG) boleh berlubang `nil`.
+  local tetap = panjang[t]
+  if tetap ~= nil and n <= tetap then return true, tetap end
   if jumlah ~= n then return false end
   return true, n
 end
@@ -216,8 +219,11 @@ end
 
 local seq = 0
 
+-- Kunci sesi dari jrgc: baris jawaban diawali kunci ini, dan penanda fungsi cuma sah kalau membawanya.
+local KUNCI = os.getenv("JRG_FFI_KUNCI") or ""
+
 local function kirim_baris(s)
-  proto_out:write(s, "\n")
+  proto_out:write(KUNCI, s, "\n")
   proto_out:flush()
 end
 
@@ -245,10 +251,10 @@ end
 -- Penanda `{"__jrgfn__": n}` dari jrgc ditukar jadi fungsi Lua, di kedalaman mana pun.
 local function buka(v)
   if type(v) ~= "table" then return v end
-  if v.__jrgfn__ ~= nil then
+  if v.__jrgfn__ ~= nil and v.__kunci__ == KUNCI then
     local jumlah = 0
     for _ in pairs(v) do jumlah = jumlah + 1 end
-    if jumlah == 1 then return fungsi_jrg(v.__jrgfn__) end
+    if jumlah == 2 then return fungsi_jrg(v.__jrgfn__) end
   end
   for k, x in pairs(v) do v[k] = buka(x) end
   return v
@@ -261,6 +267,7 @@ local function hasil_dari(n, ...)
   if n == 1 then return (...) end
   local t = table.pack(...)
   t.n = nil
+  panjang[t] = n
   return t
 end
 

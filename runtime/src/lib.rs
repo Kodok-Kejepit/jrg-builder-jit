@@ -186,6 +186,14 @@ pub extern "C" fn jrg_sort_i64(ptr: *mut i64, len: i64) {
     s.sort_unstable();
 }
 
+/// Urutkan sebuah larik `u64` di tempat, tak bertanda.
+#[no_mangle]
+pub extern "C" fn jrg_sort_u64(ptr: *mut u64, len: i64) {
+    if ptr.is_null() || len <= 1 { return; }
+    let s = unsafe { core::slice::from_raw_parts_mut(ptr, len as usize) };
+    s.sort_unstable();
+}
+
 /// Urutkan sebuah larik `f64` di tempat.
 #[no_mangle]
 pub extern "C" fn jrg_sort_f64(ptr: *mut f64, len: i64) {
@@ -649,7 +657,28 @@ struct Panik {
     situs: i32,
 }
 
-static mut PANIK: Panik = Panik { sedang: false, pesan: None, ikut: Vec::new(), situs: 0 };
+/// Per korutin: badan `tangkap` di dalam `defer` yang sedang membereskan panik lain dulu mengambil pesan panik
+/// pemanggilnya, karena keduanya berbagi satu status (AGI-20261120-08).
+static mut PANIK_SEMUA: Vec<(usize, Panik)> = Vec::new();
+/// Situs galat badan Future/Task, dititipkan `mati` ke pengambil hasilnya (yang jalan di korutin lain).
+static mut SITUS_TITIP: i32 = 0;
+
+extern "C" { fn jrg_ko_id() -> usize; }
+
+fn panik_kini() -> &'static mut Panik {
+    let id = unsafe { jrg_ko_id() };
+    let semua = unsafe { &mut *core::ptr::addr_of_mut!(PANIK_SEMUA) };
+    let i = match semua.iter().position(|(k, _)| *k == id) {
+        Some(i) => i,
+        None => { semua.push((id, Panik { sedang: false, pesan: None, ikut: Vec::new(), situs: 0 })); semua.len() - 1 }
+    };
+    &mut semua[i].1
+}
+
+fn ambil_situs() -> i32 {
+    let t = unsafe { core::mem::replace(&mut *core::ptr::addr_of_mut!(SITUS_TITIP), 0) };
+    if t != 0 { t } else { core::mem::replace(&mut panik_kini().situs, 0) }
+}
 
 /// Ditulis IR tepat sebelum panggilan panik di blok dingin; dibaca (lalu dinolkan) saat kalimatnya dicatat.
 #[no_mangle]
@@ -699,7 +728,7 @@ fn bentuk_galat(s: &str, situs: i32) -> String {
 fn eprint_line(args: fmt::Arguments<'_>) {
     let mut s = String::new();
     let _ = s.write_fmt(args);
-    let p = unsafe { &mut *core::ptr::addr_of_mut!(PANIK) };
+    let p = panik_kini();
     if p.pesan.is_none() {
         p.pesan = Some(s);
         p.situs = unsafe { jrg_situs };
@@ -710,10 +739,10 @@ fn eprint_line(args: fmt::Arguments<'_>) {
 /// Ujung tiap panik: jalankan `defer` korutin ini, cetak galatnya, keluar.
 /// Panik dari dalam sebuah `defer` masuk ke sini lagi dan meneruskan sisanya.
 fn mati() -> ! {
-    unsafe { (*core::ptr::addr_of_mut!(PANIK)).sedang = true };
+    panik_kini().sedang = true;
     jrg_tunda_jalankan(0);
     flush_stdout();
-    let p = unsafe { &mut *core::ptr::addr_of_mut!(PANIK) };
+    let p = panik_kini();
     let mut s = p.pesan.take().unwrap_or_default();
     for t in p.ikut.drain(..) {
         s.push_str("\n  catatan: sebuah `defer` juga gagal saat membereskan: ");
@@ -722,7 +751,9 @@ fn mati() -> ! {
     // Badan Future/Task yang gagal menitipkan galatnya ke yang mengambil hasilnya.
     if unsafe { !TAK_GUGUR } {
         p.sedang = false;
+        unsafe { SITUS_TITIP = p.situs };
         unsafe { jrg_masa_gagal(s.as_ptr(), s.len() as i64) };
+        unsafe { SITUS_TITIP = 0 };
         p.sedang = true;
     }
     let situs = core::mem::replace(&mut p.situs, 0);
@@ -883,6 +914,16 @@ pub extern "C" fn jrg_f64_to_str_desimal(
 
 /// `{:.N}` untuk `int`. Nol ditempel, bukan dilewatkan `f64`:
 /// `9007199254740993` melebihi apa yang `f64` bisa wakili persis.
+#[no_mangle]
+pub extern "C" fn jrg_i128_to_str_desimal(
+    v: i128, tak_bertanda: i32, n: i64, out_ptr: *mut *const u8, out_len: *mut i64,
+) {
+    let n = n.max(0) as usize;
+    let angka = if tak_bertanda != 0 { (v as u128).to_string() } else { v.to_string() };
+    let teks = if n == 0 { angka } else { format!("{}.{}", angka, "0".repeat(n)) };
+    unsafe { emit_string(teks, out_ptr, out_len) };
+}
+
 #[no_mangle]
 pub extern "C" fn jrg_i64_to_str_desimal(
     v: i64, n: i64, out_ptr: *mut *const u8, out_len: *mut i64,
@@ -1387,7 +1428,7 @@ static mut UJI: (i64, i64) = (0, 0);
 #[no_mangle]
 pub unsafe extern "C" fn jrg_uji_lapor(rc: i32, pp: *const u8, pl: i64, okp: *const u8, okl: i64,
     gp: *const u8, gl: i64, gbp: *const u8, gbl: i64, baris: *const i32, n: *const i32) {
-    let situs = core::mem::replace(&mut (*core::ptr::addr_of_mut!(PANIK)).situs, 0);
+    let situs = ambil_situs();
     let uji = &mut *core::ptr::addr_of_mut!(UJI);
     if rc == 0 {
         uji.0 += 1;
@@ -1413,7 +1454,7 @@ pub struct GalatTangkap { baris: i64, berkas: TeksMentah, kolom: i64, pesan: Tek
 /// dirender `jrgc` (`--> berkas:baris:kolom`), `""`/0/0 kalau tidak ada — aturan `interpreter::tangkap::rekam`.
 #[no_mangle]
 pub unsafe extern "C" fn jrg_tangkap_rekam(p: *const u8, n: i64, out: *mut GalatTangkap) {
-    let situs = core::mem::replace(&mut (*core::ptr::addr_of_mut!(PANIK)).situs, 0);
+    let situs = ambil_situs();
     let pesan = borrow_str(p, n);
     let kalimat = pesan.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
     let (mut berkas, mut baris, mut kolom) = (String::new(), 0i64, 0i64);
@@ -1544,8 +1585,11 @@ pub extern "C" fn jrg_panic_div_by_zero(kiri: i64, sisa: i32) -> ! {
 /// Geseran yang tidak sah. Dua kalimat pertama sama dengan `Interpreter::geser_terperiksa`;
 /// yang ketiga milik backend ini: hasilnya ada di 128 bit acuan, tidak di lebar di sini.
 #[no_mangle]
-pub extern "C" fn jrg_panic_geser(x: i64, y: i64, ke_kiri: i32, bit: i32) -> ! {
+pub extern "C" fn jrg_panic_geser(x: i64, y: i64, bendera: i32, bit: i32) -> ! {
     flush_stdout();
+    // Bit 0: ke kiri; bit 1: jumlah geserannya tak bertanda (dicetak sebagai `u64`).
+    let ke_kiri = bendera & 1;
+    let y: i128 = if bendera & 2 != 0 { y as u64 as i128 } else { y as i128 };
     let (op, balik) = if ke_kiri != 0 { ("<<", ">>") } else { (">>", "<<") };
     // `bit` negatif berarti tipe tak bertanda; hasilnya dihitung seperti acuan, di 128 bit.
     let (lebar, tipe) = if bit < 0 { (-bit, "tak bertanda") } else { (bit, "bertanda") };
@@ -2254,9 +2298,18 @@ pub extern "C" fn jrg_jawa_free(id: i64) {
     }
 }
 
+/// Panjang alokasi `jawa::`, kalimatnya sama dengan acuan (`heap::cek_panjang`): negatif dan di atas 256 MiB ditolak
+/// SEBELUM dialokasikan. Dulu negatif jadi 0 diam-diam dan tanpa batas atas (AGI-20261118-07).
+fn jawa_panjang(f: &str, n: i64) -> usize {
+    const MAKS: i64 = 256 * 1024 * 1024;
+    if n < 0 { jrg_panic_str(&alloc::format!("{}: panjang tidak boleh negatif, dapat {}", f, n)); }
+    if n > MAKS { jrg_panic_str(&alloc::format!("{}: n={} kelewat besar (maks {})", f, n, MAKS)); }
+    n as usize
+}
+
 #[no_mangle]
 pub extern "C" fn jrg_jawa_array(n: i64) -> i64 {
-    let n = if n < 0 { 0 } else { n as usize };
+    let n = jawa_panjang("jawa::array", n);
     let mut v = Vec::new();
     v.resize(n, 0i64);
     let mut terisi = Vec::new();
@@ -2267,7 +2320,7 @@ pub extern "C" fn jrg_jawa_array(n: i64) -> i64 {
 /// `jawa::array(n, isi)`: semua elemen terisi `isi`, seperti acuannya.
 #[no_mangle]
 pub extern "C" fn jrg_jawa_array_isi(n: i64, isi: i64) -> i64 {
-    let n = if n < 0 { 0 } else { n as usize };
+    let n = jawa_panjang("jawa::array", n);
     let mut v = Vec::new();
     v.resize(n, isi);
     let mut terisi = Vec::new();
@@ -2390,7 +2443,7 @@ pub extern "C" fn jrg_jawa_sizeof(id: i64) -> i64 {
 
 #[no_mangle]
 pub extern "C" fn jrg_jawa_buffer(n: i64) -> i64 {
-    let n = if n < 0 { 0 } else { n as usize };
+    let n = jawa_panjang("jawa::buffer", n);
     let mut v = Vec::new();
     v.resize(n, 0u8);
     unsafe { slot_baru(SlotJawa { jenis: JAWA_BUFFER, sah: true, nilai: 0, larik: Vec::new(), terisi: Vec::new(), buf: v }) }
@@ -2586,6 +2639,170 @@ pub extern "C" fn jrg_acak63() -> i64 {
 mod json_inti;
 // `kutip_inti.rs` juga SALINAN PERSIS `src/kutip_inti.rs`.
 mod kutip_inti;
+// `kripto_inti.rs` SALINAN PERSIS `src/kripto_inti.rs`; di sini tanpa jalur perangkat keras.
+#[allow(dead_code)]
+mod kripto_inti;
+mod kripto_cepat {
+    pub fn sha256(_: &mut [u32; 8], _: &[u8]) -> bool { false }
+    pub fn aes_ada() -> bool { false }
+    pub fn aes_sandi(_: &[u8; 16], _: &[[u8; 16]; 15]) -> [u8; 16] { unreachable!() }
+    pub fn aes_buka(_: &[u8; 16], _: &[[u8; 16]; 15]) -> [u8; 16] { unreachable!() }
+}
+
+/// `lapis::os(31, a, b, (n << 5) | op)` untuk `crypto::` (tabel op di `crypto_os` lapis): byte masuk dan keluar
+/// sebagai heksadesimal, `b` = dua teks bersambung dengan `n` byte pertama milik yang pertama. Galat = -1 + kalimat.
+#[cfg(not(test))]
+#[no_mangle]
+pub extern "C" fn jrg_kripto_os(ap: *const u8, an: i64, bp: *const u8, bn: i64, i: i64,
+                                out_ptr: *mut *const u8, out_len: *mut i64) -> i64 {
+    use kripto_inti as k;
+    let a = unsafe { borrow_str(ap, an) };
+    let b = unsafe { borrow_str(bp, bn) };
+    let n = ((i >> 5) as usize).min(b.len());
+    let (b1, b2) = (&b[..n], &b[n..]);
+    let jawab = |t: String, kode: i64| { unsafe { emit_string(t, out_ptr, out_len) }; kode };
+    let byt = |h: &str| k::hex_decode_str(h).unwrap_or_default();
+    let teks = |r: Result<Vec<u8>, String>, nama: &str, jalan: &str| -> i64 {
+        match r {
+            Ok(v) => { let m = v.len(); match String::from_utf8(v) {
+                Ok(t) => jawab(t, 0),
+                Err(_) => jawab(format!("{}: hasilnya ({} byte) bukan teks UTF-8 yang sah; {}", nama, m, jalan), -1),
+            } }
+            Err(e) => jawab(e, -1),
+        }
+    };
+    let heks = |r: Result<Vec<u8>, String>| match r { Ok(v) => jawab(k::hex_encode(&v), 0), Err(e) => jawab(e, -1) };
+    let aes_buka = |nama: &str| -> Result<Vec<u8>, String> {
+        let key = k::parse_key32(b1, nama)?;
+        let iv = k::parse_iv16(b2, nama)?;
+        k::aes256_cbc_decrypt(&k::base64_decode_str(a)?, &key, &iv)
+    };
+    let buka_kotak = |nama: &str| -> Result<Vec<u8>, String> {
+        let (ke, km) = k::kunci_kotak(b, nama)?;
+        let kotak = k::base64_decode_str(a).map_err(|e| format!("{}: {}", nama, e))?;
+        if kotak.len() < 16 + 16 + 32 {
+            return Err(format!("{}: kotaknya terlalu pendek ({} byte) — bukan hasil `crypto::seal`", nama, kotak.len()));
+        }
+        let (isi, tanda) = kotak.split_at(kotak.len() - 32);
+        if !k::sama_waktu_tetap(&k::hmac_sha256(&km, isi), tanda) {
+            return Err(format!("{}: tanda tangan tidak cocok — kuncinya lain, atau kotaknya diubah", nama));
+        }
+        let mut iv = [0u8; 16];
+        iv.copy_from_slice(&isi[..16]);
+        k::aes256_cbc_decrypt(&isi[16..], &ke, &iv).map_err(|e| format!("{}: {}", nama, e))
+    };
+    match i & 31 {
+        0 => jawab(k::hex_encode(&k::sha512(&byt(a))), 0),
+        1 => jawab(k::hex_encode(&k::hmac_sha256(&byt(a), &byt(b))), 0),
+        2 => k::sama_waktu_tetap(&byt(a), &byt(b)) as i64,
+        3 => teks(k::base64_decode_str(a), "crypto::base64_decode", "pakai `crypto::base64_decode_bytes` untuk mengambil byte-nya"),
+        4 => heks(k::base64_decode_str(a)),
+        5 => teks(k::base64url_decode_str(a), "crypto::base64url_decode", "pakai `crypto::base64url_decode_bytes` untuk mengambil byte-nya"),
+        6 => heks(k::base64url_decode_str(a)),
+        7 => teks(k::hex_decode_str(a), "crypto::hex_decode", "pakai `crypto::hex_decode_bytes` untuk mengambil byte-nya"),
+        8 => heks(k::hex_decode_str(a)),
+        9 | 12 => {
+            let nama = if i & 31 == 9 { "crypto::aes_encrypt" } else { "crypto::seal" };
+            let r: Result<String, String> = (|| {
+                if i & 31 == 9 {
+                    let key = k::parse_key32(b1, nama)?;
+                    let iv = k::parse_iv16(b2, nama)?;
+                    return Ok(k::base64_encode_bytes(&k::aes256_cbc_encrypt(&byt(a), &key, &iv)));
+                }
+                let (ke, km) = k::kunci_kotak(b1, nama)?;
+                let mut iv = [0u8; 16];
+                iv.copy_from_slice(&byt(b2));
+                let mut kotak = iv.to_vec();
+                kotak.extend(k::aes256_cbc_encrypt(&byt(a), &ke, &iv));
+                let tanda = k::hmac_sha256(&km, &kotak);
+                kotak.extend_from_slice(&tanda);
+                Ok(k::base64_encode_bytes(&kotak))
+            })();
+            match r { Ok(t) => jawab(t, 0), Err(e) => jawab(e, -1) }
+        }
+        10 => teks(aes_buka("crypto::aes_decrypt"), "crypto::aes_decrypt",
+            "kunci atau IV-nya mungkin bukan yang dipakai menyandikan; isi biner diambil `crypto::aes_decrypt_bytes`"),
+        11 => heks(aes_buka("crypto::aes_decrypt_bytes")),
+        13 => teks(buka_kotak("crypto::unseal"), "crypto::unseal", "isi biner diambil `crypto::unseal_bytes`"),
+        14 => heks(buka_kotak("crypto::unseal_bytes")),
+        // `random_int(a, b)`: 16 byte OS ditarik ulang di atas kelipatan rentang (tanpa bias modulo), seperti acuan.
+        15 => {
+            extern "C" { fn getentropy(buf: *mut u8, n: usize) -> i32; }
+            let (lo, hi) = (a.parse::<i128>().unwrap_or(0), b.parse::<i128>().unwrap_or(0));
+            let m = (hi.wrapping_sub(lo) as u128).wrapping_add(1);
+            let ambang = if m == 0 { 0 } else { m.wrapping_neg() % m };
+            loop {
+                let mut buf = [0u8; 16];
+                if unsafe { getentropy(buf.as_mut_ptr(), 16) } != 0 {
+                    return jawab(String::from("crypto::random_int: sumber acak yang aman tidak bisa dibaca — angka dari jam \
+                        bisa ditebak, jadi tidak dipakai untuk kripto"), -1);
+                }
+                let n = u128::from_be_bytes(buf);
+                if n >= ambang {
+                    let lebar = hi.wrapping_sub(lo) as u128;
+                    let geser = if lebar == u128::MAX { n } else { n % (lebar + 1) };
+                    return jawab(format!("{}", lo.wrapping_add(geser as i128)), 0);
+                }
+            }
+        }
+        _ => jawab(String::from("crypto: op tidak dikenal"), -1),
+    }
+}
+
+// `regex_inti.rs` SALINAN PERSIS `src/stdlib/regex_inti.rs`: mesin `re::` tanpa jembatan.
+mod regex_inti;
+
+/// `lapis::os(30, pola, teks+pengganti, (byte teks << 3) | mode)`: 0/1 cocok pertama/semua ("kar kar byte byte"),
+/// 2 periksa pola, 3/4 ganti pertama/semua, 5 `split` (indeks karakter). Galat = -1 dan kalimat `regex.rs`.
+#[cfg(not(test))]
+#[no_mangle]
+pub extern "C" fn jrg_re_os(ap: *const u8, an: i64, bp: *const u8, bn: i64, i: i64,
+                            out_ptr: *mut *const u8, out_len: *mut i64) -> i64 {
+    use core::fmt::Write;
+    let pola = unsafe { borrow_str(ap, an) };
+    let gab = unsafe { borrow_str(bp, bn) };
+    let n = ((i >> 3) as usize).min(gab.len());
+    let (s, repl) = (&gab[..n], &gab[n..]);
+    let jawab = |t: String, k: i64| { unsafe { emit_string(t, out_ptr, out_len) }; k };
+    if i & 7 == 2 {
+        return match regex_inti::Regex::baru(pola) {
+            Ok(_) => jawab(String::new(), 0),
+            Err(e) => jawab(format!("re::compile '{}': {}", kutip_inti::kutip(pola), e), -1),
+        };
+    }
+    let semua = matches!(i & 7, 1 | 4 | 5);
+    let cocok = match regex_inti::cocok_di(pola, s, semua) { Ok(c) => c, Err(e) => return jawab(e, -1) };
+    match i & 7 {
+        3 | 4 => {
+            let k = cocok.len() as i128;
+            let total = (s.len() as i128) - cocok.iter().map(|m| (m[3] - m[2]) as i128).sum::<i128>()
+                + k.saturating_mul(repl.len() as i128);
+            if total > 256 * 1024 * 1024 {
+                let nama = if i & 7 == 4 { "re::replace_all" } else { "re::replace" };
+                return jawab(format!("{}: hasil penggantian kegedean: {} kemunculan x {} karakter pengganti = \
+                    sekitar {} byte (batasnya 256 MiB). Cek lagi pengganti atau polanya", nama, k, repl.chars().count(), total), -1);
+            }
+            let mut out = String::with_capacity(s.len());
+            let mut akhir = 0;
+            for m in &cocok { out.push_str(&s[akhir..m[2]]); out.push_str(repl); akhir = m[3]; }
+            out.push_str(&s[akhir..]);
+            jawab(out, 0)
+        }
+        5 => {
+            let mut t = String::new();
+            let (mut kar, mut bagian) = (0usize, 0i64);
+            for m in &cocok { let _ = write!(t, "{} {} ", kar, m[0]); kar = m[1]; bagian += 1; }
+            let _ = write!(t, "{} {}", kar, s.chars().count());
+            jawab(t, bagian + 1)
+        }
+        _ => {
+            let mut t = String::new();
+            for m in &cocok { let _ = write!(t, "{} {} {} {} ", m[0], m[1], m[2], m[3]); }
+            jawab(t, cocok.len() as i64)
+        }
+    }
+}
+
 // `terjemah_inti.rs` SALINAN PERSIS `src/terjemah/inti.rs`; bahasa galat saat jalan di `bahasa.rs`.
 mod terjemah_inti;
 mod bahasa;
@@ -2667,8 +2884,21 @@ mod json_llvm {
         hasil
     }
 
-    unsafe fn dari_any(a: &KotakAny) -> Json {
-        match a.tag & 255 {
+    enum Bingkai { Arr(Vec<Json>, *const KotakAny, usize, usize), Obj(Vec<(String, Json)>, *mut u8, usize, usize, String) }
+
+    /// Kait codegen (`@jrg_buram_ke_json`): nilai buram milik program (struct/enum/tuple) jadi kotak berbentuk JSON.
+    type KaitBuram = Option<unsafe extern "C" fn(*const KotakAny, *mut KotakAny)>;
+
+    /// Daun langsung jadi `Json`; array/dict mendorong bingkainya dan menjawab `None`.
+    unsafe fn turun(a: &KotakAny, tumpuk: &mut Vec<Bingkai>, kait: KaitBuram) -> Option<Json> {
+        if a.tag & 255 == 10 {
+            if let Some(f) = kait {
+                let mut o = KotakAny { tag: 0, sela: 0, a: 0, b: 0 };
+                f(a, &mut o);
+                if o.tag & 255 != 10 { return turun(&o, tumpuk, kait); }
+            }
+        }
+        Some(match a.tag & 255 {
             1 => Json::Bool(a.a & 255 != 0),
             2 => Json::Int(a.a as i64 as i128),
             3 => Json::Float(f64::from_bits(a.a)),
@@ -2676,25 +2906,51 @@ mod json_llvm {
             5 => Json::Str(borrow_str(a.a as *const u8, a.b as i64).to_string()),
             6 => {
                 let s = seragamkan(a, KATA_ARRAY);
-                let p = s.a as *const KotakAny;
-                let mut isi = Vec::with_capacity(s.b as usize);
-                for i in 0..s.b as usize { isi.push(dari_any(&*p.add(i))); }
-                Json::Arr(isi)
+                tumpuk.push(Bingkai::Arr(Vec::with_capacity(s.b as usize), s.a as *const KotakAny, s.b as usize, 0));
+                return None;
             }
             7 => {
                 let s = seragamkan(a, KATA_DICT);
-                let p = s.a as *mut u8;
-                jrg_dict_rapikan(p, s.b as i64, LANGKAH);
-                let mut isi = Vec::with_capacity(s.b as usize);
-                for i in 0..s.b as usize {
-                    let pas = p.add(i * LANGKAH as usize);
-                    let kunci = &*(pas as *const Dua);
-                    isi.push((borrow_str(kunci.ptr, kunci.len).to_string(), dari_any(&*(pas.add(16) as *const KotakAny))));
-                }
-                Json::Obj(isi)
+                jrg_dict_rapikan(s.a as *mut u8, s.b as i64, LANGKAH);
+                tumpuk.push(Bingkai::Obj(Vec::with_capacity(s.b as usize), s.a as *mut u8, s.b as usize, 0, String::new()));
+                return None;
             }
             0 | 8 => Json::Null,
             _ => gagal("nilai ini (struct, tuple, enum, fungsi, atau handle) tidak punya padanan JSON di backend `--emit-llvm`".to_string()),
+        })
+    }
+
+    /// Iteratif (AGI-20261118-04): nilai bersarang berapa pun dalam tidak menghabiskan stack korutin.
+    unsafe fn dari_any(akar: &KotakAny, kait: KaitBuram) -> Json {
+        let mut tumpuk: Vec<Bingkai> = Vec::new();
+        let mut naik = turun(akar, &mut tumpuk, kait);
+        loop {
+            if let Some(j) = naik.take() {
+                match tumpuk.last_mut() {
+                    None => return j,
+                    Some(Bingkai::Arr(v, ..)) => v.push(j),
+                    Some(Bingkai::Obj(v, _, _, _, kunci)) => v.push((core::mem::take(kunci), j)),
+                }
+            }
+            let anak: Option<*const KotakAny> = match tumpuk.last_mut() {
+                Some(Bingkai::Arr(_, p, n, i)) if *i < *n => { *i += 1; Some(p.add(*i - 1)) }
+                Some(Bingkai::Obj(_, p, n, i, kunci)) if *i < *n => {
+                    let pas = p.add(*i * LANGKAH as usize);
+                    *i += 1;
+                    let d = &*(pas as *const Dua);
+                    *kunci = borrow_str(d.ptr, d.len).to_string();
+                    Some(pas.add(16) as *const KotakAny)
+                }
+                _ => None,
+            };
+            naik = match anak {
+                Some(c) => turun(&*c, &mut tumpuk, kait),
+                None => match tumpuk.pop() {
+                    Some(Bingkai::Arr(v, ..)) => Some(Json::Arr(v)),
+                    Some(Bingkai::Obj(v, ..)) => Some(Json::Obj(v)),
+                    None => unreachable!(),
+                },
+            };
         }
     }
 
@@ -2709,13 +2965,16 @@ mod json_llvm {
 
     /// `rapi == 0`: rapat (`json::stringify`); selain itu rapi selebar `indent` (`json::pretty`).
     #[no_mangle]
-    pub extern "C" fn jrg_json_tulis(a: *const KotakAny, rapi: i32, indent: i64, out_ptr: *mut *const u8, out_len: *mut i64) {
+    pub extern "C" fn jrg_json_tulis(a: *const KotakAny, rapi: i32, indent: i64, out_ptr: *mut *const u8, out_len: *mut i64,
+                                     kait: KaitBuram) {
         if rapi != 0 && !(0..=16).contains(&indent) {
             gagal(format!("json::pretty: lebar indentasi {} di luar jangkauan 0 sampai 16", indent));
         }
-        let j = unsafe { dari_any(&*a) };
+        let j = unsafe { dari_any(&*a, kait) };
         let lebar = if rapi == 0 { None } else { Some(indent as usize) };
-        match json_inti::tulis(&j, lebar, 0) {
+        let hasil = json_inti::tulis(&j, lebar, 0);
+        json_inti::lepas(j);
+        match hasil {
             Ok(t) => unsafe { emit_string(t, out_ptr, out_len) },
             Err(e) => gagal(e),
         }

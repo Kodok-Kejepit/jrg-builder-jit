@@ -247,14 +247,28 @@ impl Interpreter {
                 return Err(pesan_sudah_diserahkan(&format!("{}: elemen ke-{}", siapa, i)));
             }
         }
+        // Menunggu yang terlihat detektor kebuntuan, seperti `await`: dulu `race` atas tugas yang tak pernah selesai
+        // berputar selamanya tanpa laporan (AGI-20261120-24).
+        use crate::antrean::buntu;
+        let mut jaga = buntu::aktif().then(buntu::Blokir::mulai);
+        let mut sejak = std::time::Instant::now();
         loop {
             for (ch, serah) in &chans {
+                // Diintip dulu: `coba_terima` menggeser generasi, jadi memanggilnya tiap putaran menyembunyikan buntu.
+                if !crate::interpreter::value::channel_ada_isi(ch) { continue; }
                 if let Some(v) = channel_coba_ambil(ch) {
+                    drop(jaga);
                     klaim(serah);
                     return cek_gagal(v);
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
+            if let Some(b) = jaga.as_mut() {
+                if sejak.elapsed() >= buntu::TIAP {
+                    sejak = std::time::Instant::now();
+                    if b.buntu() && buntu::utama() { return Err(crate::antrean::PESAN_BUNTU.to_string()); }
+                }
+            }
         }
     }
 
@@ -280,6 +294,10 @@ impl Interpreter {
             if let Some(v) = channel_coba_ambil(&ch) {
                 klaim(&serah);
                 return Ok(crate::interpreter::some_value(cek_gagal(v)?));
+            }
+            // Diambil penunggu lain selama menunggu: galat, bukan `None` sesudah tenggat (AGI-20261119-38).
+            if !masih_boleh(&serah) {
+                return Err(pesan_sudah_diserahkan(siapa));
             }
             if lewat(batas) {
                 return Ok(crate::interpreter::none_value());

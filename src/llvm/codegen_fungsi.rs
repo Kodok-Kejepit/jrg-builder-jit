@@ -14,6 +14,27 @@ use super::types::*;
 impl Codegen {
     // ── function codegen ────────────────────────────────────────────────
 
+    /// `struct Q: P { n: string }` atas `P.n: int`: method warisan `P` membaca `n` sebagai `int`, dan
+    /// LLVM menurunkan method itu untuk `Q` dengan tipe `Q` — yang gagal disebut sebabnya (AGI-20261120-21).
+    fn catatan_bayang_untuk(&self, nama: &str) -> Option<String> {
+        let silsilah = self.tables.silsilah(nama);
+        let sendiri = self.tables.structs.get(nama)?;
+        let mut daftar = Vec::new();
+        for f in &sendiri.fields {
+            for leluhur in silsilah.iter().skip(1) {
+                let Some(d) = self.tables.structs.get(leluhur) else { continue };
+                let Some(fi) = d.fields.iter().find(|x| x.name == f.name) else { continue };
+                let (ta, ti) = (crate::parser::nama_tipe(&f.ty), crate::parser::nama_tipe(&fi.ty));
+                if ta != ti { daftar.push(format!("`{}` (`{}` di `{}`, `{}` di `{}`)", f.name, ti, leluhur, ta, nama)); }
+                break;
+            }
+        }
+        if daftar.is_empty() { return None; }
+        Some(format!("catatan: `{}` membayangi field induknya dengan tipe lain: {} — method warisan yang membaca \
+            field itu dengan tipe induknya tidak bisa diturunkan untuk `{}` di backend `--emit-llvm`; tulis method itu \
+            di `impl {}`, atau jalankan tanpa `--emit-llvm`", nama, daftar.join(", "), nama, nama))
+    }
+
     pub(crate) fn codegen_function(&mut self, _base_name: &str, decl: &FnDecl, subst: &TypeSubst, mangled: &str, self_ty: Option<JrgType>, arity: usize) -> Result<(), String> {
         self.unit_kini = self.unit_simbol_dari(mangled);
         self.pernah_kembali = false;
@@ -39,6 +60,7 @@ impl Codegen {
             _ => None,
         };
 
+        self.catatan_bayang = self.cur_self_ty.clone().and_then(|n| self.catatan_bayang_untuk(&n));
         let ret_ty = self.tipe_return_duga(decl, subst, mangled, self_ty.as_ref(), arity)?;
         // `main` tanpa anotasi membuang nilai ekornya (cuma `-> int` yang kode keluar); `Err`/`None` tetap dilaporkan.
         let opsi = matches!(&ret_ty, JrgType::Enum(n) if self.option_args.contains_key(n) || self.result_args.contains_key(n));
@@ -527,11 +549,15 @@ impl Codegen {
             if !self.butuh_salin(&v.ty) { return v; }
             return self.salin_dalam(&v);
         }
-        // Bentuk lain yang menyebut sebuah pinjaman (`Some(self.xs)`, `(p, 1)`, ternary, `match`):
-        // hasilnya bisa memuat penyangga pemanggil, jadi dijadikan milik sendiri.
-        if self.pinjaman.is_empty() || !self.butuh_salin(&v.ty) { return v; }
+        // Bentuk lain yang menyebut sebuah pinjaman, tangkapan closure, atau `var` modul (`Some(self.xs)`, ternary,
+        // `if`/`match` yang menjawab `g`): hasilnya bisa memuat penyangga pihak lain, jadi dijadikan milik sendiri.
+        if !self.butuh_salin(&v.ty) { return v; }
         let disebut = crate::interpreter::capture::names_mentioned(e);
-        if !self.pinjaman.iter().any(|n| disebut.contains(n)) { return v; }
+        let rawan = |cg: &Self, n: &String| cg.pinjaman.contains(n) || cg.tangkap_masuk.contains(n)
+            || (cg.lookup_local(n).is_none() && cg.var_global.contains_key(&cg.k(n)));
+        if !disebut.iter().any(|n| rawan(self, n)) { return v; }
+        // Akar langsung (`cap_d`, `g.xs`) selalu disalin; bentuk lain lewat `ambil_milik`, yang melewati yang segar.
+        if akar(e).is_some() { return self.salin_dalam(&v); }
         match self.ambil_milik(e, v.clone()) { Ok(baru) => baru, Err(_) => v }
     }
 

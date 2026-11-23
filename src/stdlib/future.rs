@@ -131,14 +131,27 @@ pub fn register(vm: &mut Vm) {
                     &format!("future::race: elemen ke-{}", i)));
             }
         }
+        // Seperti interpreter (AGI-20261120-24): terdaftar di detektor kebuntuan, dan diintip dulu karena
+        // `try_recv` menggeser generasi.
+        use crate::antrean::buntu;
+        let mut jaga = buntu::aktif().then(buntu::Blokir::mulai);
+        let mut sejak = std::time::Instant::now();
         loop {
             for (c, serah) in &chans {
+                if !c.has_value() { continue; }
                 if let Ok(Some(v)) = c.try_recv() {
+                    drop(jaga);
                     klaim(serah);
                     return cek_gagal_vm(v);
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
+            if let Some(b) = jaga.as_mut() {
+                if sejak.elapsed() >= buntu::TIAP {
+                    sejak = std::time::Instant::now();
+                    if b.buntu() && buntu::utama() { return Err(crate::antrean::PESAN_BUNTU.to_string()); }
+                }
+            }
         }
     });
 
@@ -158,6 +171,11 @@ pub fn register(vm: &mut Vm) {
             if let Ok(Some(v)) = c.try_recv() {
                 klaim(&serah);
                 return Ok(VmValue::some(cek_gagal_vm(v)?));
+            }
+            // Diambil penunggu lain selama menunggu: galat "sudah diambil", seperti interpreter — dulu `None` sesudah
+            // tenggatnya habis (AGI-20261119-38).
+            if !masih_boleh(&serah) {
+                return Err(crate::interpreter::tugas::pesan_sudah_diserahkan("future::timeout"));
             }
             if crate::interpreter::tugas::lewat(batas) { return Ok(VmValue::none()); }
             std::thread::sleep(std::time::Duration::from_millis(1));

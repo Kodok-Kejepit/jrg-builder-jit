@@ -4656,3 +4656,30 @@ fn jir_struct_bayangan_sama_dengan_vm() {
         assert_eq!((v.sukses, &v.stdout, &v.stderr), (j.sukses, &j.stdout, &j.stderr), "{env:?}");
     }
 }
+
+#[test]
+fn spawn_di_closure_menangkap_upvalue() {
+    // AGI-20261120-18 bagian 2: `spawn` di closure dulu kehilangan tangkapan closure-nya di `--vm`/`--jit`.
+    let src = "fn main() {\n  let x = 42\n  let ch = Chan::new(2)\n  let f = || {\n    spawn {\n      ch <- x\n    }\n  }\n  f()\n  let g = || { let y = x + 1\n    spawn |ch, y| { ch <- y } }\n  g()\n  wok(<-ch + <-ch)\n}\n";
+    for x in [&["--vm"][..], &["--jit"][..]] {
+        let h = jalankan(src, x, &[]);
+        assert!(h.sukses && h.stdout == "85", "{x:?}: {:?} {}", h.stdout, h.stderr);
+    }
+    sama_dengan_interpreter(src);
+}
+
+#[test]
+fn pola_or_tidak_meledak() {
+    // AGI-20261120-18 bagian 1: `1|2` yang tidak mengikat nama dulu ikut dikalikan (2^N alternatif).
+    let satu = "1 | 2, ".repeat(20);
+    let src = format!("fn main() {{\n  let t = ({}Some(7))\n  match t {{\n    ({}Some(x) | Ok(x)) => wok(x),\n    _ => wok(0),\n  }}\n}}\n", "1, ".repeat(20), satu);
+    let h = jalankan(&src, &["--vm"], &[]);
+    assert!(h.sukses && h.stdout == "7", "{:?} {}", h.stdout, h.stderr);
+    sama_dengan_interpreter(&src);
+    // Yang benar-benar mengikat dibatasi, dengan kalimat yang menyebut sebabnya.
+    let ikat: Vec<String> = (0..13).map(|i| format!("Some(a{i}) | Ok(a{i})")).collect();
+    let isi: Vec<String> = (0..13).map(|_| "Some(1)".to_string()).collect();
+    let src = format!("fn main() {{\n  match ({}) {{\n    ({}) => wok(a0),\n    _ => wok(0),\n  }}\n}}\n", isi.join(", "), ikat.join(", "));
+    let h = jalankan(&src, &["--vm"], &[("JRG_BAHASA", "id")]);
+    assert!(!h.sukses && h.stderr.contains("4096 alternatif"), "{:?} {}", h.stdout, h.stderr);
+}

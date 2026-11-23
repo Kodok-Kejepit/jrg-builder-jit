@@ -17,6 +17,7 @@ impl<'src> Lexer<'src> {
             pending:     std::collections::VecDeque::new(),
             comment_depth: 0,
             last_token_auto_semi: false,
+            ulang: false,
             komentar:    Vec::new(),
         }
     }
@@ -568,14 +569,16 @@ impl<'src> Lexer<'src> {
                     self.skip_line_comment();
                     let span = self.span_from(lo);
                     self.komentar.push(Komentar { span, blok: false });
-                    return self.next_token();
+                    self.ulang = true;
+                    return Ok(Token::new(TokenKind::Eof, span));
                 }
                 Some('*') => {
                     self.advance();
                     self.skip_block_comment()?;
                     let span = self.span_from(lo);
                     self.komentar.push(Komentar { span, blok: true });
-                    return self.next_token();
+                    self.ulang = true;
+                    return Ok(Token::new(TokenKind::Eof, span));
                 }
                 _         => TokenKind::Slash,
             },
@@ -587,11 +590,12 @@ impl<'src> Lexer<'src> {
                 Some('&') => { self.advance(); TokenKind::AndAnd }
                 Some('=') => { self.advance(); TokenKind::AndEq }
                 Some('^') => { self.advance(); TokenKind::AndCaret }
-                Some('m') if self.peek() == Some('u') => {
-                    // &mut
+                // `&mut` cuma kalau kata `mut` UTUH: `a&mutex` dan `a&mu` itu `&` bitwise (AGI-20261119-04).
+                Some('m') if self.peek() == Some('u') && self.peek2() == Some('t')
+                    && !self.chars.get(self.char_pos + 3).is_some_and(|c| UnicodeXID::is_xid_continue(*c)) => {
                     self.advance(); // m
                     self.advance(); // u
-                    if self.current() == Some('t') { self.advance(); }
+                    self.advance(); // t
                     TokenKind::AmpMut
                 }
                 _         => TokenKind::Amp,
@@ -706,7 +710,16 @@ impl<'src> Lexer<'src> {
 
     // ── Main dispatch ─────────────────────────────────────────────────────
 
+    /// Satu token bermakna. Baris kosong dan komentar diulang di loop ini, bukan lewat rekursi: ribuan baris kosong
+    /// berturut-turut dulu menghabiskan stack lexer (AGI-20261119-03).
     pub(crate) fn next_token(&mut self) -> Result<Token, LexError> {
+        loop {
+            let t = self.next_token_sekali()?;
+            if !std::mem::take(&mut self.ulang) { return Ok(t); }
+        }
+    }
+
+    fn next_token_sekali(&mut self) -> Result<Token, LexError> {
         // Token yang sudah diantrekan (lihat `pending`) selalu didahulukan.
         if let Some(tok) = self.pending.pop_front() {
             return Ok(tok);
@@ -732,7 +745,8 @@ impl<'src> Lexer<'src> {
                 if self.last_token_auto_semi && !self.berikutnya_menahan_titik_koma() {
                     Ok(Token::new(TokenKind::Semi, self.span_from(lo)))
                 } else {
-                    self.next_token() // skip non-significant newline
+                    self.ulang = true; // newline tak bermakna: dilewati lewat loop `next_token`
+                    Ok(Token::new(TokenKind::Eof, self.span_from(lo)))
                 }
             }
 
@@ -881,16 +895,21 @@ impl<'src> Lexer<'src> {
                 msg: format!("angka imajiner `{}i` tidak sah", text), span })?;
             return Ok(Token::new(TokenKind::ImaginaryLit(v), span));
         }
+        if is_float && radix == 16 {
+            return Err(LexError { span, msg: format!(
+                "pecahan heksadesimal `{}` belum didukung JRG — tulis pecahan desimal (`2.0`), atau bilangan bulat \
+                 heksadesimal lalu `as float` (`0x10 as float`)", text) });
+        }
         if is_float {
             let v: f64 = text.parse().map_err(|_| LexError {
                 msg: format!("angka pecahan `{}` tidak sah", text), span })?;
             return Ok(Token::new(TokenKind::FloatLit(v), span));
         }
-        let v = u128::from_str_radix(
-            text.trim_start_matches("0x").trim_start_matches("0o")
-                .trim_start_matches("0b"),
-            radix
-        ).map_err(|_| LexError {
+        // Tepat SATU prefiks sesuai basisnya: `trim_start_matches` berantai dulu membuang `0b` lagi sesudah `0x`
+        // (`b` digit heksa sah), jadi `0x0b1` diam-diam terbaca `1` (AGI-20261119-01).
+        let pref = match radix { 16 => "0x", 8 => "0o", 2 => "0b", _ => "" };
+        let digit = text.strip_prefix(pref).or_else(|| text.strip_prefix(&pref.to_uppercase())).unwrap_or(&text);
+        let v = u128::from_str_radix(digit, radix).map_err(|_| LexError {
             msg: format!("angka bulat `{}` tidak sah", text), span })?;
         Ok(Token::new(TokenKind::IntLit(v), span))
     }

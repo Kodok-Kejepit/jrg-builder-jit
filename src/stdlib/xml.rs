@@ -67,12 +67,25 @@ impl<'a> Pengurai<'a> {
     }
 
     /// `&lt;` dan kawan-kawan, `&#65;`, `&#x41;` — entitas lain tidak ada, karena DTD tidak didukung.
+    /// Isi CDATA, komentar dan PI juga `Char` XML 1.0, seperti teks dan atribut (AGI-20261119-27).
+    fn isi_sah(&self, dari: usize, sampai: usize) -> Result<(), String> {
+        match self.sisa()[dari..sampai].chars().find(|c| !char_xml(*c)) {
+            Some(c) => Err(self.galat(&format!("karakter U+{:04X} tidak boleh ada di XML", c as u32))),
+            None => Ok(()),
+        }
+    }
+
     fn rujukan(&mut self, keluar: &mut String) -> Result<(), String> {
         let akhir = self.sisa().find(';').filter(|k| *k <= 12)
             .ok_or_else(|| self.galat("`&` tanpa `;` penutup — tulis `&amp;` untuk tanda & biasa"))?;
         let isi = &self.sisa()[1..akhir];
         let c = match isi {
             "lt" => '<', "gt" => '>', "amp" => '&', "quot" => '"', "apos" => '\'',
+            // XML 1.0 cuma `[0-9]+`/`[0-9a-fA-F]+`: `from_str_radix`/`parse` Rust menerima `+` (AGI-20261119-27).
+            _ if isi.starts_with("#x") && !isi[2..].bytes().all(|b| b.is_ascii_hexdigit()) || isi.starts_with("#x") && isi.len() == 2 =>
+                return Err(self.galat(&format!("`&{};` bukan karakter XML yang sah", isi))),
+            _ if isi.starts_with('#') && !isi.starts_with("#x") && (isi.len() == 1 || !isi[1..].bytes().all(|b| b.is_ascii_digit())) =>
+                return Err(self.galat(&format!("`&{};` bukan karakter XML yang sah", isi))),
             _ if isi.starts_with("#x") => u32::from_str_radix(&isi[2..], 16).ok().and_then(char::from_u32)
                 .filter(|c| char_xml(*c)).ok_or_else(|| self.galat(&format!("`&{};` bukan karakter XML yang sah", isi)))?,
             _ if isi.starts_with('#') => isi[1..].parse::<u32>().ok().and_then(char::from_u32)
@@ -111,11 +124,17 @@ impl<'a> Pengurai<'a> {
         if self.mulai("<!--") {
             let k = self.sisa()[4..].find("--").ok_or_else(|| self.galat("komentar tidak ditutup"))?;
             if !self.sisa()[4 + k..].starts_with("-->") { return Err(self.galat("`--` di dalam komentar")); }
+            self.isi_sah(4, 4 + k)?;
             self.i += 4 + k + 3;
             return Ok(true);
         }
         if self.mulai("<?") {
-            let k = self.sisa().find("?>").ok_or_else(|| self.galat("instruksi pemrosesan tidak ditutup"))?;
+            // Dicari sesudah `<?`: `<?>` dulu tertutup oleh `?` pembukanya sendiri (AGI-20261119-27).
+            let k = 2 + self.sisa()[2..].find("?>").ok_or_else(|| self.galat("instruksi pemrosesan tidak ditutup"))?;
+            let isi = &self.sisa()[2..k];
+            let target = isi.split(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r')).next().unwrap_or("");
+            if !nama_sah(target) { return Err(self.galat("instruksi pemrosesan tanpa nama target yang sah (`<?nama ...?>`)")); }
+            self.isi_sah(2, k)?;
             self.i += k + 2;
             return Ok(true);
         }
@@ -170,6 +189,7 @@ impl<'a> Pengurai<'a> {
             }
             if self.mulai("<![CDATA[") {
                 let k = self.sisa().find("]]>").ok_or_else(|| self.galat("CDATA tidak ditutup"))?;
+                self.isi_sah(9, k)?;
                 teks.push_str(&self.sisa()[9..k]);
                 self.i += k + 3;
                 continue;
@@ -314,15 +334,16 @@ fn x_escape(a: &[Value]) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tes {
-    /// AMAN-42: pemeriksaan atribut kembar dulu kuadrat (160 ribu atribut 34 dtk). 4x ukuran harus < 10x waktu.
+    /// AMAN-42: pemeriksaan atribut kembar dulu kuadrat (160 ribu atribut 34 dtk). 8x ukuran: linear ±8x, kuadrat
+    /// ±64x; ambang 24x seperti tes biaya lain — 4x/10x dulu merah di runner CI karena efek cache saja.
     #[test]
     fn atribut_banyak_tetap_linear() {
         let waktu = |n: usize| {
             let teks = format!("<a{}/>", (0..n).map(|i| format!(" k{}=\"v\"", i)).collect::<String>());
             (0..3).map(|_| { let t = std::time::Instant::now(); assert!(urai(&teks).is_ok()); t.elapsed() }).min().unwrap()
         };
-        let (kecil, besar) = (waktu(20_000), waktu(80_000));
-        assert!(besar < kecil * 10, "4x atribut makan {:?} lawan {:?} — kuadrat lagi?", besar, kecil);
+        let (kecil, besar) = (waktu(10_000), waktu(80_000));
+        assert!(besar < kecil * 24, "8x atribut makan {:?} lawan {:?} — kuadrat lagi?", besar, kecil);
     }
 
     use super::*;
@@ -355,6 +376,16 @@ mod tes {
         ditolak("<a/><b/>", "satu akar");
         ditolak("<a x='<'/>", "`<` di dalam nilai atribut");
         ditolak("<a>]]></a>", "di luar CDATA");
+        // AGI-20261119-27: isi CDATA/komentar/PI diperiksa `Char`, `<?>` bukan PI, rujukan angka tanpa `+`.
+        ditolak("<a><![CDATA[\u{0}]]></a>", "U+0000");
+        ditolak("<a><!-- \u{1} --></a>", "U+0001");
+        ditolak("<?p \u{1}?><a/>", "U+0001");
+        ditolak("<?><a/>", "instruksi pemrosesan");
+        ditolak("<??><a/>", "nama target");
+        ditolak("<a>&#+65;</a>", "bukan karakter XML");
+        ditolak("<a>&#x+41;</a>", "bukan karakter XML");
+        ditolak("<a>&#x;</a>", "bukan karakter XML");
+        assert!(urai("<?xml version=\"1.0\"?><?gaya x?><a>&#x41;&#66;<![CDATA[ok]]></a>").is_ok());
     }
 
     #[test]
