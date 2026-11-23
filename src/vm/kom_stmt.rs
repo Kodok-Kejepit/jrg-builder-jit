@@ -470,8 +470,8 @@ impl Compiler {
                 self.chunk.emit_arg(OpCode::Const, ci);
                 for (_, sumber) in &captures {
                     match sumber {
-                        Ok(slot) => self.chunk.emit_arg(OpCode::LoadLocal, *slot as u32),
-                        Err(ui) => self.chunk.emit_arg(OpCode::LoadUpval, *ui as u32),
+                        Ok(slot) => { self.chunk.emit_arg(OpCode::LoadLocal, *slot as u32); }
+                        Err(ui) => { self.chunk.emit_arg(OpCode::LoadUpval, *ui as u32); }
                     }
                 }
                 // Galat `Spawn` (thread tak bisa dibuat, misalnya di peramban) menunjuk pernyataan `spawn`-nya.
