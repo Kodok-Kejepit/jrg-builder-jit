@@ -4746,3 +4746,37 @@ fn deopt_di_sisipan_bertingkat() {
     assert!(h.sukses && h.stdout == "9223372036856331373\n1555555", "{:?} {}", h.stdout, h.stderr);
     sama_dengan_interpreter(src);
 }
+
+#[test]
+fn pembanding_tidak_menggantung_atas_penyimpanan_bersama() {
+    // AGI-20261119-35: `==`/`<`/`arr::sort` memegang kunci dua sisi selama elemen dibandingkan. `b = [a]` berbagi
+    // penyimpanan dengan `a`, jadi `a` dikunci dua kali di satu thread; `a == b` dan `b == a` di dua goroutine AB–BA.
+    let kasus = [
+        "fn main() {\n  let inner = [1]\n  let a = [inner]\n  let b = [a]\n  wok(a == b, b == b, a != b)\n}\n",
+        "fn main() {\n  let inner = [1]\n  var a = dict {}\n  a[\"k\"] = inner\n  var b = dict {}\n  b[\"k\"] = a\n  wok(a == b, b == b)\n}\n",
+        "fn main() {\n  let inner = [1]\n  let a = [inner]\n  let b = [a]\n  wok(1)\n  wok(a < b)\n}\n",
+        "fn main() {\n  let inner = [1]\n  let a = [inner]\n  let b = [a]\n  wok(1)\n  wok(arr::sort([a, b]))\n}\n",
+        "fn main() {\n  let a = [[1], [2]]\n  let b = [a[0], a[1], [3]]\n  wok(a < b, arr::sort([b, a]), arr::max([a, b]) == b)\n}\n",
+        "fn main() {\n  let a = arr::fill(1, 500)\n  let b = arr::fill(1, 500)\n  let done = Chan::new(2)\n  go { var i = 0; while i < 500 { let _ = (a == b); i += 1 }; done.send(1) }\n  go { var i = 0; while i < 500 { let _ = (b == a); i += 1 }; done.send(2) }\n  wok(done.recv() + done.recv())\n}\n",
+    ];
+    for src in kasus {
+        let dir = bersama::dir_unik("jrg-jit-kunci");
+        std::fs::create_dir_all(&dir).expect("bikin dir sementara");
+        let file = dir.join("uji.jrg");
+        std::fs::write(&file, src).expect("tulis sumber");
+        let jalan = |x: &[&str]| {
+            let o = Command::new("timeout").arg("60").arg(jrgc()).arg(&file).args(x).env("JRG_SOPAN", "1")
+                .stdin(std::process::Stdio::null()).output().expect("jalankan jrgc");
+            (o.status.code(), String::from_utf8_lossy(&o.stdout).into_owned(),
+                String::from_utf8_lossy(&o.stderr).replace(&file.display().to_string(), "<uji>"))
+        };
+        let acuan = jalan(&[]);
+        assert_ne!(acuan.0, Some(124), "interpreter menggantung:\n{src}");
+        for x in [&["--vm"][..], &["--jit"][..]] {
+            let h = jalan(x);
+            assert_ne!(h.0, Some(124), "{x:?} menggantung (kebuntuan kunci):\n{src}");
+            assert_eq!(h, acuan, "{x:?} beda dengan interpreter:\n{src}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
