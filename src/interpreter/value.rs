@@ -813,6 +813,15 @@ pub fn pesan_kapasitas_chan(negatif: Option<i128>, tipe: &str) -> String {
     }
 }
 
+/// Kapasitas channel (`Chan::new`, `make_chan`) dari bulat `n` atau nilai bertipe `tipe` — satu aturan, dua mesin.
+pub fn kapasitas_chan(n: Option<i128>, tipe: &str) -> Result<usize, String> {
+    match n {
+        Some(n) if n >= 0 => { cek_batas_elemen("Chan::new", n)?; Ok(n as usize) }
+        Some(n) => Err(pesan_kapasitas_chan(Some(n), "int")),
+        None => Err(pesan_kapasitas_chan(None, tipe)),
+    }
+}
+
 /// Argumen pertama keluarga `chan::` yang bukan channel — satu kalimat, dua mesin.
 pub fn pesan_arg_harus_channel(fname: &str, dapat: &str) -> String {
     format!("{}: argumen ke-1 harus channel, dapat `{}`", fname, dapat)

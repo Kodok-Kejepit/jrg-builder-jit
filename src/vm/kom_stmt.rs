@@ -78,7 +78,11 @@ impl Compiler {
 
             // name, name2 := expr, expr2
             Stmt::ShortDecl(sd) => {
-                for v in &sd.values { self.compile_value_expr(v)?; }
+                // Nilai sebelumnya sudah di stack: hitung sebagai temp, atau slot lokal berikutnya
+                // (`match`, pola) menimpa mereka (AGI-20261119-53).
+                for (i, v) in sd.values.iter().enumerate() {
+                    self.dgn_temp(i, |c| c.compile_value_expr(v))?;
+                }
                 // Jika lebih banyak names dari values, pad dengan Nil
                 for _ in sd.values.len()..sd.names.len() {
                     self.chunk.emit(OpCode::Nil);
