@@ -95,6 +95,30 @@ static void jrg_wasm_cek_jembatan(void) {
                               "bingkai builtin tidak bisa dihentikan sementara di WebAssembly");
 }
 
+#ifdef JRG_WASM_JEMBATAN
+// Builtin jembatan yang dipanggil goroutine jalan di stack besar milik jembatan (`wasm::kompilasi` menautnya lewat
+// `--wrap`): penjelajah nilai `jrgc` butuh lebih dari stack korutin 1 MiB (JSON 8 000 tingkat). Stack ini tidak
+// pernah dipakai dua korutin sekaligus, karena di dalam jembatan korutin tidak boleh berganti (`jrg_wasm_cek_jembatan`).
+#define JRG_WASM_STACK_JEMBATAN ((size_t)8 << 20)
+int32_t __real_jrg_jembatan_panggil(const char *, int64_t, const JrgAny *, int64_t, JrgAny *, const JrgKait *);
+int32_t __wrap_jrg_jembatan_panggil(const char *nama, int64_t nl, const JrgAny *args, int64_t n, JrgAny *out,
+                                    const JrgKait *kait) {
+    static char *stack;
+    if (jrg_ko_kini == &jrg_ko_utama || jrg_wasm_dalam_jembatan()) return __real_jrg_jembatan_panggil(nama, nl, args, n, out, kait);
+    if (stack == 0 && (stack = malloc(JRG_WASM_STACK_JEMBATAN)) == 0) return __real_jrg_jembatan_panggil(nama, nl, args, n, out, kait);
+    uintptr_t atas = ((uintptr_t)stack + JRG_WASM_STACK_JEMBATAN) & ~(uintptr_t)15;
+    void *lama = jrg_sp_baca();
+    jrg_wasm_batas_bebas();
+    jrg_sp_tulis((void *)atas);
+    jrg_wasm_batas((uint32_t)atas, (uint32_t)(uintptr_t)stack);
+    int32_t r = __real_jrg_jembatan_panggil(nama, nl, args, n, out, kait);
+    jrg_wasm_batas_bebas();
+    jrg_sp_tulis(lama);
+    jrg_wasm_batas_untuk(jrg_ko_kini);
+    return r;
+}
+#endif
+
 static char *jrg_ko_wasm_stack(JrgKo *k) {
     k->ctx.simpan = malloc(JRG_WASM_SIMPAN);
     char *st = malloc(JRG_KO_STACK);

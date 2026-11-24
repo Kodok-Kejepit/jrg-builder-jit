@@ -94,9 +94,6 @@ const PENANDA_KORUTIN: &[&str] = &["spawn", "Chan::new", "Future::new", "Task::s
     "Atomic::new", "tangkap("];
 /// Kasus konkurensi yang memanggil builtin yang tidak ada di WASI (`proses::`: tanpa proses anak), ditolak di sana.
 const LEWAT_JEMBATAN: &[&str] = &["goroutine tetap mendapat giliran selama main menunggu proses::",
-    // Celah wasm (Bayu, 2026-11-20): WASI tanpa thread pembantu ber-stack besar, jadi penjelajah nilai `jrgc` di
-    // korutin Asyncify kehabisan stack pada 8 000 tingkat — gagal keras ("call stack size exceeded"), bukan diam.
-    "JSON dan jembatan atas nilai bersarang 8 ribu tingkat di goroutine (AGI-20261118-04)",
     // Celah wasm (Bayu, 2026-11-21): callback `ptr::update` yang berganti korutin di dalam builtin jembatan — gagal
     // keras ("belum didukung --emit-wasm"), bukan diam.
     "ptr::update ulang dari aktor yang sama ditolak, update serentak sah (AGI-20261120-17)"];
@@ -210,10 +207,10 @@ fn main() {
 #[test]
 fn stack_luap_lewat_wasm_berhenti_keras() {
     let kerja = folder("luap");
-    // Celah 8 000 tingkat (LEWAT_JEMBATAN): bingkai Rust jembatan di stack goroutine, jalur stack bayangan.
+    // Builtin jembatan dari goroutine jalan di stack jembatan 8 MiB; yang melewatinya juga berhenti keras.
     let json = PARITAS_LLVM.iter().find(|(n, _)| n.starts_with("JSON dan jembatan atas nilai bersarang 8 ribu")).unwrap().1;
     for di in ["goroutine", "main", "jembatan"] {
-        let src = if di == "jembatan" { json.replacen("    let ch", "    wok(\"awal\")\n    let ch", 1) }
+        let src = if di == "jembatan" { json.replacen("    let ch", "    wok(\"awal\")\n    let ch", 1).replace("j < 8000", "j < 500000") }
             else { STACK_LUAP.replace("DI_MAIN", &(di == "main").to_string()) };
         let p = tulis(&kerja, &format!("luap_{di}.jrg"), &src);
         if wasm(&p, &kerja).is_none() { return }

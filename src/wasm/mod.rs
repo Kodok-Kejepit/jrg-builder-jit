@@ -257,6 +257,8 @@ pub fn kompilasi(ir: &str, keluar: &Path, verbose: bool) -> Result<PathBuf, Stri
     // Stack bayangan 8 MiB seperti stack utama native (bawaan wasm-ld 64 KiB: larik `[2000]int` lokal sudah meluap).
     taut.args(["-m", "wasm32", "--gc-sections", "-z", "stack-size=8388608"]).arg(format!("-L{}", lib.display())).arg(lib.join("crt1-command.o"))
         .arg(&prog_o).arg(&c_o).arg(&runtime).arg("-lc").arg(&alat.builtins).arg("-o").arg(&taut_wasm);
+    // Builtin jembatan dari goroutine pindah ke stack besar milik jembatan (`korutin_wasm.c`).
+    if jembatan { taut.arg("--wrap=jrg_jembatan_panggil"); }
     let hasil = jalankan_alat(&mut taut, "penaut wasm").and_then(|_| {
         // Asyncify: korutin dibuka dan digulung ulang sampai `__main_void`, yang karena itu tidak diinstrumentasi.
         // `JRG_WASM_NAMA=1`: nama fungsi ikut di .wasm (jejak trap node terbaca) dan IR-nya disimpan, untuk menyelidiki.
